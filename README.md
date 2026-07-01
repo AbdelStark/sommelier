@@ -17,9 +17,16 @@ The project does not claim production serving readiness, broad agent reliability
 
 ## Current Code
 
-The existing Python entrypoint is a remote execution smoke test. Implementation issues filed from the specification corpus track the package, CLI, data, formatting, training, evaluation, reporting, and release work required for v1.0.
+The package exposes configuration validation, fixture-mode data and formatting stage stubs with run manifests, and a Modal smoke entrypoint.
 
 ```bash
+uv sync --extra dev
+uv run ruff check .
+uv run mypy sommelier tests
+uv run pytest
+uv run sommelier config validate --config examples/config.smoke.yaml
+uv run sommelier data validate-fixtures
+uv run sommelier data prepare --config examples/config.smoke.yaml --out artifacts/runs/local/data --run-id local
 uv run python sommelier_entrypoint.py
 ```
 

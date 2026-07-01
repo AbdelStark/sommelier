@@ -1,9 +1,49 @@
 [project]
 name = "sommelier"
 version = "0.1.0"
-description = "Add your description here"
+description = "Reference implementation for fine-tuning small open models for tool calling"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "modal>=1.5.1",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
 ]
+
+[project.scripts]
+sommelier = "sommelier.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.9.0",
+    "mypy>=1.14.0",
+    "types-pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sommelier"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unused_configs = true
+packages = ["sommelier", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["modal", "modal.*"]
+ignore_missing_imports = true

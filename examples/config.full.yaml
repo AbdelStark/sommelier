@@ -1,0 +1,74 @@
+schema_version: sommelier.config.v1
+
+project:
+  name: sommelier-full
+  artifact_root: artifacts
+  seed: 42
+
+model:
+  base_model_id: nvidia/Llama-3.1-Nemotron-Nano-8B-v1
+  base_model_revision: main
+  tokenizer_revision: main
+  allow_remote_code: false
+
+dataset:
+  dataset_id: Salesforce/xlam-function-calling-60k
+  dataset_revision: main
+  query_column: query
+  tools_column: tools
+  answers_column: answers
+
+data:
+  n_train: 15000
+  n_validation: 1000
+  n_test: 1000
+  min_query_chars: 10
+  max_query_chars: 2000
+  dedupe_key: normalized_query
+
+formatting:
+  system_prompt: >
+    You are a tool-calling model. Select the correct tool and return only
+    the JSON tool call. Do not include explanations.
+  template_policy: tokenizer_chat_template
+  target_format: json_tool_call
+
+train:
+  epochs: 2
+  per_device_batch_size: 8
+  gradient_accumulation_steps: 2
+  learning_rate: 0.0002
+  scheduler: cosine
+  warmup_ratio: 0.03
+  max_sequence_length: 2048
+  quantization: nf4-4bit
+  compute_dtype: bfloat16
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+eval:
+  split: test
+  temperature: 0.0
+  do_sample: false
+  max_new_tokens: 512
+  parser_version: sommelier.parser.v1
+
+remote:
+  enabled: true
+  gpu: A10G
+  data_timeout_seconds: 1800
+  train_timeout_seconds: 14400
+  eval_timeout_seconds: 7200
+
+report:
+  retain_raw_generations: true
+  redact_fields: []
