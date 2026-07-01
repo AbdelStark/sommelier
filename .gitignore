@@ -40,14 +40,9 @@ venv/
 .agents/
 .claude/
 
-# GenoLeWM caches and outputs
-.geno-lewm-cache/
-.geno-lewm-logs/
-runs/
-/configs/first_experiment/inputs/
 
 # Pipeline artifact output
-artifacts/
+**/artifacts/
 
 # Local release/eval smoke + pipeline output directories
 .eval-smoke/
