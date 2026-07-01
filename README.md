@@ -17,7 +17,7 @@ The project does not claim production serving readiness, broad agent reliability
 
 ## Current Code
 
-The package exposes configuration validation, fixture-mode data and formatting stage stubs with run manifests, and a Modal smoke entrypoint.
+The package exposes configuration validation, dataset preparation with deterministic splits, fixture-mode stage stubs, and a Modal smoke entrypoint.
 
 ```bash
 uv sync --extra dev
@@ -26,9 +26,12 @@ uv run mypy sommelier tests
 uv run pytest
 uv run sommelier config validate --config examples/config.smoke.yaml
 uv run sommelier data validate-fixtures
-uv run sommelier data prepare --config examples/config.smoke.yaml --out artifacts/runs/local/data --run-id local
+uv run sommelier data prepare --config examples/config.smoke.yaml --input tests/fixtures/preparation_rows.jsonl --out artifacts/runs/local/data --run-id local
+uv run sommelier data prepare --config examples/config.smoke.yaml --fixture --out artifacts/runs/local/data --run-id local
 uv run python sommelier_entrypoint.py
 ```
+
+Optional GPU coarse filtering is available with `uv sync --extra data-gpu` and the `--gpu` flag on `sommelier data prepare`.
 
 ## Diagram
 

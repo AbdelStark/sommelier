@@ -14,6 +14,7 @@ dependencies = [
 sommelier = "sommelier.cli:main"
 
 [project.optional-dependencies]
+data-gpu = ["cudf-cu12"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.9.0",
@@ -45,5 +46,5 @@ warn_unused_configs = true
 packages = ["sommelier", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["modal", "modal.*"]
+module = ["modal", "modal.*", "cudf", "cudf.*"]
 ignore_missing_imports = true

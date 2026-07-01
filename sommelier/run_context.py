@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -143,6 +142,3 @@ def read_jsonl_records(path: Path) -> list[dict[str, object]]:
     return records
 
 
-def query_digest(query: str) -> str:
-    normalized = " ".join(query.casefold().strip().split())
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
