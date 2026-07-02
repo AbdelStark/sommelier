@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +13,13 @@ from sommelier.evaluation.report import compare_evaluations, write_evaluation_re
 from sommelier.formatting.chat import build_formatted_splits
 from sommelier.manifests import create_run_id
 from sommelier.run_context import RunContext, ensure_run_context
+from sommelier.runtime_metadata import (
+    initialize_runtime_metadata,
+    peak_memory_from_training_metrics,
+    record_peak_gpu_memory,
+    record_stage_runtime,
+)
+from sommelier.training.metrics import METRICS_FILENAME
 from sommelier.training.qlora import train_adapter
 
 PipelineMode = Literal["smoke", "full"]
@@ -244,8 +252,23 @@ def run_pipeline(
         "--run-id",
         resolved_run_id,
     ]
+    initialize_runtime_metadata(context.run_dir, gpu=config.remote.gpu)
     active_stages = stages if stages is not None else PipelineStages()
-    for _stage_name, stage_fn in active_stages.ordered():
+    for stage_name, stage_fn in active_stages.ordered():
+        started = time.monotonic()
         stage_fn(paths, config, context, command)
+        record_stage_runtime(
+            context.run_dir,
+            stage=stage_name,
+            elapsed_seconds=time.monotonic() - started,
+            gpu=config.remote.gpu,
+        )
+        if stage_name == "train":
+            record_peak_gpu_memory(
+                context.run_dir,
+                peak_memory_from_training_metrics(
+                    paths.train_dir.parent / METRICS_FILENAME
+                ),
+            )
 
     return resolved_run_id

@@ -27,6 +27,7 @@ from sommelier.manifests import (
 )
 from sommelier.redaction import redact_configured_fields
 from sommelier.run_context import RunContext, read_jsonl_records, record_stage_success
+from sommelier.runtime_metadata import runtime_section
 from sommelier.security import validate_no_secrets
 
 EVALUATION_REPORT_SCHEMA: Final = "sommelier.evaluation_report.v1"
@@ -301,6 +302,7 @@ def compare_evaluations(
             "generation_artifact": adapter_report["generation_artifact"],
         },
         "deltas": deltas,
+        "runtime": runtime_section(run_dir),
     }
     comparison = redact_configured_fields(comparison, config.report.redact_fields)
     validate_no_secrets(comparison, context="comparison report")

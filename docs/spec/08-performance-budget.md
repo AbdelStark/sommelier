@@ -56,7 +56,11 @@ Each remote stage records:
 - hardware type,
 - package install/cache time when measurable.
 
-Profiling data is written to the stage manifest and report JSON.
+Profiling data is written to the stage manifest and report JSON. Observed
+cost and peak GPU memory are evidence, not guarantees: when the provider or
+hardware does not expose a measurement, the report marks it unavailable
+explicitly (`cost_source: unavailable`, `peak_gpu_memory_mb: null`) rather
+than recording zero.
 
 ## Regression Thresholds
 
