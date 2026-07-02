@@ -201,6 +201,11 @@ def build_default_trainer(config: SommelierConfig) -> AdapterTrainer:
                 lr_scheduler_type=config.train.scheduler,
                 warmup_ratio=config.train.warmup_ratio,
                 bf16=True,
+                # Explicit rather than relying on peft's kbit-preparation
+                # defaults: an 8B model at batch 8 without checkpointing
+                # exceeded a 44 GiB GPU in the first full run.
+                gradient_checkpointing=True,
+                gradient_checkpointing_kwargs={"use_reentrant": False},
                 eval_strategy="epoch",
                 save_strategy="no",
                 logging_steps=1,

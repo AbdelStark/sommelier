@@ -210,6 +210,10 @@ def run_remote_pipeline(
     run_id: str | None = None,
 ) -> dict[str, object]:
     os.environ.setdefault("HF_HOME", "/hf-cache")
+    # Long-sequence batches fragment the allocator; expandable segments
+    # avoid OOM from reserved-but-unallocated blocks (set before torch
+    # initializes CUDA inside the stages).
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     from sommelier.pipeline import run_pipeline
 
