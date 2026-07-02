@@ -5,7 +5,12 @@ from typing import Final, Protocol
 
 from sommelier.artifacts import ArtifactRef, make_artifact_ref
 from sommelier.config import SommelierConfig
-from sommelier.errors import ExternalDependencyError, UserInputError
+from sommelier.errors import (
+    ExternalDependencyError,
+    ResourceError,
+    SommelierError,
+    UserInputError,
+)
 from sommelier.manifests import (
     StageManifest,
     build_stage_manifest,
@@ -57,6 +62,47 @@ def _read_split(formatted_dir: Path, split: str) -> list[dict[str, object]]:
                 hint="Rebuild the formatted splits with the current pipeline version.",
             )
     return records
+
+
+def map_resource_failure(
+    error: BaseException,
+    config: SommelierConfig,
+) -> ResourceError | None:
+    """Maps OOM and timeout failures to actionable ResourceErrors (exit 4).
+
+    The hint names the exact config fields to change; Sommelier never
+    retries with silently altered batch, sequence, or GPU settings
+    (RFC-0004). Unrecognized failures return None and propagate unchanged.
+    """
+    lowered = str(error).lower()
+    is_oom = (
+        type(error).__name__ == "OutOfMemoryError" or "out of memory" in lowered
+    )
+    if is_oom:
+        return ResourceError(
+            "training ran out of GPU memory",
+            hint=(
+                "Current settings: "
+                f"train.per_device_batch_size={config.train.per_device_batch_size}, "
+                f"train.gradient_accumulation_steps="
+                f"{config.train.gradient_accumulation_steps}, "
+                f"train.max_sequence_length={config.train.max_sequence_length}, "
+                f"remote.gpu={config.remote.gpu}. Reduce the batch size or "
+                "sequence length, or select a larger GPU; Sommelier does not "
+                "change these values automatically."
+            ),
+        )
+    is_timeout = isinstance(error, TimeoutError) or "timed out" in lowered
+    if is_timeout:
+        return ResourceError(
+            "training exceeded its time budget",
+            hint=(
+                f"remote.train_timeout_seconds={config.remote.train_timeout_seconds}. "
+                "Raise the timeout, reduce train.epochs, or shrink the split "
+                "sizes; Sommelier does not retry automatically."
+            ),
+        )
+    return None
 
 
 def build_default_trainer(config: SommelierConfig) -> AdapterTrainer:
@@ -202,7 +248,15 @@ def train_adapter(
 
     active_trainer = trainer if trainer is not None else build_default_trainer(config)
     out_dir.mkdir(parents=True, exist_ok=True)
-    result = active_trainer.train(train_examples, validation_examples, out_dir)
+    try:
+        result = active_trainer.train(train_examples, validation_examples, out_dir)
+    except SommelierError:
+        raise
+    except Exception as error:
+        mapped = map_resource_failure(error, config)
+        if mapped is not None:
+            raise mapped from error
+        raise
 
     metrics = build_training_metrics(
         result["history"],
