@@ -40,7 +40,7 @@ train:
   learning_rate: 0.0002
   scheduler: cosine
   warmup_ratio: 0.03
-  max_sequence_length: 1024
+  max_sequence_length: 2048
   quantization: nf4-4bit
   compute_dtype: bfloat16
   lora_rank: 8
