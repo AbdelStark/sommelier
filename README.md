@@ -32,6 +32,7 @@ The package exposes configuration validation, dataset preparation with determini
 | `sommelier report compare` | Implemented (comparison gate + `comparison_report.json`; Markdown rendering lands with #37) |
 | `sommelier pipeline run` | Implemented (`--mode smoke` bounds split sizes and uses a `smoke-` run ID; `--mode full` runs configured sizes; chains data → format → base eval → train → adapter eval → compare). Train/eval stages need the model stack, so end-to-end runs happen remotely |
 | `sommelier serve adapter` | Implemented (optional, illustrative single-adapter endpoint; requires the serving stack, so it typically runs remotely) |
+| `sommelier release preflight` | Implemented (license, notices, acknowledgement, lock, and artifact secret gates; writes `release_preflight.json`). Acknowledge the base model license with `SOMMELIER_ACK_BASE_MODEL_LICENSE=<base_model_id>` |
 
 Command names and flags follow [docs/spec/02-public-api.md](docs/spec/02-public-api.md#cli-contract).
 

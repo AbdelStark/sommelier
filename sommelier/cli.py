@@ -154,6 +154,16 @@ def build_parser() -> argparse.ArgumentParser:
     pipeline_run_parser.add_argument("--run-id", type=str, default=None)
     pipeline_run_parser.set_defaults(handler=cmd_pipeline_run)
 
+    release_parser = subparsers.add_parser("release", help="Release gate commands.")
+    release_subparsers = release_parser.add_subparsers(dest="release_command", required=True)
+
+    preflight_parser = release_subparsers.add_parser(
+        "preflight",
+        help="Run the license and artifact release preflight.",
+    )
+    preflight_parser.add_argument("--config", required=True, type=Path)
+    preflight_parser.set_defaults(handler=cmd_release_preflight)
+
     serve_parser = subparsers.add_parser("serve", help="Optional serving commands.")
     serve_subparsers = serve_parser.add_subparsers(dest="serve_command", required=True)
 
@@ -394,6 +404,21 @@ def cmd_pipeline_run(args: argparse.Namespace) -> int:
         project_root=Path.cwd(),
     )
     print(f"pipeline run ok: mode={args.mode} run_id={run_id}")
+    return 0
+
+
+def cmd_release_preflight(args: argparse.Namespace) -> int:
+    from sommelier.release import PREFLIGHT_FILENAME, run_release_preflight
+
+    config = load_config(args.config)
+    config_dir = args.config.resolve().parent
+    artifact_root = (config_dir / config.project.artifact_root).resolve()
+    run_release_preflight(
+        config,
+        project_root=Path.cwd(),
+        artifact_root=artifact_root,
+    )
+    print(f"release preflight ok: {artifact_root / PREFLIGHT_FILENAME}")
     return 0
 
 

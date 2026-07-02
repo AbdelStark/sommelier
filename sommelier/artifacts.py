@@ -23,6 +23,7 @@ SUPPORTED_SCHEMAS = frozenset(
         "sommelier.log_event.v1",
         "sommelier.comparison_report.v1",
         "sommelier.training_metric.v1",
+        "sommelier.release_preflight.v1",
     }
 )
 
