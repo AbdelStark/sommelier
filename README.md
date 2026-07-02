@@ -49,6 +49,17 @@ uv run python sommelier_entrypoint.py
 
 Optional GPU coarse filtering is available with `uv sync --extra data-gpu` and the `--gpu` flag on `sommelier data prepare`.
 
+### Remote dependency images
+
+Remote stages use separate Modal images defined in
+`sommelier.remote.images`: a data image (GPU dataframe stack from the
+NVIDIA index), a training image (torch/transformers/trl/peft/bitsandbytes/
+accelerate/datasets), an evaluation image (torch/transformers/datasets),
+and an optional serving image. Images are constructed lazily and never
+imported at package import time. GPU selection and per-stage timeouts come
+from the validated `remote` config section via `stage_options`. Version
+pins land after the first green remote smoke run.
+
 ### Optional extras boundary
 
 `import sommelier` never imports GPU, remote execution, or tracking
