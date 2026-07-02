@@ -18,6 +18,7 @@ from sommelier.manifests import (
     write_stage_manifest,
 )
 from sommelier.run_context import RunContext, read_jsonl_records
+from sommelier.tracking import track_stage_metrics
 from sommelier.training.collators import CompletionOnlyCollator
 from sommelier.training.metrics import (
     METRICS_FILENAME,
@@ -264,6 +265,12 @@ def train_adapter(
     )
     metrics_path = out_dir.parent / METRICS_FILENAME
     write_training_metrics(metrics_path, metrics)
+    track_stage_metrics(
+        config,
+        context,
+        stage="train",
+        records=[dict(metric) for metric in metrics],
+    )
 
     adapter_files = sorted(path for path in out_dir.rglob("*") if path.is_file())
     if not adapter_files:

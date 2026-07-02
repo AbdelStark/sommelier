@@ -72,3 +72,8 @@ remote:
 report:
   retain_raw_generations: true
   redact_fields: []
+
+tracking:
+  enabled: false
+  provider: wandb
+  project: sommelier

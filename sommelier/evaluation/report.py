@@ -29,6 +29,7 @@ from sommelier.redaction import redact_configured_fields
 from sommelier.run_context import RunContext, read_jsonl_records, record_stage_success
 from sommelier.runtime_metadata import runtime_section
 from sommelier.security import validate_no_secrets
+from sommelier.tracking import track_stage_metrics
 
 EVALUATION_REPORT_SCHEMA: Final = "sommelier.evaluation_report.v1"
 COMPARISON_REPORT_SCHEMA: Final = "sommelier.comparison_report.v1"
@@ -201,6 +202,12 @@ def write_evaluation_report(
         seed=config.project.seed,
         inputs=[test_ref, generations_ref],
         outputs=[generations_ref, report_ref],
+    )
+    track_stage_metrics(
+        config,
+        context,
+        stage=f"eval-{model_kind}",
+        records=[{name: value["value"] for name, value in metrics.items()}],
     )
     return report_ref
 

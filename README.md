@@ -63,7 +63,9 @@ pins land after the first green remote smoke run.
 ### Optional extras boundary
 
 `import sommelier` never imports GPU, remote execution, or tracking
-packages. Heavy dependencies stay behind optional extras (for example
+packages. External experiment tracking (wandb) is opt-in via the
+`tracking` config section; when disabled (the default), local artifacts
+and reports are complete on their own, and wandb is never imported. Heavy dependencies stay behind optional extras (for example
 `data-gpu`) and are imported inside stage functions only when a command
 needs them, so contributors on non-GPU machines can run the full local
 suite. `tests/test_imports.py` enforces this boundary in CI.

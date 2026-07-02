@@ -92,9 +92,10 @@ class SommelierConfig(BaseModel):
     eval: EvalConfig
     remote: RemoteConfig
     report: ReportConfig
+    tracking: TrackingConfig
 ```
 
-Validation is strict. Unknown fields are rejected to avoid silently misspelled hyperparameters.
+Validation is strict. Unknown fields are rejected to avoid silently misspelled hyperparameters. The `tracking` section is optional and defaults to disabled external experiment tracking; omitting it keeps existing configs valid.
 
 ## Versioning Policy
 
