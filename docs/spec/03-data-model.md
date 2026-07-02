@@ -14,7 +14,10 @@ All persisted JSON and JSONL records include a `schema_version` field. v1.0 acce
 - `sommelier.formatted_example.v1`
 - `sommelier.generation.v1`
 - `sommelier.evaluation_report.v1`
+- `sommelier.comparison_report.v1`
 - `sommelier.manifest.v1`
+- `sommelier.log_event.v1`
+- `sommelier.drop_summary.v1`
 
 Readers fail closed on unknown schema versions.
 
@@ -107,6 +110,7 @@ class MetricValue(TypedDict):
 
 class EvaluationReport(TypedDict):
     schema_version: Literal["sommelier.evaluation_report.v1"]
+    created_at: str
     run_id: str
     model_kind: Literal["base", "adapter"]
     config_sha256: str
@@ -123,7 +127,18 @@ class EvaluationReport(TypedDict):
     ]
     generation_artifact: str
     parser_version: str
+    test_split_sha256: str
+    prompt_set_sha256: str
+    decoding: dict[str, Any]
 ```
+
+`test_split_sha256` digests the formatted test split file, and
+`prompt_set_sha256` digests the ordered per-example prompt digests; together
+with `parser_version` and `decoding` they are the identity the comparison
+gate checks (INV-DATA-006). The comparison report
+(`sommelier.comparison_report.v1`) embeds both metric sets, the shared
+identity fields, and per-metric deltas; it is written only when every
+identity field matches.
 
 ## Artifact Reference
 

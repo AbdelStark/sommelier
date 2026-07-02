@@ -274,6 +274,7 @@ def cmd_eval_run(args: argparse.Namespace) -> int:
         )
 
     from sommelier.evaluation.generate import run_generation
+    from sommelier.evaluation.report import write_evaluation_report
 
     config = load_config(args.config)
     run_id = args.run_id or infer_run_id_from_path(args.data.resolve())
@@ -309,6 +310,14 @@ def cmd_eval_run(args: argparse.Namespace) -> int:
         command=command,
         adapter_dir=args.adapter.resolve() if args.adapter is not None else None,
     )
+    write_evaluation_report(
+        config,
+        formatted_dir=args.data.resolve(),
+        eval_dir=args.out.resolve(),
+        model_kind=args.model,
+        context=context,
+        command=command,
+    )
     print(f"eval run ok: run_id={context.run_id} out={args.out}")
     return 0
 
@@ -318,7 +327,27 @@ def cmd_train_run(args: argparse.Namespace) -> int:
 
 
 def cmd_report_compare(args: argparse.Namespace) -> int:
-    raise _not_implemented("report compare", 27)
+    from sommelier.evaluation.report import compare_evaluations
+
+    command = [
+        "sommelier",
+        "report",
+        "compare",
+        "--base",
+        str(args.base),
+        "--adapter",
+        str(args.adapter),
+        "--out",
+        str(args.out),
+    ]
+    compare_evaluations(
+        args.base.resolve(),
+        args.adapter.resolve(),
+        args.out.resolve(),
+        command=command,
+    )
+    print(f"report compare ok: out={args.out}")
+    return 0
 
 
 def cmd_pipeline_run(args: argparse.Namespace) -> int:
