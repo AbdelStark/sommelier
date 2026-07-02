@@ -19,6 +19,7 @@ SUPPORTED_SCHEMAS = frozenset(
         "sommelier.formatted_example.v1",
         "sommelier.generation.v1",
         "sommelier.evaluation_report.v1",
+        "sommelier.drop_summary.v1",
     }
 )
 

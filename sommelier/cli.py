@@ -6,7 +6,11 @@ import traceback
 from pathlib import Path
 
 from sommelier.config import load_config, write_resolved_config
-from sommelier.data.prepare import prepare_dataset_fixture, validate_fixture_files
+from sommelier.data.prepare import (
+    prepare_dataset_fixture,
+    prepare_dataset_from_file,
+    validate_fixture_files,
+)
 from sommelier.errors import SommelierError, format_cli_error
 from sommelier.formatting.chat import build_formatted_splits_fixture
 from sommelier.run_context import ensure_run_context, infer_run_id_from_path
@@ -33,11 +37,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     prepare_parser = data_subparsers.add_parser(
         "prepare",
-        help="Prepare dataset splits from fixture rows.",
+        help="Prepare dataset splits from raw JSONL rows.",
     )
     prepare_parser.add_argument("--config", required=True, type=Path)
     prepare_parser.add_argument("--out", required=True, type=Path)
     prepare_parser.add_argument("--run-id", type=str, default=None)
+    prepare_parser.add_argument(
+        "--input",
+        type=Path,
+        help="Raw JSONL input with sommelier.raw_tool_call_row.v1 records.",
+    )
+    prepare_parser.add_argument(
+        "--fixture",
+        action="store_true",
+        help="Use synthetic fixture rows instead of real validation and splitting.",
+    )
+    prepare_parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Apply GPU dataframe coarse filtering before Python validation.",
+    )
 
     validate_fixtures_parser = data_subparsers.add_parser(
         "validate-fixtures",
@@ -83,12 +102,27 @@ def cmd_data_prepare(args: argparse.Namespace) -> int:
     command = ["sommelier", "data", "prepare", "--config", str(args.config), "--out", str(args.out)]
     if args.run_id is not None:
         command.extend(["--run-id", args.run_id])
-    prepare_dataset_fixture(
-        config,
-        out_dir=args.out.resolve(),
-        context=context,
-        command=command,
-    )
+    if args.fixture:
+        command.append("--fixture")
+        prepare_dataset_fixture(
+            config,
+            out_dir=args.out.resolve(),
+            context=context,
+            command=command,
+        )
+    else:
+        input_path = args.input or Path("tests/fixtures/preparation_rows.jsonl")
+        command.extend(["--input", str(input_path)])
+        if args.gpu:
+            command.append("--gpu")
+        prepare_dataset_from_file(
+            config,
+            input_path=input_path.resolve(),
+            out_dir=args.out.resolve(),
+            context=context,
+            command=command,
+            use_gpu=args.gpu,
+        )
     print(f"data prepare ok: run_id={context.run_id} out={args.out}")
     return 0
 
