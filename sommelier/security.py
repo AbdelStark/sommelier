@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 from typing import Any
 
 from sommelier.errors import SecurityPolicyError
@@ -29,6 +31,40 @@ SECRET_VALUE_PATTERNS = (
     re.compile(r"^ghp_[A-Za-z0-9]{20,}$"),
     re.compile(r"^xox[baprs]-[A-Za-z0-9\-]{10,}$"),
 )
+
+SECRET_TEXT_PATTERNS = (
+    re.compile(r"hf_[A-Za-z0-9]{20,}"),
+    re.compile(r"sk-[A-Za-z0-9\-_]{20,}"),
+    re.compile(r"ghp_[A-Za-z0-9]{20,}"),
+    re.compile(r"xox[baprs]-[A-Za-z0-9\-]{10,}"),
+)
+
+SENSITIVE_ENV_NAME_MARKERS = ("TOKEN", "KEY", "SECRET", "PASSWORD")
+
+REDACTED_PLACEHOLDER = "[redacted]"
+
+_MIN_ENV_SECRET_LENGTH = 8
+
+
+def redact_text(text: str) -> str:
+    """Redacts token-like values, sensitive env values, and home paths.
+
+    This is the write-time redaction applied to log messages and other
+    security-sensitive text artifacts per docs/spec/05-observability.md.
+    """
+    redacted = text
+    for pattern in SECRET_TEXT_PATTERNS:
+        redacted = pattern.sub(REDACTED_PLACEHOLDER, redacted)
+    for name, value in os.environ.items():
+        if len(value) < _MIN_ENV_SECRET_LENGTH:
+            continue
+        upper_name = name.upper()
+        if any(marker in upper_name for marker in SENSITIVE_ENV_NAME_MARKERS):
+            redacted = redacted.replace(value, REDACTED_PLACEHOLDER)
+    home = Path.home().as_posix()
+    if len(home) > 1:
+        redacted = redacted.replace(home, "~")
+    return redacted
 
 
 def _is_sensitive_key(key: str) -> bool:
