@@ -59,5 +59,15 @@ module = [
     "peft.*",
     "wandb",
     "wandb.*",
+    "fastapi",
+    "fastapi.*",
+    "uvicorn",
+    "uvicorn.*",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# fastapi decorators resolve as Any when the optional serving stack is not
+# installed in the type-checking environment.
+module = ["sommelier.serving.openai_compat"]
+disallow_untyped_decorators = false

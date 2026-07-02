@@ -108,21 +108,21 @@ def test_subcommand_help_exits_zero(
     assert excinfo.value.code == 0
 
 
-@pytest.mark.parametrize(
-    ("argv", "issue"),
-    [
-        (SPEC_COMMANDS[10], 40),
-    ],
-    ids=("serve",),
-)
-def test_pending_commands_fail_explicitly(
-    argv: list[str], issue: int, capsys: pytest.CaptureFixture[str]
+def test_serve_adapter_requires_existing_adapter_dir(
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    exit_code = main(argv)
-    captured = capsys.readouterr()
-    assert exit_code == 5
-    assert "not implemented yet" in captured.err
-    assert f"#{issue}" in captured.err
+    exit_code = main(
+        [
+            "serve",
+            "adapter",
+            "--config",
+            "examples/config.smoke.yaml",
+            "--adapter",
+            "does/not/exist",
+        ]
+    )
+    assert exit_code == 2
+    assert "adapter directory not found" in capsys.readouterr().err
 
 
 def test_eval_adapter_requires_adapter_path(capsys: pytest.CaptureFixture[str]) -> None:

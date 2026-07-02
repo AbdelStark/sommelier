@@ -19,13 +19,6 @@ from sommelier.formatting.chat import (
 from sommelier.run_context import ensure_run_context, infer_run_id_from_path
 
 
-def _not_implemented(command: str, issue: int) -> SommelierError:
-    return SommelierError(
-        f"command not implemented yet: {command}",
-        hint=f"Implementation is tracked in issue #{issue}.",
-    )
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sommelier")
     parser.add_argument("--debug", action="store_true", help="Show stack traces for errors.")
@@ -170,6 +163,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_adapter_parser.add_argument("--config", required=True, type=Path)
     serve_adapter_parser.add_argument("--adapter", required=True, type=Path)
+    serve_adapter_parser.add_argument("--host", type=str, default="127.0.0.1")
+    serve_adapter_parser.add_argument("--port", type=int, default=8000)
     serve_adapter_parser.set_defaults(handler=cmd_serve_adapter)
 
     return parser
@@ -403,7 +398,16 @@ def cmd_pipeline_run(args: argparse.Namespace) -> int:
 
 
 def cmd_serve_adapter(args: argparse.Namespace) -> int:
-    raise _not_implemented("serve adapter", 40)
+    from sommelier.serving.openai_compat import serve_adapter
+
+    config = load_config(args.config)
+    serve_adapter(
+        config,
+        args.adapter.resolve(),
+        host=args.host,
+        port=args.port,
+    )
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
