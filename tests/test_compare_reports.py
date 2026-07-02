@@ -138,6 +138,14 @@ def test_comparison_writes_report_and_deltas(tmp_path: Path) -> None:
     assert manifest["stage"] == "report"
     assert manifest["status"] == "succeeded"
 
+    markdown_path = out_dir / "comparison_report.md"
+    assert markdown_path.exists()
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert "# Sommelier Comparison Report" in markdown
+    assert "## Limitations" in markdown
+    output_kinds = {ref["kind"] for ref in manifest["outputs"]}
+    assert output_kinds == {"comparison_report", "comparison_report_markdown"}
+
 
 def tamper_report(eval_dir: Path, field: str, value: object) -> None:
     path = eval_dir / "evaluation_report.json"
