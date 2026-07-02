@@ -111,10 +111,9 @@ def test_subcommand_help_exits_zero(
 @pytest.mark.parametrize(
     ("argv", "issue"),
     [
-        (SPEC_COMMANDS[8], 35),
         (SPEC_COMMANDS[10], 40),
     ],
-    ids=("pipeline", "serve"),
+    ids=("serve",),
 )
 def test_pending_commands_fail_explicitly(
     argv: list[str], issue: int, capsys: pytest.CaptureFixture[str]

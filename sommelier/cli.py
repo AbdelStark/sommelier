@@ -152,6 +152,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pipeline_run_parser.add_argument("--config", required=True, type=Path)
     pipeline_run_parser.add_argument("--mode", required=True, choices=["smoke", "full"])
+    pipeline_run_parser.add_argument(
+        "--input",
+        type=Path,
+        default=Path("tests/fixtures/preparation_rows.jsonl"),
+        help="Raw JSONL input with sommelier.raw_tool_call_row.v1 records.",
+    )
+    pipeline_run_parser.add_argument("--run-id", type=str, default=None)
     pipeline_run_parser.set_defaults(handler=cmd_pipeline_run)
 
     serve_parser = subparsers.add_parser("serve", help="Optional serving commands.")
@@ -382,7 +389,17 @@ def cmd_report_compare(args: argparse.Namespace) -> int:
 
 
 def cmd_pipeline_run(args: argparse.Namespace) -> int:
-    raise _not_implemented("pipeline run", 35)
+    from sommelier.pipeline import run_pipeline
+
+    run_id = run_pipeline(
+        args.config,
+        mode=args.mode,
+        input_path=args.input,
+        run_id=args.run_id,
+        project_root=Path.cwd(),
+    )
+    print(f"pipeline run ok: mode={args.mode} run_id={run_id}")
+    return 0
 
 
 def cmd_serve_adapter(args: argparse.Namespace) -> int:
