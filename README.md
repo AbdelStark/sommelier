@@ -70,6 +70,35 @@ and reports are complete on their own, and wandb is never imported. Heavy depend
 needs them, so contributors on non-GPU machines can run the full local
 suite. `tests/test_imports.py` enforces this boundary in CI.
 
+## Serving (optional and illustrative)
+
+`sommelier serve adapter` starts a single-adapter inference endpoint for
+manual inspection of a trained adapter. It is deliberately not a
+production serving system: it offers no production readiness, no
+autoscaling, no multi-tenant isolation, no streaming, and no
+authentication beyond the remote provider boundary
+([RFC-0010](docs/rfcs/RFC-0010-optional-inference-service.md)). The core
+evaluation claim of this project never depends on serving.
+
+The endpoint reuses the evaluation prompt policy and the conservative
+parser, so responses report `parse_status` instead of repairing invalid
+output. One manual inspection request:
+
+```bash
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [{"role": "user", "content": "What is the weather in Paris today?"}],
+    "tools": [{"name": "lookup_weather", "description": "Look up weather for a city.",
+               "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}],
+    "temperature": 0.0,
+    "max_tokens": 256
+  }'
+```
+
+The response contains `raw_text`, `parsed_call`, `parse_status`, and
+`model_kind`.
+
 ## Diagram
 
 ![AI Agent lifecycle](./docs/img/gtcdc25-nemo-diagram.png)
