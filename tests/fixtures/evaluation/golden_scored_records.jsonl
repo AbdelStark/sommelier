@@ -1,0 +1,14 @@
+{"example_id": "ok_exact_object", "gold_call": {"arguments": {"city": "Paris", "units": "metric"}, "name": "lookup_weather"}, "parse_status": "ok", "parsed_call": {"arguments": {"city": "Paris", "units": "metric"}, "name": "lookup_weather"}}
+{"example_id": "ok_array_with_prose", "gold_call": {"arguments": {"city": "Paris", "units": "metric"}, "name": "lookup_weather"}, "parse_status": "ok", "parsed_call": {"arguments": {"city": "Paris", "units": "metric"}, "name": "lookup_weather"}}
+{"example_id": "ok_wrong_function_name", "gold_call": {"arguments": {"city": "Paris", "units": "metric"}, "name": "lookup_weather"}, "parse_status": "ok", "parsed_call": {"arguments": {"city": "Paris", "units": "metric"}, "name": "get_weather"}}
+{"example_id": "ok_missing_argument_key", "gold_call": {"arguments": {"city": "Paris", "units": "metric"}, "name": "lookup_weather"}, "parse_status": "ok", "parsed_call": {"arguments": {"city": "Paris"}, "name": "lookup_weather"}}
+{"example_id": "ok_extra_argument_key", "gold_call": {"arguments": {"city": "Paris", "units": "metric"}, "name": "lookup_weather"}, "parse_status": "ok", "parsed_call": {"arguments": {"city": "Paris", "lang": "fr", "units": "metric"}, "name": "lookup_weather"}}
+{"example_id": "ok_nested_value_mismatch", "gold_call": {"arguments": {"filters": {"price": {"max": 100, "min": 10}}, "query": "laptop"}, "name": "search_products"}, "parse_status": "ok", "parsed_call": {"arguments": {"filters": {"price": {"max": 100, "min": 20}}, "query": "laptop"}, "name": "search_products"}}
+{"example_id": "ok_list_order_swapped", "gold_call": {"arguments": {"cities": ["Berlin", "Rome"]}, "name": "compare_weather"}, "parse_status": "ok", "parsed_call": {"arguments": {"cities": ["Rome", "Berlin"]}, "name": "compare_weather"}}
+{"example_id": "no_json_refusal", "gold_call": {"arguments": {"city": "Paris"}, "name": "lookup_weather"}, "parse_status": "no_json", "parsed_call": null}
+{"example_id": "no_json_empty", "gold_call": {"arguments": {"city": "Paris"}, "name": "lookup_weather"}, "parse_status": "no_json", "parsed_call": null}
+{"example_id": "invalid_json_unclosed", "gold_call": {"arguments": {"city": "Paris"}, "name": "lookup_weather"}, "parse_status": "invalid_json", "parsed_call": null}
+{"example_id": "invalid_json_single_quotes", "gold_call": {"arguments": {"city": "Paris"}, "name": "lookup_weather"}, "parse_status": "invalid_json", "parsed_call": null}
+{"example_id": "invalid_shape_two_calls", "gold_call": {"arguments": {"city": "Paris"}, "name": "lookup_weather"}, "parse_status": "invalid_shape", "parsed_call": null}
+{"example_id": "invalid_shape_missing_arguments", "gold_call": {"arguments": {"city": "Paris"}, "name": "lookup_weather"}, "parse_status": "invalid_shape", "parsed_call": null}
+{"example_id": "invalid_shape_extra_call_key", "gold_call": {"arguments": {"city": "Paris"}, "name": "lookup_weather"}, "parse_status": "invalid_shape", "parsed_call": null}
