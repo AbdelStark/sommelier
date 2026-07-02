@@ -1,0 +1,27 @@
+{
+  "argument_exact_match": {
+    "denominator": 14,
+    "numerator": 3,
+    "value": 0.21428571428571427
+  },
+  "argument_f1": {
+    "denominator": 37,
+    "numerator": 22,
+    "value": 0.5945945945945946
+  },
+  "full_call_exact_match": {
+    "denominator": 14,
+    "numerator": 2,
+    "value": 0.14285714285714285
+  },
+  "function_name_accuracy": {
+    "denominator": 14,
+    "numerator": 6,
+    "value": 0.42857142857142855
+  },
+  "valid_json_rate": {
+    "denominator": 14,
+    "numerator": 7,
+    "value": 0.5
+  }
+}
