@@ -60,7 +60,12 @@ Logs and manifests must redact:
 - User home directory paths.
 - Environment variable values whose names contain `TOKEN`, `KEY`, `SECRET`, or `PASSWORD`.
 
-The redaction scanner runs before writing reports and failed manifests.
+The redaction scanner runs before writing reports and failed manifests. It
+covers JSONL logs, JSON manifests and artifacts, and Markdown reports under
+an artifact tree, and it reports the file, location, and finding kind for
+each hit. Release preflight fails closed (exit code 5) when any finding is
+present. Configured report fields (`report.redact_fields`) are replaced with
+`[redacted]` wherever the field name appears in a JSON tree.
 
 ## Reports
 
