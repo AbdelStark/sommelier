@@ -17,7 +17,7 @@ The project does not claim production serving readiness, broad agent reliability
 
 ## Current Code
 
-The package exposes configuration validation, dataset preparation with deterministic splits, fixture-mode stage stubs, and a Modal smoke entrypoint.
+The package exposes configuration validation, dataset preparation with deterministic splits, fixture-mode stage stubs, and a Modal smoke app. The remote app lives in `sommelier.remote.app` (modal imported lazily, per the optional extras boundary); `sommelier_entrypoint.py` is a thin compatibility wrapper that materializes it.
 
 ### Commands
 
