@@ -20,6 +20,7 @@ SUPPORTED_SCHEMAS = frozenset(
         "sommelier.generation.v1",
         "sommelier.evaluation_report.v1",
         "sommelier.drop_summary.v1",
+        "sommelier.log_event.v1",
     }
 )
 

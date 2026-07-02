@@ -15,10 +15,11 @@ Observability exists to make a run reproducible and debuggable. It must answer:
 
 ## Logs
 
-Sommelier emits structured JSON lines to `logs/<stage>.jsonl`:
+Sommelier emits structured JSON lines to `runs/<run_id>/logs/<stage>.jsonl`:
 
 ```python
 class LogEvent(TypedDict):
+    schema_version: Literal["sommelier.log_event.v1"]
     timestamp: str
     level: Literal["debug", "info", "warning", "error"]
     run_id: str
@@ -27,6 +28,10 @@ class LogEvent(TypedDict):
     message: str
     fields: dict[str, str | int | float | bool | None]
 ```
+
+Log field values must be JSON-native scalars. Non-finite numbers are
+rejected at write time. Messages and string fields are redacted before they
+reach disk (see Redaction below).
 
 Human-readable console output is a rendering of the structured events, not the source of truth.
 
