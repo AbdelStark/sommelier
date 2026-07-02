@@ -130,6 +130,7 @@ def test_comparison_writes_report_and_deltas(tmp_path: Path) -> None:
     assert comparison["deltas"]["valid_json_rate"] == 1.0
     assert comparison["deltas"]["function_name_accuracy"] == 1.0
     assert comparison["shared"]["parser_version"] == "sommelier.parser.v1"
+    assert comparison["runtime"] == {"available": False}
 
     manifest = json.loads(
         (context.run_dir / "report_manifest.json").read_text(encoding="utf-8")
@@ -204,6 +205,27 @@ def test_report_rejects_prompt_digest_mismatch(tmp_path: Path) -> None:
             context=context,
             command=["test"],
         )
+
+
+def test_comparison_renders_runtime_metadata_when_present(tmp_path: Path) -> None:
+    from sommelier.runtime_metadata import (
+        initialize_runtime_metadata,
+        record_stage_runtime,
+    )
+
+    context, base_dir, adapter_dir, out_dir = setup_comparison(tmp_path)
+    initialize_runtime_metadata(context.run_dir, gpu="A10G")
+    record_stage_runtime(context.run_dir, stage="train", elapsed_seconds=42.0, gpu="A10G")
+
+    compare_evaluations(base_dir, adapter_dir, out_dir, command=["test"])
+
+    comparison = json.loads((out_dir / "comparison_report.json").read_text(encoding="utf-8"))
+    runtime = comparison["runtime"]
+    assert runtime["available"] is True
+    assert runtime["stages"]["train"]["elapsed_seconds"] == 42.0
+    assert runtime["hardware"]["gpu"] == "A10G"
+    assert runtime["cost_source"] == "unavailable"
+    assert runtime["observed_cost_usd"] is None
 
 
 def test_find_run_layout_rejects_foreign_paths(tmp_path: Path) -> None:
