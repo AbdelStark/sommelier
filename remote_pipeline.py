@@ -105,13 +105,15 @@ def _audit_sequence_lengths(paths, config) -> None:  # type: ignore[no-untyped-d
         split_path = paths.formatted_dir / f"{split}.jsonl"
         for line in split_path.read_text(encoding="utf-8").splitlines():
             record = json.loads(line)
-            prompt_tokens = len(tokenizer.encode(record["prompt_text"], add_special_tokens=False))
             full_tokens = len(tokenizer.encode(record["full_text"], add_special_tokens=False))
             lengths.append(full_tokens)
-            if prompt_tokens >= max_len:
+            if full_tokens > max_len:
+                # Anything over budget either loses target tokens to
+                # truncation (silently corrupting labels) or, when the
+                # prompt alone exceeds it, fails the collator outright.
                 violations.append(
-                    f"{record['example_id']}: prompt {prompt_tokens} tokens "
-                    f">= max_sequence_length {max_len}"
+                    f"{record['example_id']}: full sequence {full_tokens} tokens "
+                    f"> max_sequence_length {max_len}"
                 )
     lengths.sort()
     print(
@@ -125,7 +127,8 @@ def _audit_sequence_lengths(paths, config) -> None:  # type: ignore[no-untyped-d
         raise UserInputError(
             f"{len(violations)} example(s) cannot fit train.max_sequence_length "
             f"{max_len}; first: {violations[0]}",
-            hint="Raise train.max_sequence_length above the longest prompt.",
+            hint="Raise train.max_sequence_length above the longest rendered "
+            "sequence.",
         )
 
 
