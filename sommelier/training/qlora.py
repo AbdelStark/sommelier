@@ -207,6 +207,10 @@ def build_default_trainer(config: SommelierConfig) -> AdapterTrainer:
                 report_to=[],
                 seed=config.project.seed,
                 include_num_input_tokens_seen=True,
+                # The completion-only collator consumes prompt_text and
+                # full_text; the Trainer's RemoveColumnsCollator wrapper
+                # would strip them before our collator runs.
+                remove_unused_columns=False,
             )
             trainer = Trainer(
                 model=model,

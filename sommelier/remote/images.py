@@ -36,14 +36,16 @@ class RemoteStageOptions(TypedDict):
     timeout: int
 
 
-def _base_image() -> modal.Image:
+def _python_base() -> modal.Image:
     import modal
 
-    return (
-        modal.Image.debian_slim(python_version=PYTHON_VERSION)
-        .pip_install(*BASE_PACKAGES)
-        .add_local_python_source("sommelier")
-    )
+    return modal.Image.debian_slim(python_version=PYTHON_VERSION).pip_install(*BASE_PACKAGES)
+
+
+def _with_source(image: modal.Image) -> modal.Image:
+    # add_local_python_source must be the final layer: Modal rejects build
+    # steps after a non-copy local-file layer at build time.
+    return image.add_local_python_source("sommelier")
 
 
 def data_image() -> modal.Image:
@@ -52,19 +54,14 @@ def data_image() -> modal.Image:
     cudf wheels come from the NVIDIA index; the image is only used by the
     remote data stage, never imported locally.
     """
-    import modal
-
-    return (
-        modal.Image.debian_slim(python_version=PYTHON_VERSION)
-        .pip_install(*BASE_PACKAGES)
-        .pip_install(*DATA_PACKAGES, extra_index_url=NVIDIA_INDEX_URL)
-        .add_local_python_source("sommelier")
+    return _with_source(
+        _python_base().pip_install(*DATA_PACKAGES, extra_index_url=NVIDIA_INDEX_URL)
     )
 
 
 def train_image() -> modal.Image:
     """Model loading, quantization, and adapter training stack."""
-    return _base_image().pip_install(*TRAIN_PACKAGES)
+    return _with_source(_python_base().pip_install(*TRAIN_PACKAGES))
 
 
 def eval_image() -> modal.Image:
@@ -74,12 +71,12 @@ def eval_image() -> modal.Image:
     included until the runner actually uses it, keeping the image truthful
     about its capabilities.
     """
-    return _base_image().pip_install(*EVAL_PACKAGES)
+    return _with_source(_python_base().pip_install(*EVAL_PACKAGES))
 
 
 def serving_image() -> modal.Image:
     """Optional OpenAI-compatible adapter serving stack."""
-    return _base_image().pip_install(*SERVING_PACKAGES)
+    return _with_source(_python_base().pip_install(*SERVING_PACKAGES))
 
 
 def stage_options(config: SommelierConfig, stage: PipelineStage) -> RemoteStageOptions:

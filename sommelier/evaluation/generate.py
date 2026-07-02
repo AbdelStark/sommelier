@@ -115,7 +115,14 @@ def load_model_generator(
 
     class _TransformersGenerator:
         def generate(self, prompt_text: str, *, decoding: DecodingConfig) -> str:
-            inputs = tokenizer(prompt_text, return_tensors="pt").to(model.device)
+            # prompt_text is the rendered chat template and already contains
+            # any special tokens (e.g. begin_of_text); adding them again
+            # would double the BOS and change the evaluated prompt.
+            inputs = tokenizer(
+                prompt_text,
+                return_tensors="pt",
+                add_special_tokens=False,
+            ).to(model.device)
             with torch.no_grad():
                 output = model.generate(
                     **inputs,
