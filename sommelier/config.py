@@ -114,6 +114,14 @@ class ReportConfig(BaseModel):
     redact_fields: list[str] = Field(default_factory=list)
 
 
+class TrackingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    provider: Literal["wandb"] = "wandb"
+    project: str = "sommelier"
+
+
 class SommelierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -127,6 +135,7 @@ class SommelierConfig(BaseModel):
     eval: EvalConfig
     remote: RemoteConfig
     report: ReportConfig
+    tracking: TrackingConfig = Field(default_factory=TrackingConfig)
 
     @model_validator(mode="after")
     def validate_remote_code_reason(self) -> SommelierConfig:

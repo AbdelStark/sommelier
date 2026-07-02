@@ -57,5 +57,7 @@ module = [
     "torch.*",
     "peft",
     "peft.*",
+    "wandb",
+    "wandb.*",
 ]
 ignore_missing_imports = true

@@ -6,7 +6,7 @@ import subprocess
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 from sommelier.artifacts import ArtifactRef, make_artifact_ref, write_artifact_atomic
 from sommelier.config import SommelierConfig
@@ -42,6 +42,7 @@ class RunManifest(TypedDict):
     stages: dict[str, str]
     config: ArtifactRef
     status: Literal["running", "succeeded", "failed"]
+    tracking: NotRequired[dict[str, str]]
 
 
 def create_run_id() -> str:
@@ -203,6 +204,34 @@ def update_run_manifest(
         "stages": stages,
         "config": current["config"],
         "status": status,
+    }
+    if "tracking" in current:
+        updated["tracking"] = current["tracking"]
+    validate_no_secrets(updated, context="run manifest")
+    _write_run_manifest(run_dir, updated)
+    return updated
+
+
+def record_tracking_in_run_manifest(
+    *,
+    run_dir: Path,
+    tracking: dict[str, str],
+) -> RunManifest:
+    """Records the external tracker project and run URL in the run manifest."""
+    root_path = _root_manifest_path(run_dir)
+    if not root_path.exists():
+        raise InvariantViolation(
+            f"run manifest not found at {root_path}",
+            hint="Initialize the run directory before recording tracking info.",
+        )
+    current = json.loads(root_path.read_text(encoding="utf-8"))
+    updated: RunManifest = {
+        "schema_version": "sommelier.manifest.v1",
+        "run_id": current["run_id"],
+        "stages": dict(current.get("stages", {})),
+        "config": current["config"],
+        "status": current["status"],
+        "tracking": tracking,
     }
     validate_no_secrets(updated, context="run manifest")
     _write_run_manifest(run_dir, updated)
