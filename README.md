@@ -19,6 +19,22 @@ The project does not claim production serving readiness, broad agent reliability
 
 The package exposes configuration validation, dataset preparation with deterministic splits, fixture-mode stage stubs, and a Modal smoke entrypoint.
 
+### Commands
+
+| Command | Status |
+|---------|--------|
+| `sommelier config validate` | Implemented |
+| `sommelier data prepare` | Implemented (raw JSONL input or `--fixture`) |
+| `sommelier data validate-fixtures` | Implemented |
+| `sommelier format build` | Implemented (tokenizer template; `--fixture` for no-tokenizer builds) |
+| `sommelier eval run` | Pending (#26) — fails with an explicit not-implemented error |
+| `sommelier train run` | Pending (#31) — fails with an explicit not-implemented error |
+| `sommelier report compare` | Pending (#27) — fails with an explicit not-implemented error |
+| `sommelier pipeline run` | Pending (#35) — fails with an explicit not-implemented error |
+| `sommelier serve adapter` | Pending (#40) — fails with an explicit not-implemented error |
+
+Command names and flags follow [docs/spec/02-public-api.md](docs/spec/02-public-api.md#cli-contract).
+
 ```bash
 uv sync --extra dev
 uv run ruff check .

@@ -89,6 +89,7 @@ def test_format_build_writes_manifest(tmp_path: Path) -> None:
             str(data_dir),
             "--out",
             str(formatted_dir),
+            "--fixture",
         ],
         check=True,
         capture_output=True,
