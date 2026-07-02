@@ -43,7 +43,7 @@ SENSITIVE_ENV_NAME_MARKERS = ("TOKEN", "KEY", "SECRET", "PASSWORD")
 
 REDACTED_PLACEHOLDER = "[redacted]"
 
-_MIN_ENV_SECRET_LENGTH = 8
+MIN_ENV_SECRET_LENGTH = 8
 
 
 def redact_text(text: str) -> str:
@@ -56,7 +56,7 @@ def redact_text(text: str) -> str:
     for pattern in SECRET_TEXT_PATTERNS:
         redacted = pattern.sub(REDACTED_PLACEHOLDER, redacted)
     for name, value in os.environ.items():
-        if len(value) < _MIN_ENV_SECRET_LENGTH:
+        if len(value) < MIN_ENV_SECRET_LENGTH:
             continue
         upper_name = name.upper()
         if any(marker in upper_name for marker in SENSITIVE_ENV_NAME_MARKERS):
