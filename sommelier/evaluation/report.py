@@ -321,6 +321,13 @@ def compare_evaluations(
         schema_version=COMPARISON_REPORT_SCHEMA,
     )
 
+    from sommelier.evaluation.render import write_comparison_markdown
+
+    markdown_ref = write_comparison_markdown(
+        comparison_path,
+        artifact_root=artifact_root,
+    )
+
     base_ref = make_artifact_ref(
         base_dir / REPORT_FILENAME,
         artifact_root=artifact_root,
@@ -340,7 +347,7 @@ def compare_evaluations(
         command=command or ["sommelier", "report", "compare"],
         seed=config.project.seed,
         inputs=[base_ref, adapter_ref],
-        outputs=[comparison_ref],
+        outputs=[comparison_ref, markdown_ref],
         status="succeeded",
     )
     stage_ref = write_stage_manifest(manifest, run_dir=run_dir, artifact_root=artifact_root)
