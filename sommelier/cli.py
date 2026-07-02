@@ -323,7 +323,38 @@ def cmd_eval_run(args: argparse.Namespace) -> int:
 
 
 def cmd_train_run(args: argparse.Namespace) -> int:
-    raise _not_implemented("train run", 31)
+    from sommelier.training.qlora import train_adapter
+
+    config = load_config(args.config)
+    run_id = args.run_id or infer_run_id_from_path(args.data.resolve())
+    context = ensure_run_context(
+        config,
+        config_path=args.config,
+        run_id=run_id,
+        project_root=Path.cwd(),
+    )
+    command = [
+        "sommelier",
+        "train",
+        "run",
+        "--config",
+        str(args.config),
+        "--data",
+        str(args.data),
+        "--out",
+        str(args.out),
+    ]
+    if run_id is not None:
+        command.extend(["--run-id", run_id])
+    train_adapter(
+        config,
+        args.data.resolve(),
+        args.out.resolve(),
+        context=context,
+        command=command,
+    )
+    print(f"train run ok: run_id={context.run_id} out={args.out}")
+    return 0
 
 
 def cmd_report_compare(args: argparse.Namespace) -> int:

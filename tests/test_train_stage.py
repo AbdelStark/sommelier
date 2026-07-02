@@ -1,0 +1,178 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+import yaml
+
+from sommelier.config import SommelierConfig, load_config
+from sommelier.data.prepare import prepare_dataset_fixture
+from sommelier.errors import ArtifactNotFoundError, ExternalDependencyError, UserInputError
+from sommelier.formatting.chat import build_formatted_splits_fixture
+from sommelier.run_context import RunContext, ensure_run_context
+from sommelier.training.qlora import build_default_trainer, train_adapter
+
+EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
+
+
+class StubTrainer:
+    def __init__(self) -> None:
+        self.train_examples: list[dict[str, object]] = []
+        self.validation_examples: list[dict[str, object]] = []
+
+    def train(
+        self,
+        train_examples: list[dict[str, object]],
+        validation_examples: list[dict[str, object]],
+        adapter_dir: Path,
+    ) -> list[dict[str, object]]:
+        self.train_examples = train_examples
+        self.validation_examples = validation_examples
+        adapter_dir.mkdir(parents=True, exist_ok=True)
+        (adapter_dir / "adapter_model.safetensors").write_bytes(b"stub-weights")
+        (adapter_dir / "adapter_config.json").write_text(
+            json.dumps({"r": 16}), encoding="utf-8"
+        )
+        return [{"step": 1, "loss": 1.5}]
+
+
+class EmptyTrainer(StubTrainer):
+    def train(
+        self,
+        train_examples: list[dict[str, object]],
+        validation_examples: list[dict[str, object]],
+        adapter_dir: Path,
+    ) -> list[dict[str, object]]:
+        return []
+
+
+def setup_run(tmp_path: Path) -> tuple[SommelierConfig, RunContext, Path]:
+    raw = yaml.safe_load((EXAMPLES_DIR / "config.smoke.yaml").read_text(encoding="utf-8"))
+    raw["data"]["n_train"] = 2
+    raw["data"]["n_validation"] = 1
+    raw["data"]["n_test"] = 1
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    config = load_config(config_path)
+    context = ensure_run_context(
+        config,
+        config_path=config_path,
+        run_id="train-test",
+        project_root=tmp_path,
+    )
+    data_dir = context.run_dir / "data"
+    formatted_dir = context.run_dir / "formatted"
+    prepare_dataset_fixture(config, out_dir=data_dir, context=context, command=["test"])
+    build_formatted_splits_fixture(
+        config,
+        data_dir=data_dir,
+        out_dir=formatted_dir,
+        context=context,
+        command=["test"],
+    )
+    return config, context, formatted_dir
+
+
+def test_train_stage_saves_adapter_and_manifest(tmp_path: Path) -> None:
+    config, context, formatted_dir = setup_run(tmp_path)
+    adapter_dir = context.run_dir / "train" / "adapter"
+    trainer = StubTrainer()
+
+    manifest = train_adapter(
+        config,
+        formatted_dir,
+        adapter_dir,
+        context=context,
+        command=["test"],
+        trainer=trainer,
+    )
+
+    assert (adapter_dir / "adapter_model.safetensors").exists()
+    assert manifest["stage"] == "train"
+    assert manifest["status"] == "succeeded"
+    assert manifest["run_id"] == "train-test"
+
+    input_kinds = [ref["kind"] for ref in manifest["inputs"]]
+    assert input_kinds == ["formatted_split", "formatted_split"]
+    assert all(len(ref["sha256"]) == 64 for ref in manifest["inputs"])
+
+    output_paths = [ref["path"] for ref in manifest["outputs"]]
+    assert any(path.endswith("adapter_model.safetensors") for path in output_paths)
+    assert all(ref["kind"] == "adapter_weights" for ref in manifest["outputs"])
+
+    on_disk = json.loads((context.run_dir / "train_manifest.json").read_text(encoding="utf-8"))
+    assert on_disk["stage"] == "train"
+
+
+def test_train_stage_feeds_train_and_validation_splits(tmp_path: Path) -> None:
+    config, context, formatted_dir = setup_run(tmp_path)
+    trainer = StubTrainer()
+
+    train_adapter(
+        config,
+        formatted_dir,
+        context.run_dir / "train" / "adapter",
+        context=context,
+        command=["test"],
+        trainer=trainer,
+    )
+
+    assert [example["split"] for example in trainer.train_examples] == ["train", "train"]
+    assert [example["split"] for example in trainer.validation_examples] == ["validation"]
+
+
+def test_train_stage_rejects_missing_split(tmp_path: Path) -> None:
+    config, context, formatted_dir = setup_run(tmp_path)
+    (formatted_dir / "validation.jsonl").unlink()
+
+    with pytest.raises(ArtifactNotFoundError):
+        train_adapter(
+            config,
+            formatted_dir,
+            context.run_dir / "train" / "adapter",
+            context=context,
+            command=["test"],
+            trainer=StubTrainer(),
+        )
+
+
+def test_train_stage_rejects_empty_split(tmp_path: Path) -> None:
+    config, context, formatted_dir = setup_run(tmp_path)
+    (formatted_dir / "train.jsonl").write_text("", encoding="utf-8")
+
+    with pytest.raises(UserInputError):
+        train_adapter(
+            config,
+            formatted_dir,
+            context.run_dir / "train" / "adapter",
+            context=context,
+            command=["test"],
+            trainer=StubTrainer(),
+        )
+
+
+def test_train_stage_rejects_trainer_without_artifacts(tmp_path: Path) -> None:
+    config, context, formatted_dir = setup_run(tmp_path)
+
+    with pytest.raises(UserInputError):
+        train_adapter(
+            config,
+            formatted_dir,
+            context.run_dir / "train" / "adapter",
+            context=context,
+            command=["test"],
+            trainer=EmptyTrainer(),
+        )
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("transformers") is not None,
+    reason="transformers installed; missing-dependency path not reachable",
+)
+def test_default_trainer_requires_training_stack(tmp_path: Path) -> None:
+    config, _, _ = setup_run(tmp_path)
+    with pytest.raises(ExternalDependencyError):
+        build_default_trainer(config)
