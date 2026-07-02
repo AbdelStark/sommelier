@@ -32,6 +32,30 @@ def test_relative_documentation_links_resolve() -> None:
     assert broken == [], "broken documentation links:\n" + "\n".join(broken)
 
 
+def test_readme_has_install_and_quickstart() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "## Install and Quickstart" in readme
+    assert "uv sync --extra dev" in readme
+    assert "docs/guides/reproduction.md" in readme
+
+
+def test_reproduction_guide_covers_required_topics() -> None:
+    guide = (REPO_ROOT / "docs" / "guides" / "reproduction.md").read_text(encoding="utf-8")
+    for heading in (
+        "## 1. Install",
+        "## 2. Local validation",
+        "## 3. Remote prerequisites",
+        "## 4. Smoke run",
+        "## 5. Full run",
+        "## 6. Reading the report",
+        "## 7. Caveats",
+    ):
+        assert heading in guide, heading
+    assert "SOMMELIER_ACK_BASE_MODEL_LICENSE" in guide
+    assert "HF_TOKEN" in guide
+    assert "costs money" in guide or "bill" in guide
+
+
 def test_readme_labels_serving_as_illustrative() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "optional and illustrative" in readme

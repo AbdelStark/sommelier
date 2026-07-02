@@ -1,6 +1,6 @@
 # Sommelier
 
-Sommelier is a reference implementation for fine-tuning a small open language model to emit schema-valid tool calls. The project is currently in specification bootstrap: the repository contains the canonical product requirements, specification corpus, and RFCs that define the v1.0 implementation work.
+Sommelier is a reference implementation for fine-tuning a small open language model to emit schema-valid tool calls. The repository contains the specification corpus, the RFCs, and the staged pipeline implementation: deterministic data preparation, chat formatting with prompt digests, deterministic evaluation with a conservative parser, QLoRA adapter training, comparison reporting, and release gates.
 
 ## Canonical Documents
 
@@ -8,6 +8,32 @@ Sommelier is a reference implementation for fine-tuning a small open language mo
 - [Specification index](SPEC.md)
 - [Detailed specification](docs/spec/00-overview.md)
 - [RFC index](SPEC.md#rfc-index)
+- [Reproduction guide](docs/guides/reproduction.md)
+
+## Install and Quickstart
+
+Prerequisites: Python 3.13+ and [uv](https://docs.astral.sh/uv/).
+
+```bash
+git clone https://github.com/AbdelStark/sommelier
+cd sommelier
+uv sync --extra dev
+uv run pytest
+uv run sommelier config validate --config examples/config.smoke.yaml
+uv run sommelier data prepare --config examples/config.smoke.yaml --fixture \
+  --out examples/artifacts/runs/local/data --run-id local
+uv run sommelier format build --config examples/config.smoke.yaml \
+  --data examples/artifacts/runs/local/data \
+  --out examples/artifacts/runs/local/formatted --run-id local --fixture
+```
+
+Everything above runs on a clean machine without a GPU or external
+accounts. Evaluation, training, serving, and the end-to-end pipeline need
+the model stack and a remote GPU; the
+[reproduction guide](docs/guides/reproduction.md) documents the remote
+prerequisites (Modal account, `HF_TOKEN`, license acknowledgement), the
+smoke and full runs, report interpretation, and the license, cost, and
+limitation caveats.
 
 ## Scope
 
@@ -27,28 +53,26 @@ The package exposes configuration validation, dataset preparation with determini
 | `sommelier data prepare` | Implemented (raw JSONL input or `--fixture`) |
 | `sommelier data validate-fixtures` | Implemented |
 | `sommelier format build` | Implemented (tokenizer template; `--fixture` for no-tokenizer builds) |
-| `sommelier eval run` | Implemented (deterministic generations; the report gate lands with #27). Requires the model stack (torch/transformers), so it typically runs remotely |
+| `sommelier eval run` | Implemented (deterministic generations + `evaluation_report.json`). Requires the model stack (torch/transformers), so it typically runs remotely |
 | `sommelier train run` | Implemented (QLoRA adapter training; requires the train stack, so it typically runs remotely) |
-| `sommelier report compare` | Implemented (comparison gate + `comparison_report.json`; Markdown rendering lands with #37) |
+| `sommelier report compare` | Implemented (comparison gate + `comparison_report.json` + `comparison_report.md`) |
 | `sommelier pipeline run` | Implemented (`--mode smoke` bounds split sizes and uses a `smoke-` run ID; `--mode full` runs configured sizes; chains data → format → base eval → train → adapter eval → compare). Train/eval stages need the model stack, so end-to-end runs happen remotely |
 | `sommelier serve adapter` | Implemented (optional, illustrative single-adapter endpoint; requires the serving stack, so it typically runs remotely) |
 | `sommelier release preflight` | Implemented (license, notices, acknowledgement, lock, and artifact secret gates; writes `release_preflight.json`). Acknowledge the base model license with `SOMMELIER_ACK_BASE_MODEL_LICENSE=<base_model_id>` |
 
 Command names and flags follow [docs/spec/02-public-api.md](docs/spec/02-public-api.md#cli-contract).
 
+Local gates:
+
 ```bash
-uv sync --extra dev
 uv run ruff check .
 uv run mypy sommelier tests
 uv run pytest
-uv run sommelier config validate --config examples/config.smoke.yaml
 uv run sommelier data validate-fixtures
-uv run sommelier data prepare --config examples/config.smoke.yaml --input tests/fixtures/preparation_rows.jsonl --out artifacts/runs/local/data --run-id local
-uv run sommelier data prepare --config examples/config.smoke.yaml --fixture --out artifacts/runs/local/data --run-id local
 uv run python sommelier_entrypoint.py
 ```
 
-Optional GPU coarse filtering is available with `uv sync --extra data-gpu` and the `--gpu` flag on `sommelier data prepare`.
+Optional GPU coarse filtering is available with `uv sync --extra data-gpu` and the `--gpu` flag on `sommelier data prepare`. Preparing real rows with `--input` requires at least as many valid deduplicated rows as the configured split sizes.
 
 ### Remote dependency images
 
