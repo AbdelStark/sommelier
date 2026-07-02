@@ -11,7 +11,7 @@ EXTERNAL_PREFIXES = ("http://", "https://", "#", "mailto:")
 
 
 def markdown_files() -> list[Path]:
-    files = [REPO_ROOT / "README.md", REPO_ROOT / "SPEC.md"]
+    files = [REPO_ROOT / "README.md", REPO_ROOT / "SPEC.md", REPO_ROOT / "CHANGELOG.md"]
     files.extend((REPO_ROOT / "docs").rglob("*.md"))
     files.extend((REPO_ROOT / "licenses").rglob("*.md"))
     return [path for path in files if path.exists()]
@@ -54,6 +54,31 @@ def test_reproduction_guide_covers_required_topics() -> None:
     assert "SOMMELIER_ACK_BASE_MODEL_LICENSE" in guide
     assert "HF_TOKEN" in guide
     assert "costs money" in guide or "bill" in guide
+
+
+def test_release_checklist_links_implemented_commands() -> None:
+    checklist = (REPO_ROOT / "docs" / "release" / "v1.0-checklist.md").read_text(
+        encoding="utf-8"
+    )
+    for command in (
+        "uv run pytest",
+        "sommelier pipeline run",
+        "--mode smoke",
+        "--mode full",
+        "sommelier release preflight",
+        "sommelier report compare",
+    ):
+        assert command in checklist, command
+    for topic in ("secret scan", "Changelog", "license"):
+        assert topic.lower() in checklist.lower(), topic
+
+
+def test_changelog_states_policy_categories() -> None:
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "## Changelog policy" in changelog
+    for category in ("Added", "Changed", "Fixed", "Deprecated", "Removed", "Security"):
+        assert category in changelog, category
+    assert "migration note" in changelog.lower()
 
 
 def test_readme_labels_serving_as_illustrative() -> None:
