@@ -31,7 +31,7 @@ The package exposes configuration validation, dataset preparation with determini
 | `sommelier train run` | Implemented (QLoRA adapter training; requires the train stack, so it typically runs remotely) |
 | `sommelier report compare` | Implemented (comparison gate + `comparison_report.json`; Markdown rendering lands with #37) |
 | `sommelier pipeline run` | Implemented (`--mode smoke` bounds split sizes and uses a `smoke-` run ID; `--mode full` runs configured sizes; chains data → format → base eval → train → adapter eval → compare). Train/eval stages need the model stack, so end-to-end runs happen remotely |
-| `sommelier serve adapter` | Pending (#40) — fails with an explicit not-implemented error |
+| `sommelier serve adapter` | Implemented (optional, illustrative single-adapter endpoint; requires the serving stack, so it typically runs remotely) |
 
 Command names and flags follow [docs/spec/02-public-api.md](docs/spec/02-public-api.md#cli-contract).
 

@@ -94,6 +94,25 @@ def validate_assistant_target(content: str, *, context: str = "assistant target"
     return calls
 
 
+def build_prompt_messages(
+    *,
+    query: str,
+    tools: list[object],
+    system_prompt: str,
+) -> list[ChatMessage]:
+    """Builds the system and user messages of the shared prompt policy.
+
+    Formatting, evaluation, and serving all construct prompts through this
+    function so prompt parity is guaranteed by construction (RFC-0010).
+    """
+    tools_json = canonical_json(tools)
+    system_content = f"{system_prompt.strip()}\n\nAvailable tools:\n{tools_json}"
+    return [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": query},
+    ]
+
+
 def build_messages(
     *,
     query: str,
@@ -109,11 +128,8 @@ def build_messages(
     the assistant message carries only the canonical JSON gold calls.
     """
     calls = validate_gold_calls(gold_calls, context=context)
-    tools_json = canonical_json(tools)
-    system_content = f"{system_prompt.strip()}\n\nAvailable tools:\n{tools_json}"
     return [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": query},
+        *build_prompt_messages(query=query, tools=tools, system_prompt=system_prompt),
         {"role": "assistant", "content": canonical_json(calls)},
     ]
 
