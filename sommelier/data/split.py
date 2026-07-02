@@ -2,23 +2,16 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from typing import get_args
 
 from sommelier.data.types import DropReason, PreparedExample, RawToolCallRow, SplitName
 from sommelier.data.validate import validate_raw_row
 from sommelier.errors import UserInputError
 
-ALL_DROP_REASONS: tuple[DropReason, ...] = (
-    "missing_query",
-    "missing_tools",
-    "missing_answers",
-    "query_too_short",
-    "query_too_long",
-    "invalid_tools_json",
-    "invalid_answers_json",
-    "invalid_tool_shape",
-    "invalid_answer_shape",
-    "duplicate_query",
-)
+# Derived from the DropReason literal so new reasons can never desync the
+# counter initialization (a hand-maintained copy once missed a reason and
+# crashed data preparation at runtime).
+ALL_DROP_REASONS: tuple[DropReason, ...] = get_args(DropReason)
 
 
 @dataclass(frozen=True)
