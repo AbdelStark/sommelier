@@ -36,3 +36,9 @@ Optional GPU coarse filtering is available with `uv sync --extra data-gpu` and t
 ## Diagram
 
 ![AI Agent lifecycle](./docs/img/gtcdc25-nemo-diagram.png)
+
+## License
+
+Sommelier is released under the [MIT License](LICENSE). Third-party model,
+dataset, and package obligations are recorded in
+[licenses/THIRD_PARTY.md](licenses/THIRD_PARTY.md).
