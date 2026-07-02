@@ -19,6 +19,7 @@ All persisted JSON and JSONL records include a `schema_version` field. v1.0 acce
 - `sommelier.log_event.v1`
 - `sommelier.drop_summary.v1`
 - `sommelier.training_metric.v1`
+- `sommelier.release_preflight.v1`
 
 Readers fail closed on unknown schema versions.
 
