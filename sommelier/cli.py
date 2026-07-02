@@ -11,9 +11,19 @@ from sommelier.data.prepare import (
     prepare_dataset_from_file,
     validate_fixture_files,
 )
-from sommelier.errors import SommelierError, format_cli_error
-from sommelier.formatting.chat import build_formatted_splits_fixture
+from sommelier.errors import SommelierError, UserInputError, format_cli_error
+from sommelier.formatting.chat import (
+    build_formatted_splits,
+    build_formatted_splits_fixture,
+)
 from sommelier.run_context import ensure_run_context, infer_run_id_from_path
+
+
+def _not_implemented(command: str, issue: int) -> SommelierError:
+    return SommelierError(
+        f"command not implemented yet: {command}",
+        hint=f"Implementation is tracked in issue #{issue}.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional directory to write config.resolved.yaml.",
     )
+    validate_parser.set_defaults(handler=cmd_config_validate)
 
     data_parser = subparsers.add_parser("data", help="Dataset preparation commands.")
     data_subparsers = data_parser.add_subparsers(dest="data_command", required=True)
@@ -57,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Apply GPU dataframe coarse filtering before Python validation.",
     )
+    prepare_parser.set_defaults(handler=cmd_data_prepare)
 
     validate_fixtures_parser = data_subparsers.add_parser(
         "validate-fixtures",
@@ -67,6 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("tests/fixtures"),
     )
+    validate_fixtures_parser.set_defaults(handler=cmd_data_validate_fixtures)
 
     format_parser = subparsers.add_parser("format", help="Formatting commands.")
     format_subparsers = format_parser.add_subparsers(dest="format_command", required=True)
@@ -79,6 +92,78 @@ def build_parser() -> argparse.ArgumentParser:
     build_parser_cmd.add_argument("--data", required=True, type=Path)
     build_parser_cmd.add_argument("--out", required=True, type=Path)
     build_parser_cmd.add_argument("--run-id", type=str, default=None)
+    build_parser_cmd.add_argument(
+        "--fixture",
+        action="store_true",
+        help="Build without a tokenizer using the fixture template policy.",
+    )
+    build_parser_cmd.set_defaults(handler=cmd_format_build)
+
+    eval_parser = subparsers.add_parser("eval", help="Evaluation commands.")
+    eval_subparsers = eval_parser.add_subparsers(dest="eval_command", required=True)
+
+    eval_run_parser = eval_subparsers.add_parser(
+        "run",
+        help="Evaluate the base model or an adapter on the test split.",
+    )
+    eval_run_parser.add_argument("--config", required=True, type=Path)
+    eval_run_parser.add_argument("--model", required=True, choices=["base", "adapter"])
+    eval_run_parser.add_argument("--data", required=True, type=Path)
+    eval_run_parser.add_argument("--out", required=True, type=Path)
+    eval_run_parser.add_argument(
+        "--adapter",
+        type=Path,
+        help="Adapter directory; required with --model adapter.",
+    )
+    eval_run_parser.add_argument("--run-id", type=str, default=None)
+    eval_run_parser.set_defaults(handler=cmd_eval_run)
+
+    train_parser = subparsers.add_parser("train", help="Training commands.")
+    train_subparsers = train_parser.add_subparsers(dest="train_command", required=True)
+
+    train_run_parser = train_subparsers.add_parser(
+        "run",
+        help="Train a parameter-efficient adapter on the formatted train split.",
+    )
+    train_run_parser.add_argument("--config", required=True, type=Path)
+    train_run_parser.add_argument("--data", required=True, type=Path)
+    train_run_parser.add_argument("--out", required=True, type=Path)
+    train_run_parser.add_argument("--run-id", type=str, default=None)
+    train_run_parser.set_defaults(handler=cmd_train_run)
+
+    report_parser = subparsers.add_parser("report", help="Reporting commands.")
+    report_subparsers = report_parser.add_subparsers(dest="report_command", required=True)
+
+    report_compare_parser = report_subparsers.add_parser(
+        "compare",
+        help="Compare base and adapter evaluation reports.",
+    )
+    report_compare_parser.add_argument("--base", required=True, type=Path)
+    report_compare_parser.add_argument("--adapter", required=True, type=Path)
+    report_compare_parser.add_argument("--out", required=True, type=Path)
+    report_compare_parser.set_defaults(handler=cmd_report_compare)
+
+    pipeline_parser = subparsers.add_parser("pipeline", help="Pipeline commands.")
+    pipeline_subparsers = pipeline_parser.add_subparsers(dest="pipeline_command", required=True)
+
+    pipeline_run_parser = pipeline_subparsers.add_parser(
+        "run",
+        help="Run the staged pipeline end to end.",
+    )
+    pipeline_run_parser.add_argument("--config", required=True, type=Path)
+    pipeline_run_parser.add_argument("--mode", required=True, choices=["smoke", "full"])
+    pipeline_run_parser.set_defaults(handler=cmd_pipeline_run)
+
+    serve_parser = subparsers.add_parser("serve", help="Optional serving commands.")
+    serve_subparsers = serve_parser.add_subparsers(dest="serve_command", required=True)
+
+    serve_adapter_parser = serve_subparsers.add_parser(
+        "adapter",
+        help="Serve a trained adapter behind an OpenAI-compatible endpoint.",
+    )
+    serve_adapter_parser.add_argument("--config", required=True, type=Path)
+    serve_adapter_parser.add_argument("--adapter", required=True, type=Path)
+    serve_adapter_parser.set_defaults(handler=cmd_serve_adapter)
 
     return parser
 
@@ -155,15 +240,55 @@ def cmd_format_build(args: argparse.Namespace) -> int:
     ]
     if run_id is not None:
         command.extend(["--run-id", run_id])
-    build_formatted_splits_fixture(
-        config,
-        data_dir=args.data.resolve(),
-        out_dir=args.out.resolve(),
-        context=context,
-        command=command,
-    )
+    if args.fixture:
+        command.append("--fixture")
+        build_formatted_splits_fixture(
+            config,
+            data_dir=args.data.resolve(),
+            out_dir=args.out.resolve(),
+            context=context,
+            command=command,
+        )
+    else:
+        build_formatted_splits(
+            config,
+            data_dir=args.data.resolve(),
+            out_dir=args.out.resolve(),
+            context=context,
+            command=command,
+        )
     print(f"format build ok: run_id={context.run_id} out={args.out}")
     return 0
+
+
+def cmd_eval_run(args: argparse.Namespace) -> int:
+    if args.model == "adapter" and args.adapter is None:
+        raise UserInputError(
+            "--adapter is required when --model adapter",
+            hint="Pass the trained adapter directory, e.g. artifacts/train/adapter.",
+        )
+    if args.model == "base" and args.adapter is not None:
+        raise UserInputError(
+            "--adapter is only valid with --model adapter",
+            hint="Drop --adapter or evaluate with --model adapter.",
+        )
+    raise _not_implemented("eval run", 26)
+
+
+def cmd_train_run(args: argparse.Namespace) -> int:
+    raise _not_implemented("train run", 31)
+
+
+def cmd_report_compare(args: argparse.Namespace) -> int:
+    raise _not_implemented("report compare", 27)
+
+
+def cmd_pipeline_run(args: argparse.Namespace) -> int:
+    raise _not_implemented("pipeline run", 35)
+
+
+def cmd_serve_adapter(args: argparse.Namespace) -> int:
+    raise _not_implemented("serve adapter", 40)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -171,20 +296,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        if args.command == "config" and args.config_command == "validate":
-            return cmd_config_validate(args)
-        if args.command == "data" and args.data_command == "prepare":
-            return cmd_data_prepare(args)
-        if args.command == "data" and args.data_command == "validate-fixtures":
-            return cmd_data_validate_fixtures(args)
-        if args.command == "format" and args.format_command == "build":
-            return cmd_format_build(args)
-        raise SommelierError(f"unsupported command: {args.command}")
+        handler = args.handler
+        result: int = handler(args)
+        return result
     except SommelierError as error:
         print(format_cli_error(error), file=sys.stderr)
         if args.debug:
             traceback.print_exc()
         return error.exit_code
+    except Exception as error:  # noqa: BLE001 - CLI boundary maps unexpected errors to exit 5
+        print(f"sommelier: SOM000: unexpected error: {error}", file=sys.stderr)
+        if args.debug:
+            traceback.print_exc()
+        return 5
 
 
 if __name__ == "__main__":
