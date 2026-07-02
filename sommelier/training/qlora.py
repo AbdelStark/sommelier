@@ -14,6 +14,14 @@ from sommelier.manifests import (
 )
 from sommelier.run_context import RunContext, read_jsonl_records
 from sommelier.training.collators import CompletionOnlyCollator
+from sommelier.training.metrics import (
+    METRICS_FILENAME,
+    TRAINING_METRIC_SCHEMA,
+    TrainingResult,
+    build_training_metrics,
+    measure_peak_gpu_memory_mb,
+    write_training_metrics,
+)
 
 FORMATTED_SCHEMA: Final = "sommelier.formatted_example.v1"
 
@@ -23,8 +31,8 @@ class AdapterTrainer(Protocol):
 
     The default implementation wraps transformers/peft/trl; tests inject
     stubs so the stage contract is exercised without GPU dependencies.
-    ``train`` writes adapter files into ``adapter_dir`` and returns raw
-    per-step metric mappings.
+    ``train`` writes adapter files into ``adapter_dir`` and returns the
+    raw log history plus the peak GPU memory measurement when available.
     """
 
     def train(
@@ -32,7 +40,7 @@ class AdapterTrainer(Protocol):
         train_examples: list[dict[str, object]],
         validation_examples: list[dict[str, object]],
         adapter_dir: Path,
-    ) -> list[dict[str, object]]: ...
+    ) -> TrainingResult: ...
 
 
 def _read_split(formatted_dir: Path, split: str) -> list[dict[str, object]]:
@@ -86,7 +94,9 @@ def build_default_trainer(config: SommelierConfig) -> AdapterTrainer:
             train_examples: list[dict[str, object]],
             validation_examples: list[dict[str, object]],
             adapter_dir: Path,
-        ) -> list[dict[str, object]]:
+        ) -> TrainingResult:
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
             tokenizer = AutoTokenizer.from_pretrained(
                 config.model.base_model_id,
                 revision=config.model.tokenizer_revision,
@@ -149,6 +159,7 @@ def build_default_trainer(config: SommelierConfig) -> AdapterTrainer:
                 logging_steps=1,
                 report_to=[],
                 seed=config.project.seed,
+                include_num_input_tokens_seen=True,
             )
             trainer = Trainer(
                 model=model,
@@ -161,8 +172,10 @@ def build_default_trainer(config: SommelierConfig) -> AdapterTrainer:
             adapter_dir.mkdir(parents=True, exist_ok=True)
             model.save_pretrained(str(adapter_dir))
             tokenizer.save_pretrained(str(adapter_dir))
-            history: list[dict[str, object]] = list(trainer.state.log_history)
-            return history
+            return TrainingResult(
+                history=list(trainer.state.log_history),
+                peak_gpu_memory_mb=measure_peak_gpu_memory_mb(),
+            )
 
     return _QLoraTrainer()
 
@@ -189,7 +202,14 @@ def train_adapter(
 
     active_trainer = trainer if trainer is not None else build_default_trainer(config)
     out_dir.mkdir(parents=True, exist_ok=True)
-    active_trainer.train(train_examples, validation_examples, out_dir)
+    result = active_trainer.train(train_examples, validation_examples, out_dir)
+
+    metrics = build_training_metrics(
+        result["history"],
+        peak_gpu_memory_mb=result["peak_gpu_memory_mb"],
+    )
+    metrics_path = out_dir.parent / METRICS_FILENAME
+    write_training_metrics(metrics_path, metrics)
 
     adapter_files = sorted(path for path in out_dir.rglob("*") if path.is_file())
     if not adapter_files:
@@ -216,6 +236,14 @@ def train_adapter(
         )
         for path in adapter_files
     ]
+    output_refs.append(
+        make_artifact_ref(
+            metrics_path,
+            artifact_root=context.artifact_root,
+            kind="training_metrics",
+            schema_version=TRAINING_METRIC_SCHEMA,
+        )
+    )
 
     manifest = build_stage_manifest(
         stage="train",
