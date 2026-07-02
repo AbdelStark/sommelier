@@ -47,6 +47,12 @@ def _raw_row(**overrides: str) -> RawToolCallRow:
         ({"tools": '{"name":"lookup_weather"}'}, "invalid_tool_shape"),
         ({"answers": "[]"}, "invalid_answer_shape"),
         ({"answers": '[{"arguments":{"city":"Paris"}}]'}, "invalid_answer_shape"),
+        (
+            {
+                "answers": '[{"name":"a","arguments":{}},{"name":"b","arguments":{}}]'
+            },
+            "multi_call_answer",
+        ),
     ],
 )
 def test_validate_raw_row_drop_reasons(
@@ -70,6 +76,11 @@ def test_parse_tools_rejects_non_list() -> None:
 
 def test_parse_gold_calls_requires_non_empty_list() -> None:
     assert parse_gold_calls("[]") == "invalid_answer_shape"
+
+
+def test_parse_gold_calls_drops_multi_call_answers() -> None:
+    answers = '[{"name":"a","arguments":{}},{"name":"b","arguments":{}}]'
+    assert parse_gold_calls(answers) == "multi_call_answer"
 
 
 def test_fixture_rows_are_valid() -> None:

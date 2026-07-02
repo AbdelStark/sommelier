@@ -67,6 +67,12 @@ def parse_gold_calls(raw: str) -> list[ToolCall] | DropReason:
                 arguments=cast(JsonObject, arguments),
             )
         )
+    if len(calls) != 1:
+        # v1 trains and scores exactly one tool call per example: the
+        # parser rejects multi-call outputs, so keeping multi-call golds
+        # would score a faithful model as a failure. Declared filter with
+        # its own drop reason per the data policy.
+        return "multi_call_answer"
     return calls
 
 

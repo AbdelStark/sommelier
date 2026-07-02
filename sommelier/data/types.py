@@ -12,6 +12,7 @@ DropReason = Literal[
     "invalid_answers_json",
     "invalid_tool_shape",
     "invalid_answer_shape",
+    "multi_call_answer",
     "duplicate_query",
 ]
 

@@ -85,12 +85,58 @@ def _cleanup_gpu() -> None:
         pass
 
 
+def _audit_sequence_lengths(paths, config) -> None:  # type: ignore[no-untyped-def]
+    """Fails fast when any rendered example cannot fit the training budget.
+
+    The completion-only collator refuses (by design) to truncate away every
+    target token; catching that here, right after formatting, costs seconds
+    instead of failing training after evaluation already spent GPU time.
+    """
+    import json
+
+    from sommelier.errors import UserInputError
+    from sommelier.formatting.templates import load_tokenizer
+
+    tokenizer = load_tokenizer(config)
+    max_len = config.train.max_sequence_length
+    lengths: list[int] = []
+    violations: list[str] = []
+    for split in ("train", "validation"):
+        split_path = paths.formatted_dir / f"{split}.jsonl"
+        for line in split_path.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line)
+            prompt_tokens = len(tokenizer.encode(record["prompt_text"], add_special_tokens=False))
+            full_tokens = len(tokenizer.encode(record["full_text"], add_special_tokens=False))
+            lengths.append(full_tokens)
+            if prompt_tokens >= max_len:
+                violations.append(
+                    f"{record['example_id']}: prompt {prompt_tokens} tokens "
+                    f">= max_sequence_length {max_len}"
+                )
+    lengths.sort()
+    print(
+        "[pipeline] sequence-length audit: "
+        f"n={len(lengths)} p50={lengths[len(lengths) // 2]} "
+        f"p95={lengths[int(len(lengths) * 0.95)]} max={lengths[-1]} "
+        f"budget={max_len}",
+        flush=True,
+    )
+    if violations:
+        raise UserInputError(
+            f"{len(violations)} example(s) cannot fit train.max_sequence_length "
+            f"{max_len}; first: {violations[0]}",
+            hint="Raise train.max_sequence_length above the longest prompt.",
+        )
+
+
 def _wrapped_stages() -> object:
     """Default stages wrapped with timing, GPU cleanup, and volume commits.
 
     Chaining stages that each load an 8B model in one process needs the
     previous model's CUDA memory released before the next load; committing
-    after every stage makes partial progress visible on the volume.
+    after every stage makes partial progress visible on the volume. The
+    format stage additionally audits rendered sequence lengths so budget
+    violations surface before any model loads.
     """
     import time
     from dataclasses import fields
@@ -98,6 +144,15 @@ def _wrapped_stages() -> object:
     from sommelier.pipeline import PipelineStages
 
     base = PipelineStages()
+
+    original_format = base.format
+
+    def format_with_audit(paths, config, context, command):  # type: ignore[no-untyped-def]
+        result = original_format(paths, config, context, command)
+        _audit_sequence_lengths(paths, config)
+        return result
+
+    base.format = format_with_audit
 
     def wrap(stage_name: str, fn):  # type: ignore[no-untyped-def]
         def inner(paths, config, context, command):  # type: ignore[no-untyped-def]
