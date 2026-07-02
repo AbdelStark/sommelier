@@ -272,7 +272,45 @@ def cmd_eval_run(args: argparse.Namespace) -> int:
             "--adapter is only valid with --model adapter",
             hint="Drop --adapter or evaluate with --model adapter.",
         )
-    raise _not_implemented("eval run", 26)
+
+    from sommelier.evaluation.generate import run_generation
+
+    config = load_config(args.config)
+    run_id = args.run_id or infer_run_id_from_path(args.data.resolve())
+    context = ensure_run_context(
+        config,
+        config_path=args.config,
+        run_id=run_id,
+        project_root=Path.cwd(),
+    )
+    command = [
+        "sommelier",
+        "eval",
+        "run",
+        "--config",
+        str(args.config),
+        "--model",
+        args.model,
+        "--data",
+        str(args.data),
+        "--out",
+        str(args.out),
+    ]
+    if args.adapter is not None:
+        command.extend(["--adapter", str(args.adapter)])
+    if run_id is not None:
+        command.extend(["--run-id", run_id])
+    run_generation(
+        config,
+        formatted_dir=args.data.resolve(),
+        out_dir=args.out.resolve(),
+        model_kind=args.model,
+        context=context,
+        command=command,
+        adapter_dir=args.adapter.resolve() if args.adapter is not None else None,
+    )
+    print(f"eval run ok: run_id={context.run_id} out={args.out}")
+    return 0
 
 
 def cmd_train_run(args: argparse.Namespace) -> int:
