@@ -193,6 +193,9 @@ artifacts/
 - `INV-DATA-001`: `example_id` is stable for the same normalized query, tools, answers, and source revision.
 - `INV-DATA-002`: A `query_sha256` may appear in only one split.
 - `INV-DATA-003`: Validation and test records are never used for gradient updates.
-- `INV-DATA-004`: `gold_calls` contains at least one call in v1.0.
+- `INV-DATA-004`: `gold_calls` contains exactly one call in v1.0; rows with
+  multi-call answers are dropped during preparation with the declared
+  `multi_call_answer` reason, because the v1 parser and metrics score a
+  single tool call.
 - `INV-DATA-005`: Metrics count parse failures as failures, not missing data.
 - `INV-DATA-006`: A comparison report is invalid unless base and adapter reports share the same test split digest.

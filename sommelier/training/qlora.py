@@ -201,12 +201,21 @@ def build_default_trainer(config: SommelierConfig) -> AdapterTrainer:
                 lr_scheduler_type=config.train.scheduler,
                 warmup_ratio=config.train.warmup_ratio,
                 bf16=True,
+                # Explicit rather than relying on peft's kbit-preparation
+                # defaults: an 8B model at batch 8 without checkpointing
+                # exceeded a 44 GiB GPU in the first full run.
+                gradient_checkpointing=True,
+                gradient_checkpointing_kwargs={"use_reentrant": False},
                 eval_strategy="epoch",
                 save_strategy="no",
                 logging_steps=1,
                 report_to=[],
                 seed=config.project.seed,
                 include_num_input_tokens_seen=True,
+                # The completion-only collator consumes prompt_text and
+                # full_text; the Trainer's RemoveColumnsCollator wrapper
+                # would strip them before our collator runs.
+                remove_unused_columns=False,
             )
             trainer = Trainer(
                 model=model,

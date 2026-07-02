@@ -62,3 +62,31 @@ change; releases move them under a version heading with a date.
   older shapes.
 - The `tracking` config section is new and optional; existing configs
   remain valid.
+- Data preparation drops rows whose answers contain more than one tool
+  call, with the declared `multi_call_answer` drop reason (v1 trains and
+  scores exactly one call; the previous behavior scored faithful
+  multi-call outputs as failures). Migration: regenerate prepared splits;
+  multi-call rows now appear in the drop summary instead of the splits.
+- `examples/config.smoke.yaml` raises `train.max_sequence_length` to
+  2048; real xlam prompts exceed the previous 1024-token budget.
+
+### Added (remote execution)
+
+- `remote_pipeline.py`: Modal entrypoint running the full pipeline on a
+  GPU — exports the configured Hugging Face dataset to raw rows, chains
+  the shared stages with per-stage GPU cleanup and volume commits, audits
+  rendered sequence lengths against the training budget before any model
+  loads, and persists artifacts to the `sommelier-artifacts` volume.
+
+### Fixed
+
+- Remote images no longer run pip installs after mounting the package
+  source, which Modal rejects at build time (`sommelier.remote.images`).
+- Evaluation no longer re-adds special tokens to rendered prompts, which
+  doubled the BOS token on Llama-family tokenizers
+  (`sommelier.evaluation.generate`).
+- Training no longer lets the Trainer strip `prompt_text`/`full_text`
+  from batches before the completion-only collator runs
+  (`remove_unused_columns=False` in `sommelier.training.qlora`).
+- Drop-reason counters are derived from the `DropReason` literal, fixing
+  a KeyError when a new reason was added (`sommelier.data.split`).
