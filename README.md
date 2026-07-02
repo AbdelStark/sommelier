@@ -9,6 +9,8 @@ Sommelier is a reference implementation for fine-tuning a small open language mo
 - [Detailed specification](docs/spec/00-overview.md)
 - [RFC index](SPEC.md#rfc-index)
 - [Reproduction guide](docs/guides/reproduction.md)
+- [Changelog](CHANGELOG.md)
+- [v1.0 release checklist](docs/release/v1.0-checklist.md)
 
 ## Install and Quickstart
 
