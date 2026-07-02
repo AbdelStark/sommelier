@@ -246,9 +246,13 @@ def run_remote_pipeline(
         (run_dir / "report" / "comparison_report.json").read_text(encoding="utf-8")
     )
     runtime = json.loads((run_dir / "runtime_metadata.json").read_text(encoding="utf-8"))
+    from sommelier.config import load_config
+
     return {
         "run_id": resolved_run_id,
-        "gpu": GPU,
+        # The config value is authoritative; the module-level GPU default
+        # is not visible inside the container.
+        "gpu": load_config(config_path).remote.gpu,
         "raw_rows": exported,
         "versions": _package_versions(),
         "metrics": {
