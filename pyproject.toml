@@ -46,5 +46,5 @@ warn_unused_configs = true
 packages = ["sommelier", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["modal", "modal.*", "cudf", "cudf.*"]
+module = ["modal", "modal.*", "cudf", "cudf.*", "transformers", "transformers.*"]
 ignore_missing_imports = true

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, cast
 
 from sommelier.artifacts import ArtifactRef, make_artifact_ref
 from sommelier.config import SommelierConfig
@@ -153,14 +154,21 @@ def _format_prepared_example(
     }
 
 
-def build_formatted_splits_fixture(
+def build_splits_with_formatter(
     config: SommelierConfig,
     *,
     data_dir: Path,
     out_dir: Path,
     context: RunContext,
     command: list[str],
+    formatter: Callable[[dict[str, object]], dict[str, object]],
 ) -> list[ArtifactRef]:
+    """Runs the format stage: reads prepared splits, writes formatted splits.
+
+    The formatter callable turns one prepared example into one
+    ``sommelier.formatted_example.v1`` record; fixture and tokenizer-rendered
+    builds share this loop and manifest bookkeeping.
+    """
     if not data_dir.exists():
         raise ArtifactNotFoundError(
             f"prepared data directory not found: {data_dir}",
@@ -182,7 +190,7 @@ def build_formatted_splits_fixture(
                 schema_version="sommelier.prepared_example.v1",
             )
         )
-        formatted_records = [_format_prepared_example(record, config) for record in records]
+        formatted_records = [formatter(record) for record in records]
         formatted_path = out_dir / f"{split}.jsonl"
         write_jsonl_records(formatted_path, formatted_records)
         output_refs.append(
@@ -203,3 +211,69 @@ def build_formatted_splits_fixture(
         outputs=output_refs,
     )
     return output_refs
+
+
+def build_formatted_splits_fixture(
+    config: SommelierConfig,
+    *,
+    data_dir: Path,
+    out_dir: Path,
+    context: RunContext,
+    command: list[str],
+) -> list[ArtifactRef]:
+    """Builds formatted splits without a tokenizer (fixture template policy)."""
+    return build_splits_with_formatter(
+        config,
+        data_dir=data_dir,
+        out_dir=out_dir,
+        context=context,
+        command=command,
+        formatter=lambda record: _format_prepared_example(record, config),
+    )
+
+
+def build_formatted_splits(
+    config: SommelierConfig,
+    *,
+    data_dir: Path,
+    out_dir: Path,
+    context: RunContext,
+    command: list[str],
+    tokenizer: object | None = None,
+) -> list[ArtifactRef]:
+    """Builds formatted splits through the tokenizer chat template (RFC-0003).
+
+    When no tokenizer instance is injected, the configured tokenizer is
+    loaded lazily; transformers stays an optional dependency imported inside
+    the stage, never at package import time.
+    """
+    from sommelier.formatting.templates import (
+        ChatTemplateRenderer,
+        load_tokenizer,
+        render_formatted_example,
+    )
+
+    renderer: ChatTemplateRenderer
+    if tokenizer is None:
+        renderer = load_tokenizer(config)
+    else:
+        renderer = cast(ChatTemplateRenderer, tokenizer)
+
+    def formatter(record: dict[str, object]) -> dict[str, object]:
+        return render_formatted_example(
+            record,
+            tokenizer=renderer,
+            tokenizer_id=config.model.base_model_id,
+            tokenizer_revision=config.model.tokenizer_revision,
+            system_prompt=config.formatting.system_prompt,
+            template_policy=config.formatting.template_policy,
+        )
+
+    return build_splits_with_formatter(
+        config,
+        data_dir=data_dir,
+        out_dir=out_dir,
+        context=context,
+        command=command,
+        formatter=formatter,
+    )
