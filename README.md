@@ -33,6 +33,14 @@ uv run python sommelier_entrypoint.py
 
 Optional GPU coarse filtering is available with `uv sync --extra data-gpu` and the `--gpu` flag on `sommelier data prepare`.
 
+### Optional extras boundary
+
+`import sommelier` never imports GPU, remote execution, or tracking
+packages. Heavy dependencies stay behind optional extras (for example
+`data-gpu`) and are imported inside stage functions only when a command
+needs them, so contributors on non-GPU machines can run the full local
+suite. `tests/test_imports.py` enforces this boundary in CI.
+
 ## Diagram
 
 ![AI Agent lifecycle](./docs/img/gtcdc25-nemo-diagram.png)
