@@ -22,6 +22,7 @@ SUPPORTED_SCHEMAS = frozenset(
         "sommelier.drop_summary.v1",
         "sommelier.log_event.v1",
         "sommelier.comparison_report.v1",
+        "sommelier.training_metric.v1",
     }
 )
 

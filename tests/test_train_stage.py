@@ -12,6 +12,7 @@ from sommelier.data.prepare import prepare_dataset_fixture
 from sommelier.errors import ArtifactNotFoundError, ExternalDependencyError, UserInputError
 from sommelier.formatting.chat import build_formatted_splits_fixture
 from sommelier.run_context import RunContext, ensure_run_context
+from sommelier.training.metrics import TrainingResult
 from sommelier.training.qlora import build_default_trainer, train_adapter
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
@@ -27,7 +28,7 @@ class StubTrainer:
         train_examples: list[dict[str, object]],
         validation_examples: list[dict[str, object]],
         adapter_dir: Path,
-    ) -> list[dict[str, object]]:
+    ) -> TrainingResult:
         self.train_examples = train_examples
         self.validation_examples = validation_examples
         adapter_dir.mkdir(parents=True, exist_ok=True)
@@ -35,7 +36,10 @@ class StubTrainer:
         (adapter_dir / "adapter_config.json").write_text(
             json.dumps({"r": 16}), encoding="utf-8"
         )
-        return [{"step": 1, "loss": 1.5}]
+        return TrainingResult(
+            history=[{"step": 1, "epoch": 1.0, "loss": 1.5, "learning_rate": 2e-4}],
+            peak_gpu_memory_mb=None,
+        )
 
 
 class EmptyTrainer(StubTrainer):
@@ -44,8 +48,8 @@ class EmptyTrainer(StubTrainer):
         train_examples: list[dict[str, object]],
         validation_examples: list[dict[str, object]],
         adapter_dir: Path,
-    ) -> list[dict[str, object]]:
-        return []
+    ) -> TrainingResult:
+        return TrainingResult(history=[], peak_gpu_memory_mb=None)
 
 
 def setup_run(tmp_path: Path) -> tuple[SommelierConfig, RunContext, Path]:
@@ -101,7 +105,14 @@ def test_train_stage_saves_adapter_and_manifest(tmp_path: Path) -> None:
 
     output_paths = [ref["path"] for ref in manifest["outputs"]]
     assert any(path.endswith("adapter_model.safetensors") for path in output_paths)
-    assert all(ref["kind"] == "adapter_weights" for ref in manifest["outputs"])
+
+    metrics_path = context.run_dir / "train" / "training_metrics.jsonl"
+    assert metrics_path.exists()
+    metrics_refs = [ref for ref in manifest["outputs"] if ref["kind"] == "training_metrics"]
+    assert len(metrics_refs) == 1
+    assert metrics_refs[0]["schema_version"] == "sommelier.training_metric.v1"
+    metric_record = json.loads(metrics_path.read_text(encoding="utf-8").splitlines()[0])
+    assert metric_record["train_loss"] == 1.5
 
     on_disk = json.loads((context.run_dir / "train_manifest.json").read_text(encoding="utf-8"))
     assert on_disk["stage"] == "train"
