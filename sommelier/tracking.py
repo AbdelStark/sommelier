@@ -87,7 +87,7 @@ def track_stage_metrics(
     Disabled tracking is a strict no-op: no provider import, no manifest
     change, and local artifacts are already complete because this runs
     after every local write. When enabled, the tracker run URL is recorded
-    in the run manifest (docs/spec/05-observability.md).
+    in the run manifest.
     """
     if not config.tracking.enabled:
         return None

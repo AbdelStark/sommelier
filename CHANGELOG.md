@@ -4,8 +4,7 @@ All notable, user-visible changes to Sommelier are recorded here.
 
 ## Changelog policy
 
-Per [docs/spec/09-release-and-versioning.md](docs/spec/09-release-and-versioning.md#changelog-policy),
-every user-visible change records:
+Every user-visible change records:
 
 - a category: **Added**, **Changed**, **Fixed**, **Deprecated**,
   **Removed**, or **Security**;
@@ -42,7 +41,7 @@ change; releases move them under a version heading with a date.
   optional wandb experiment tracking via the `tracking` config section.
 - Remote: Modal smoke app under `sommelier.remote.app` and separated
   data/train/eval/serving dependency images with GPU and timeout hooks.
-- Serving: optional, illustrative single-adapter endpoint with RFC-0010
+- Serving: optional, illustrative single-adapter endpoint with strict
   request/response schemas and parser-status responses.
 - Release gates: MIT `LICENSE`, `licenses/THIRD_PARTY.md`, and
   `sommelier release preflight` writing `release_preflight.json`
@@ -113,3 +112,12 @@ change; releases move them under a version heading with a date.
   a required query parameter (`sommelier.serving.openai_compat`); an
   HTTP-level end-to-end test now guards the route where fastapi is
   installed.
+
+### Removed
+
+- The design-phase planning corpus: `prd.md`, `SPEC.md`, `docs/spec/`,
+  `docs/rfcs/`, and the stale `docs/roadmap/` table. The durable content
+  (architecture, data model, error codes, security posture, testing
+  strategy) lives in the project documentation instead. Migration: no
+  command, schema, or artifact behavior changes; update any bookmarks
+  into `docs/spec/` or `docs/rfcs/` to point at the documentation site.

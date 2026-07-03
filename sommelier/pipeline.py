@@ -188,7 +188,7 @@ def apply_smoke_overrides(config: SommelierConfig) -> SommelierConfig:
 
 def pipeline_run_id(mode: PipelineMode, run_id: str | None = None) -> str:
     """Builds the run ID; smoke runs get their own prefix so a later full
-    run can never overwrite smoke artifacts (RFC-0007)."""
+    run can never overwrite smoke artifacts."""
     base = run_id or create_run_id()
     if mode == "smoke" and not base.startswith("smoke-"):
         return f"smoke-{base}"

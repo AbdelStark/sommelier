@@ -52,7 +52,7 @@ def build_release_gates(
     artifact_root: Path,
     environ: Mapping[str, str] | None = None,
 ) -> list[ReleaseGate]:
-    """Evaluates every release gate without raising (RFC-0011)."""
+    """Evaluates every release gate without raising."""
     env = environ if environ is not None else os.environ
     gates: list[ReleaseGate] = []
 
@@ -160,7 +160,7 @@ def run_release_preflight(
 
     A failing secret scan raises SecurityPolicyError (exit 5); any other
     failing gate raises ExternalDependencyError (exit 3), matching the
-    license-gate contract in docs/spec/06-security.md. The report is
+    license-gate contract. The report is
     written before raising so the evidence survives the failure.
     """
     gates = build_release_gates(

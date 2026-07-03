@@ -56,7 +56,7 @@ def test_peak_memory_none_stays_none() -> None:
     assert all(metric["peak_gpu_memory_mb"] is None for metric in metrics)
 
 
-def test_metric_field_names_match_rfc() -> None:
+def test_metric_field_names_match_schema() -> None:
     metrics = build_training_metrics(HF_STYLE_HISTORY, peak_gpu_memory_mb=None)
     assert set(metrics[0].keys()) == {
         "schema_version",

@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 class AdapterService:
-    """Framework-free core of the optional adapter service (RFC-0010).
+    """Framework-free core of the optional adapter service.
 
     Serves one adapter with the exact evaluation prompt policy: the system
     message is rebuilt from the configured instruction and the request's

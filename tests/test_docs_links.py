@@ -11,7 +11,7 @@ EXTERNAL_PREFIXES = ("http://", "https://", "#", "mailto:")
 
 
 def markdown_files() -> list[Path]:
-    files = [REPO_ROOT / "README.md", REPO_ROOT / "SPEC.md", REPO_ROOT / "CHANGELOG.md"]
+    files = [REPO_ROOT / "README.md", REPO_ROOT / "CHANGELOG.md"]
     files.extend((REPO_ROOT / "docs").rglob("*.md"))
     files.extend((REPO_ROOT / "licenses").rglob("*.md"))
     return [path for path in files if path.exists()]

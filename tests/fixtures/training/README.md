@@ -10,5 +10,4 @@ collator end to end.
 
 The local smoke runs the stubbed trainer path (no GPU packages, no model
 download). The real one-training-step gate runs remotely via the smoke
-pipeline (`sommelier pipeline run --mode smoke`), per
-docs/spec/07-testing-strategy.md.
+pipeline (`sommelier pipeline run --mode smoke`).

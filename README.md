@@ -180,17 +180,15 @@ uv run modal run --detach remote_pipeline.py \
 | `sommelier serve adapter` | Optional single-adapter inference endpoint |
 | `sommelier release preflight` | License, notices, acknowledgement, lock, and secret gates |
 
-Command names and flags follow the
-[public API spec](docs/spec/02-public-api.md#cli-contract). Expected errors
-map to documented exit codes (2 input · 3 dependency/license · 4 resource ·
-5 invariant).
+Expected errors map to documented exit codes (2 input · 3
+dependency/license · 4 resource · 5 invariant).
 
 ## 🖥️ Serving (optional and illustrative)
 
 `sommelier serve adapter` starts a single-adapter endpoint for manual
 inspection. It is deliberately not a production serving system:
 no production readiness, no autoscaling, no multi-tenant isolation, no
-streaming ([RFC-0010](docs/rfcs/RFC-0010-optional-inference-service.md)).
+streaming.
 It reuses the evaluation prompt policy and parser, so responses report
 `parse_status` instead of repairing invalid output:
 
@@ -250,9 +248,6 @@ smoke entrypoint polls readiness before asserting.
 
 | Document | Contents |
 |----------|----------|
-| [Product requirements](prd.md) | What v1.0 is and is not |
-| [Specification index](SPEC.md) | The full spec corpus + [RFC index](SPEC.md#rfc-index) |
-| [Detailed specification](docs/spec/00-overview.md) | Architecture, data model, error model, security, testing |
 | [Reproduction guide](docs/guides/reproduction.md) | Clean checkout → full reproduction, with caveats |
 | [v1.0 release checklist](docs/release/v1.0-checklist.md) | Every release blocker mapped to machine-checkable evidence |
 | [Changelog](CHANGELOG.md) | Categorized, migration-noted history |

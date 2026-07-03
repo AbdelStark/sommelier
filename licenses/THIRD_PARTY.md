@@ -2,9 +2,7 @@
 
 This file records the license obligations attached to the third-party model,
 dataset, and runtime packages that the Sommelier reference pipeline consumes.
-It is maintained per [RFC-0011](../docs/rfcs/RFC-0011-security-licensing-and-release-gates.md)
-and [docs/spec/06-security.md](../docs/spec/06-security.md#license-gate), and it
-is checked by the release preflight.
+It is checked by the release preflight (`sommelier release preflight`).
 
 This file is not legal advice. Maintainers must re-verify each source card
 before publishing any derived artifact.

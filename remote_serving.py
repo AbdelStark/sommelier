@@ -27,7 +27,7 @@ Launch-time knobs (read when the app is deployed): SOMMELIER_GPU
 (default L40S), SOMMELIER_MAX_MODEL_LEN (default 4096, the training
 budget). If SOMMELIER_SERVE_API_KEY is present in .env it is required
 as a Bearer token; otherwise the endpoint is open — it stays an
-optional, illustrative service either way (RFC-0010).
+optional, illustrative service either way.
 """
 
 from __future__ import annotations

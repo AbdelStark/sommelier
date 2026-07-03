@@ -46,7 +46,7 @@ Sommelier is my attempt to build on top, and to test the promise on the task I c
 
 The design goal was never to beat frontier models. It was to answer the question a thousand teams are asking right now: can a small open model, post-trained cheaply on your own schemas, become reliable enough to carry the tool-calling load of your agentic product? And can you prove it with numbers instead of vibes?
 
-The shape of the thing follows from that question. Sommelier is a staged CLI: data preparation, chat formatting, baseline evaluation, QLoRA training, adapter evaluation, comparison report. MIT licensed, specification and RFCs in the repo, and a fixture mode that runs the entire pipeline on a laptop with no GPU and no accounts, so CI never needs hardware.
+The shape of the thing follows from that question. Sommelier is a staged CLI: data preparation, chat formatting, baseline evaluation, QLoRA training, adapter evaluation, comparison report. MIT licensed, documented end to end, and a fixture mode that runs the entire pipeline on a laptop with no GPU and no accounts, so CI never needs hardware.
 
 The "prove it" part shaped everything else. A comparison between a base model and a fine-tune is only as good as its controls, so the pipeline enforces them structurally rather than by convention:
 

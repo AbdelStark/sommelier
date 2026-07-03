@@ -50,7 +50,7 @@ def redact_text(text: str) -> str:
     """Redacts token-like values, sensitive env values, and home paths.
 
     This is the write-time redaction applied to log messages and other
-    security-sensitive text artifacts per docs/spec/05-observability.md.
+    security-sensitive text artifacts.
     """
     redacted = text
     for pattern in SECRET_TEXT_PATTERNS:

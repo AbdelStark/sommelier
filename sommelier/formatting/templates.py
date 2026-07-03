@@ -47,7 +47,7 @@ def render_formatted_example(
 ) -> dict[str, object]:
     """Renders one prepared example through the tokenizer chat template.
 
-    Produces a ``sommelier.formatted_example.v1`` record (RFC-0003):
+    Produces a ``sommelier.formatted_example.v1`` record:
 
     - ``prompt_text``: system and user messages rendered with the generation
       prompt appended.
@@ -57,7 +57,7 @@ def render_formatted_example(
 
     Fails with InvariantViolation when the template does not render
     ``full_text`` as ``prompt_text`` followed by the target, because label
-    masking (RFC-0004) needs a provable prompt boundary.
+    masking needs a provable prompt boundary.
     """
     example_id = str(example.get("example_id", "<unknown>"))
     messages = build_messages(

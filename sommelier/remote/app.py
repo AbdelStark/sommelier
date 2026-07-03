@@ -12,7 +12,7 @@ def smoke_square(x: int) -> int:
     """Shared smoke payload executed inside the remote container.
 
     Remote wrappers must call importable package functions instead of
-    defining their own logic (RFC-0007); this is the connectivity smoke
+    defining their own logic; this is the connectivity smoke
     payload the Modal wrapper delegates to.
     """
     return x * x
@@ -24,7 +24,7 @@ def build_app() -> modal.App:
     modal is imported lazily so ``import sommelier`` (and every submodule)
     stays free of remote-execution dependencies. The smoke image mounts the
     sommelier package source; stage-specific dependency images are defined
-    separately (RFC-0007 image separation).
+    separately (one image per dependency stack).
     """
     import modal
 
