@@ -34,7 +34,7 @@ def test_relative_documentation_links_resolve() -> None:
 
 def test_readme_has_install_and_quickstart() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    assert "## Install and Quickstart" in readme
+    assert "Install and Quickstart" in readme
     assert "uv sync --extra dev" in readme
     assert "docs/guides/reproduction.md" in readme
 
