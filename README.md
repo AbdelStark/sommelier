@@ -246,9 +246,18 @@ smoke entrypoint polls readiness before asserting.
 
 ## 📚 Documentation
 
+Full documentation lives at
+**[abdelstark.github.io/sommelier](https://abdelstark.github.io/sommelier/)**:
+concepts, guides, and a complete reference for every command, config
+field, artifact schema, error code, and metric.
+
+Key entry points:
+
 | Document | Contents |
 |----------|----------|
-| [Reproduction guide](docs/guides/reproduction.md) | Clean checkout → full reproduction, with caveats |
+| [Quickstart](https://abdelstark.github.io/sommelier/getting-started/quickstart/) | The fixture pipeline on a laptop, no GPU or accounts |
+| [Reproduction guide](docs/guides/reproduction.md) | Clean checkout to full reproduction, with caveats |
+| [The reference run](https://abdelstark.github.io/sommelier/results/reference-run/) | The published result, its evidence, and its boundaries |
 | [v1.0 release checklist](docs/release/v1.0-checklist.md) | Every release blocker mapped to machine-checkable evidence |
 | [Changelog](CHANGELOG.md) | Categorized, migration-noted history |
 
