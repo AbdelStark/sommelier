@@ -95,13 +95,22 @@ def load_model_generator(
         revision=config.model.tokenizer_revision,
         trust_remote_code=config.model.allow_remote_code,
     )
+    # device_map="auto" is an accelerate/CUDA sharding path; on Apple
+    # Silicon or CPU it leaves modules on the meta device and breaks
+    # adapter dispatch, so load normally there and move the whole model.
+    load_kwargs: dict[str, object] = {}
+    if torch.cuda.is_available():
+        load_kwargs["device_map"] = "auto"
     model = AutoModelForCausalLM.from_pretrained(
         config.model.base_model_id,
         revision=config.model.base_model_revision,
         trust_remote_code=config.model.allow_remote_code,
         dtype="auto",
-        device_map="auto",
+        **load_kwargs,
     )
+    if not torch.cuda.is_available():
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        model = model.to(device)
     if model_kind == "adapter":
         try:
             from peft import PeftModel

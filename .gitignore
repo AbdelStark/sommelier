@@ -66,3 +66,6 @@ Thumbs.db
 # in bench/results/baseline/ and is committed).
 /bench/results/*/
 !/bench/results/baseline/
+
+# Local model downloads and serving scratch
+checkpoints/

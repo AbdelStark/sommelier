@@ -90,3 +90,12 @@ change; releases move them under a version heading with a date.
   (`remove_unused_columns=False` in `sommelier.training.qlora`).
 - Drop-reason counters are derived from the `DropReason` literal, fixing
   a KeyError when a new reason was added (`sommelier.data.split`).
+- Model loading works on Apple Silicon and CPU hosts: `device_map="auto"`
+  is now used only when CUDA is available, otherwise the model loads
+  normally and moves to MPS/CPU, fixing adapter dispatch failures in
+  local serving (`sommelier.evaluation.generate`).
+- The serving completions endpoint accepts its JSON body again: a
+  postponed-annotation resolution issue had demoted the request body to
+  a required query parameter (`sommelier.serving.openai_compat`); an
+  HTTP-level end-to-end test now guards the route where fastapi is
+  installed.
