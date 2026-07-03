@@ -22,6 +22,9 @@ dev = [
     "types-pyyaml>=6.0",
     "python-dotenv>=1.2.2",
 ]
+docs = [
+    "mkdocs-material>=9.6",
+]
 
 [build-system]
 requires = ["hatchling"]

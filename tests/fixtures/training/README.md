@@ -9,5 +9,5 @@ tokenizer path guarantees, so the fixture exercises the completion-only
 collator end to end.
 
 The local smoke runs the stubbed trainer path (no GPU packages, no model
-download). The real one-training-step gate runs remotely via the smoke
-pipeline (`sommelier pipeline run --mode smoke`).
+download). The real one-training-step gate runs on a GPU via the pipeline's
+smoke mode (`remote_pipeline.py`).

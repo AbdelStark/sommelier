@@ -68,6 +68,13 @@ change; releases move them under a version heading with a date.
   multi-call rows now appear in the drop summary instead of the splits.
 - `examples/config.smoke.yaml` raises `train.max_sequence_length` to
   2048; real xlam prompts exceed the previous 1024-token budget.
+- `examples/config.full.yaml` now records the settings that produced the
+  published reference run (`nemotron-8b-full-3`): batch 4 with gradient
+  accumulation 4, `max_sequence_length: 4096`, `remote.gpu: L40S`, and
+  8-hour train/eval timeouts. The previous values (batch 8, 2048 tokens,
+  A10G) failed the sequence-length audit on real xlam rows, which reach
+  2,166 tokens. Migration: rerun `sommelier config validate` if you
+  derived a config from the old example.
 
 ### Added (remote serving)
 
@@ -86,7 +93,7 @@ change; releases move them under a version heading with a date.
 ### Added (remote execution)
 
 - `remote_pipeline.py`: Modal entrypoint running the full pipeline on a
-  GPU — exports the configured Hugging Face dataset to raw rows, chains
+  GPU. It exports the configured Hugging Face dataset to raw rows, chains
   the shared stages with per-stage GPU cleanup and volume commits, audits
   rendered sequence lengths against the training budget before any model
   loads, and persists artifacts to the `sommelier-artifacts` volume.

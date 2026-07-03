@@ -1,0 +1,20 @@
+/* Sommelier palette: burgundy primary, muted rose accent. */
+
+:root {
+  --md-primary-fg-color: #6b2737;
+  --md-primary-fg-color--light: #8c3a4b;
+  --md-primary-fg-color--dark: #4a1b26;
+  --md-accent-fg-color: #a44a5f;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #4a1b26;
+  --md-primary-fg-color--light: #6b2737;
+  --md-primary-fg-color--dark: #33121a;
+  --md-accent-fg-color: #c76c81;
+}
+
+/* Keep tables readable on narrow screens. */
+.md-typeset table:not([class]) {
+  font-size: 0.72rem;
+}
