@@ -206,6 +206,40 @@ def test_http_app_startup_smoke(tmp_path: Path) -> None:
     assert "/health" in routes
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("fastapi") is None
+    or importlib.util.find_spec("httpx") is None,
+    reason="serving HTTP test needs fastapi and httpx",
+)
+def test_http_app_serves_completions_end_to_end(tmp_path: Path) -> None:
+    # Exercises the real HTTP layer: a body-annotation regression once
+    # demoted the JSON payload to a required query parameter, which route
+    # listing alone cannot catch.
+    from fastapi.testclient import TestClient
+
+    from sommelier.serving.openai_compat import build_http_app
+
+    service, _ = make_service(
+        tmp_path, '{"arguments":{"city":"Paris"},"name":"lookup_weather"}'
+    )
+    client = TestClient(build_http_app(service))
+
+    ok = client.post("/v1/chat/completions", json=payload())
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    assert body["parse_status"] == "ok"
+    assert body["parsed_call"]["name"] == "lookup_weather"
+    assert body["model_kind"] == "adapter"
+
+    bad = client.post("/v1/chat/completions", json=payload(temperature=0.9))
+    assert bad.status_code == 422
+    assert bad.json()["error"]["code"] == "SOM202"
+
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.json() == {"status": "ok", "model_kind": "adapter"}
+
+
 def test_serving_module_import_stays_light() -> None:
     import subprocess
     import sys

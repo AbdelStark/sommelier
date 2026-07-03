@@ -66,9 +66,12 @@ module = [
     "uvicorn.*",
 ]
 ignore_missing_imports = true
+# Optional heavy stacks are treated as untyped even when installed, so
+# type checking gives the same result on GPU hosts and minimal CI.
+follow_imports = "skip"
 
 [[tool.mypy.overrides]]
-# fastapi decorators resolve as Any when the optional serving stack is not
-# installed in the type-checking environment.
-module = ["sommelier.serving.openai_compat"]
+# fastapi and modal decorators resolve as Any because their stacks are
+# skipped above; the wrapper modules opt out of the decorator check only.
+module = ["sommelier.serving.openai_compat", "sommelier.remote.app"]
 disallow_untyped_decorators = false

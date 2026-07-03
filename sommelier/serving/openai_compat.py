@@ -120,7 +120,7 @@ def build_http_app(service: AdapterService) -> FastAPI:
     fastapi is part of the optional serving stack and imported lazily.
     """
     try:
-        from fastapi import FastAPI, Request
+        from fastapi import FastAPI
         from fastapi.responses import JSONResponse
     except ImportError as error:
         raise ExternalDependencyError(
@@ -136,9 +136,11 @@ def build_http_app(service: AdapterService) -> FastAPI:
         "Not a production serving system.",
     )
 
+    # The payload annotation must resolve from module globals (postponed
+    # annotations + get_type_hints); locally imported types like Request
+    # would silently degrade to a query parameter.
     @app.post("/v1/chat/completions")
-    async def chat_completions(request: Request) -> Any:
-        payload = await request.json()
+    async def chat_completions(payload: dict[str, Any]) -> Any:
         try:
             return service.handle(payload)
         except SommelierError as error:
