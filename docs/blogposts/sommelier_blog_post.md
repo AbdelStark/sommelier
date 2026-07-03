@@ -8,11 +8,11 @@ A sommelier does one thing supremely well: from a long list, select the one righ
 
 That is exactly what a model must do in an agentic system. Given a request and a list of available tools, select the right tool and fill the right arguments. It is the atomic skill of the agentic era. Every plan, every multi-step workflow, every autonomous loop decomposes into this one act, repeated thousands of times. If the tool call is wrong, nothing downstream can save you. If it is right, cheap, and fast, everything compounds.
 
-So I built [Sommelier](https://github.com/AbdelStark/sommelier): an open, reproducible pipeline that post-trains a small open-weight model to emit schema-valid tool calls, and measures honestly whether the fine-tuned model beats the base model. This post is what happened when I actually ran it, including the part where my own evaluation design turned out to be lying to me.
+So I built [Sommelier](https://github.com/AbdelStark/sommelier): an open, reproducible pipeline that post-trains a small open-weight model to emit schema-valid tool calls, and measures honestly whether the fine-tuned model beats the base model. This post is the story of actually running it, including the part where my own evaluation design lied to me and nearly convinced me that fine-tuning made the model worse.
 
-## The headline result
+## The ending, first
 
-`Llama-3.1-Nemotron-Nano-8B-v1`, QLoRA-tuned on 15,000 function-calling examples for about three hours on one rented L40S. Evaluated greedily on 1,000 held-out prompts, same prompts and parser for both models, parse failures counted as failures:
+You should know whether the rest is worth your time. `Llama-3.1-Nemotron-Nano-8B-v1`, QLoRA-tuned on 15,000 function-calling examples for about three hours on one rented L40S, evaluated greedily on 1,000 held-out prompts with the same prompts and parser for both models, parse failures counted as failures:
 
 | Metric | Base | Adapter | Δ |
 |--------|------|---------|---|
@@ -24,11 +24,13 @@ So I built [Sommelier](https://github.com/AbdelStark/sommelier): an open, reprod
 
 The GPU bill for the successful run was about eight dollars. My mistakes along the way (failed runs, plus a serving crash-loop I let spin for three hours) cost about as much again. The [adapter](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora) and the [exact train/val/test splits](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits) are on Hugging Face, and every number above traces back to a checksummed artifact you can download.
 
-Two honest caveats before anyone gets excited. First, you could get 100% *valid JSON* out of the base model with constrained decoding; grammar-guided generation exists and works. What constrained decoding cannot give you is the jump from 0.705 to 0.874 on full-call exact match. That delta is the model getting better at choosing the right function with the right arguments, not just at emitting parseable syntax. Second, exact-match scoring is harsh: an argument that is semantically right but formatted differently counts as wrong, for both models equally. The absolute numbers are conservative. The deltas are the point.
+Before anyone gets excited, the two objections I would raise myself. You could get 100% *valid JSON* out of the base model with constrained decoding; grammar-guided generation exists and works. What constrained decoding cannot give you is the jump from 0.705 to 0.874 on full-call exact match. That delta is the model getting better at choosing the right function with the right arguments, not just at emitting parseable syntax. And exact-match scoring is harsh: an argument that is semantically right but formatted differently counts as wrong, for both models equally. The absolute numbers are conservative. The deltas are the point.
+
+Those are the numbers. How they almost came out backwards is the better story, so let me tell it in order.
 
 ## The realization that started it
 
-I used to think Nemotron was a family of open models. Good ones, but models.
+It began with a correction to something I believed. I used to think Nemotron was a family of open models. Good ones, but models.
 
 I was wrong, and the correction matters. Nemotron is a system with three layers:
 
@@ -38,39 +40,43 @@ I was wrong, and the correction matters. Nemotron is a system with three layers:
 
 Open weights tell you what a model is. Open recipes tell you how it came to be, and let you rerun the process yourself. That is a different level of openness, and it changes what you can build on top.
 
-## What Sommelier actually is
+Sommelier is my attempt to build on top, and to test the promise on the task I care most about.
 
-A staged CLI: data preparation, chat formatting, baseline evaluation, QLoRA training, adapter evaluation, comparison report. MIT licensed, specification and RFCs in the repo, and a fixture mode that runs the entire pipeline on a laptop with no GPU and no accounts, so CI never needs hardware.
+## Building for the question, not the demo
 
 The design goal was never to beat frontier models. It was to answer the question a thousand teams are asking right now: can a small open model, post-trained cheaply on your own schemas, become reliable enough to carry the tool-calling load of your agentic product? And can you prove it with numbers instead of vibes?
 
-The "prove it" part shaped everything. A comparison between a base model and a fine-tune is only as good as its controls, so the pipeline enforces them structurally rather than by convention:
+The shape of the thing follows from that question. Sommelier is a staged CLI: data preparation, chat formatting, baseline evaluation, QLoRA training, adapter evaluation, comparison report. MIT licensed, specification and RFCs in the repo, and a fixture mode that runs the entire pipeline on a laptop with no GPU and no accounts, so CI never needs hardware.
+
+The "prove it" part shaped everything else. A comparison between a base model and a fine-tune is only as good as its controls, so the pipeline enforces them structurally rather than by convention:
 
 - **Prompts carry digests.** Every formatted example records a SHA-256 of its rendered prompt. Base and adapter evaluation consume the stored prompt text, so they cannot accidentally rebuild prompts differently.
 - **The comparison is gated.** The final report refuses to exist unless both evaluations share the same config digest, test-split digest, prompt-set digest, parser version, and decoding settings. A mismatched comparison is not a warning. It is an error.
 - **The parser never repairs.** It extracts the first balanced JSON span and classifies the result: `ok`, `no_json`, `invalid_json`, or `invalid_shape`. Malformed output is a failure, counted in every denominator. Valid structure is a metric, so a lenient parser would corrupt the experiment.
 - **Loss is computed only on the answer.** Training masks every prompt token and requires the prompt/target token boundary to be provable: the pipeline tokenizes prompt and full text separately and verifies the prefix property holds. If a tokenizer merges tokens across the boundary, training refuses to run rather than silently training on the prompt.
 
-None of this is glamorous. All of it is the difference between a measurement and a demo.
+None of this is glamorous. All of it is the difference between a measurement and a demo. And it paid for itself on the very first real run, though not by preventing a disaster. By making one legible.
 
 ## The bug that taught me the most
 
-The first real smoke run on the 8B produced a result that looked like a disaster: the adapter was *worse* than the base model on every metric. Valid JSON dropped from 95% to 40%.
+The first real smoke run on the 8B produced a result that looked like a catastrophe: the adapter was *worse* than the base model on every metric. Valid JSON dropped from 95% to 40%. Three hours into the project, the honest conclusion appeared to be that fine-tuning hurt.
 
-I stared at that table for longer than I want to admit before doing the obvious thing and reading the raw generations. The adapter had learned its training format perfectly. Canonical JSON, sorted keys, compact separators, byte for byte what the gold targets looked like. The failures were something else entirely: the source dataset ([Salesforce's xlam-function-calling-60k](https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k)) is 52.6% *multi-call* examples, where the gold answer contains two or more tool calls. My v1 contract of one call per request, enforced by the parser, collided with that data in an asymmetric way:
+I stared at that table for longer than I want to admit before doing the obvious thing and reading the raw generations. What I found was stranger than a training failure. The adapter had learned its training format perfectly. Canonical JSON, sorted keys, compact separators, byte for byte what the gold targets looked like. The model was fine. The problem was me.
+
+The source dataset ([Salesforce's xlam-function-calling-60k](https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k)) is 52.6% *multi-call* examples, where the gold answer contains two or more tool calls. My v1 contract of one call per request, enforced by the parser, collided with that data in a way that punished the two models asymmetrically:
 
 - The **base model** emitted multiple loose JSON objects, one after another. The parser extracted the first balanced span, which matched the first gold call. Full credit.
 - The **adapter** faithfully reproduced the complete gold answer as a multi-call array. The single-call parser rejected it as `invalid_shape`. Zero.
 
-A model could emit the byte-exact gold target and score zero, while a model that ignored half the task scored full marks. The evaluation was not measuring what I thought it was measuring.
+Read that again, because it is the whole lesson in two bullets. A model could emit the byte-exact gold target and score zero, while a model that ignored half the task scored full marks. The evaluation was not measuring what I thought it was measuring, and nothing in the aggregate numbers even hinted at it.
 
 The fix was to make the data agree with the contract: preparation now drops multi-call rows as a declared filter, with its own counted drop reason, so training targets, parser, and metrics all describe the same task. After that, the comparison became meaningful, and the adapter won cleanly.
 
-The lesson generalizes and I would tattoo it on every eval harness: **your metric can be wrong in a direction you did not anticipate, and it will look exactly like a model failure.** The only defense is keeping raw generations and actually reading them. If I had trusted the aggregate numbers, I would have concluded that fine-tuning hurt.
+I would tattoo the general form of this on every eval harness: **your metric can be wrong in a direction you did not anticipate, and it will look exactly like a model failure.** The only defense is keeping raw generations and actually reading them.
 
 ## What only real runs catch
 
-The local test suite was green (300+ tests, golden prompt fixtures, property tests on split leakage) and the first three remote runs still failed anyway. Each failure was invisible to any test that does not load real weights:
+The multi-call collision was the deep surprise. The GPU had shallower lessons queued up too, and they are worth listing because every one of them was invisible to a green test suite. Three hundred tests, golden prompt fixtures, property tests on split leakage: all passing, and the first three remote runs still failed.
 
 - **Double BOS.** The rendered chat template already contains the begin-of-text token; tokenizing it again with `add_special_tokens=True` silently duplicated it. Same corruption for both models, so no comparison test caught it. But the evaluated prompt was not the trained prompt.
 - **The Trainer ate my columns.** Recent `transformers` wraps custom collators in a `RemoveColumnsCollator` that strips any feature not in the model's forward signature, including the `prompt_text` and `full_text` my completion-only collator needed. `remove_unused_columns=False` is load-bearing.
@@ -78,11 +84,11 @@ The local test suite was green (300+ tests, golden prompt fixtures, property tes
 - **Real data has a longer tail than you think.** Two prompts out of 16,000 exceeded my 2,048-token training budget. The pipeline now audits every rendered sequence right after formatting, so a budget violation costs thirty seconds instead of failing training forty minutes in, after the baseline evaluation has already spent its GPU time.
 - **vLLM needs nvcc.** Serving the adapter through vLLM crash-looped for hours, with the engine core dying before it could log anything: vLLM JIT-compiles kernels at startup and slim container images do not ship the CUDA toolkit. The devel base image fixed it, and a foreground-diagnostics entrypoint now exists so that class of silent failure costs one focused run.
 
-None of these are exotic. They are what the gap between "the tests pass" and "the system works" looks like in 2026's ML stack, where the libraries under you move monthly. What the pipeline contributed is that every one of these failures was loud. Each raised an explicit error naming the config values that caused it, instead of leaving a silently wrong number in a table.
+None of these are exotic. They are what the gap between "the tests pass" and "the system works" looks like in 2026's ML stack, where the libraries under you move monthly. What the pipeline contributed is that every failure was loud. Each raised an explicit error naming the config values that caused it, instead of leaving a silently wrong number in a table.
 
-## Training, by the numbers
+## The run that finally worked was boring
 
-For the record, and because I wish more posts included this:
+After all of that, the successful run was almost an anticlimax. For the record, because I wish more posts included this:
 
 | | |
 |---|---|
@@ -117,6 +123,8 @@ After this experiment I can make that concrete: sovereignty over a tool-calling 
 This is one run, one seed, one dataset, English only, single-call by design. The report the pipeline generates says exactly that, because a claim without its boundaries is marketing. I have not measured multi-call planning, multi-turn tool use, robustness to out-of-distribution schemas beyond observing that it degrades, or variance across seeds. Next on the list: a French evaluation slice, because tool calling should work as well in French as in English, and that is a claim worth measuring rather than assuming.
 
 If you are exploring post-training for your own product, steal anything you like from Sommelier. The digest-gated comparison and the boundary-proving collator are the parts I would take first. And if you have opinions on the evaluation design, the parser is deliberately conservative and I would genuinely enjoy the argument.
+
+The model, in the end, learned the sommelier's job in three GPU hours: one long list, one right choice, again and again. Teaching myself to measure that honestly took the rest of the time, and it was the part worth writing about.
 
 ---
 
