@@ -224,6 +224,28 @@ typically yield `invalid_json`. Requests are logged with their parse
 status to `<adapter-dir>/../logs/serve.jsonl`. The core evaluation claim
 never depends on serving.
 
+### High-throughput serving on Modal (vLLM)
+
+[`remote_serving.py`](remote_serving.py) deploys the published adapter
+behind vLLM's OpenAI-compatible server on a Modal GPU (scales to zero
+when idle). One deployment registers two models — the base
+(`nvidia/Llama-3.1-Nemotron-Nano-8B-v1`) and the LoRA
+(`sommelier-tool-caller`) — so base-vs-adapter A/B requests hit the same
+endpoint:
+
+```bash
+uv run modal deploy remote_serving.py   # deploy (URL printed)
+uv run modal run remote_serving.py      # smoke: canonical request, parsed
+                                        # with sommelier's own parser
+```
+
+The adapter loads from the published Hugging Face repo by default;
+`SOMMELIER_ADAPTER_VOLUME_PATH` serves one straight from a pipeline run
+on the artifacts volume instead. Set `SOMMELIER_SERVE_API_KEY` in `.env`
+to require a Bearer token — without it the URL is open, so treat it as
+the illustrative endpoint it is. Cold starts take a few minutes; the
+smoke entrypoint polls readiness before asserting.
+
 ## 📚 Documentation
 
 | Document | Contents |

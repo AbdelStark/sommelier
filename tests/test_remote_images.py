@@ -37,6 +37,7 @@ def test_image_construction_smoke() -> None:
         eval_image,
         serving_image,
         train_image,
+        vllm_serving_image,
     )
 
     images = {
@@ -44,10 +45,11 @@ def test_image_construction_smoke() -> None:
         "train": train_image(),
         "eval": eval_image(),
         "serving": serving_image(),
+        "vllm": vllm_serving_image(),
     }
     for name, image in images.items():
         assert isinstance(image, modal.Image), name
-    assert len({id(image) for image in images.values()}) == 4
+    assert len({id(image) for image in images.values()}) == 5
 
 
 def test_stage_options_map_config_timeouts_and_gpu() -> None:

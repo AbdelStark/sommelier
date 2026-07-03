@@ -25,8 +25,12 @@ TRAIN_PACKAGES = (
 )
 EVAL_PACKAGES = ("torch", "transformers", "datasets")
 SERVING_PACKAGES = ("torch", "transformers", "peft", "fastapi", "uvicorn")
+VLLM_PACKAGES = ("vllm", "huggingface_hub")
 
 NVIDIA_INDEX_URL = "https://pypi.nvidia.com"
+
+# vLLM JIT-compiles kernels at startup and needs the full CUDA toolkit.
+CUDA_DEVEL_BASE = "nvidia/cuda:12.8.1-devel-ubuntu24.04"
 
 PipelineStage = Literal["data", "train", "eval"]
 
@@ -77,6 +81,22 @@ def eval_image() -> modal.Image:
 def serving_image() -> modal.Image:
     """Optional OpenAI-compatible adapter serving stack."""
     return _with_source(_python_base().pip_install(*SERVING_PACKAGES))
+
+
+def vllm_serving_image() -> modal.Image:
+    """vLLM inference server stack for high-throughput adapter serving.
+
+    Built from the CUDA devel base image because vLLM's startup warm-up
+    JIT-compiles kernels with nvcc, which slim images lack. The container
+    runs vLLM's own OpenAI-compatible entrypoint and never imports
+    sommelier, so the package source is deliberately not mounted.
+    """
+    import modal
+
+    return modal.Image.from_registry(
+        CUDA_DEVEL_BASE,
+        add_python=PYTHON_VERSION,
+    ).pip_install(*VLLM_PACKAGES)
 
 
 def stage_options(config: SommelierConfig, stage: PipelineStage) -> RemoteStageOptions:
