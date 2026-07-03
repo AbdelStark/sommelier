@@ -70,6 +70,20 @@ change; releases move them under a version heading with a date.
 - `examples/config.smoke.yaml` raises `train.max_sequence_length` to
   2048; real xlam prompts exceed the previous 1024-token budget.
 
+### Added (remote serving)
+
+- `remote_serving.py`: Modal entrypoint serving the trained adapter with
+  vLLM's OpenAI-compatible server (`--enable-lora`), registering both the
+  base model and the `sommelier-tool-caller` LoRA on one endpoint, with
+  adapter sourcing from the published Hugging Face repo or the artifacts
+  volume, optional Bearer-token protection, scale-to-zero, a readiness-
+  polling smoke entrypoint that validates completions through the
+  sommelier parser, and a `diagnose` entrypoint that runs the engine in
+  the foreground with full logs.
+- `sommelier.remote.images.vllm_serving_image`: built from the CUDA devel
+  base image because vLLM's startup warm-up JIT-compiles kernels with
+  nvcc, which slim images lack.
+
 ### Added (remote execution)
 
 - `remote_pipeline.py`: Modal entrypoint running the full pipeline on a
