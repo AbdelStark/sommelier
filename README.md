@@ -2,9 +2,10 @@
 
 # 🍷 Sommelier
 
-**Fine-tune small open models into reliable JSON tool callers — reproducibly, end to end, on a single GPU.**
+**Fine-tune small open models into reliable JSON tool callers. Reproducible, end to end, on a single GPU.**
 
 [![CI](https://img.shields.io/github/actions/workflow/status/AbdelStark/sommelier/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/AbdelStark/sommelier/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/github/actions/workflow/status/AbdelStark/sommelier/docs.yml?branch=main&style=for-the-badge&label=docs)](https://abdelstark.github.io/sommelier/)
 [![Python](https://img.shields.io/badge/python-3.13%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 [![Ruff](https://img.shields.io/badge/lint-ruff-D7FF64?style=for-the-badge)](pyproject.toml)
@@ -13,6 +14,8 @@
 [![Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-LoRA%20adapter-FFD21E?style=for-the-badge)](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora)
 [![Dataset](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-dataset-FFD21E?style=for-the-badge)](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits)
 [![Compute](https://img.shields.io/badge/compute-Modal-7C3AED?style=for-the-badge)](https://modal.com)
+
+**[Documentation](https://abdelstark.github.io/sommelier/)** · **[Quickstart](https://abdelstark.github.io/sommelier/getting-started/quickstart/)** · **[The reference run](https://abdelstark.github.io/sommelier/results/reference-run/)**
 
 </div>
 
@@ -48,12 +51,12 @@ Everything needed to verify or reproduce this row-for-row is public:
 | Reproduction commands | [docs/guides/reproduction.md](docs/guides/reproduction.md) |
 
 Claim boundaries: these numbers hold for the recorded dataset revision,
-prompt policy, parser, and decoding config — they are not claims of
+prompt policy, parser, and decoding config. They are not claims of
 production readiness or general agent reliability.
 
 ## 🏗️ Pipeline architecture
 
-One CLI, six stages, no hidden state — stages communicate only through
+One CLI, six stages, no hidden state. Stages communicate only through
 schema-versioned files under an artifact root, and every transition writes a
 manifest with input/output checksums.
 
@@ -109,22 +112,25 @@ manifest with input/output checksums.
 
 ## ✨ What makes it strict
 
-- **Determinism as a contract** — seeded splits, greedy decoding, pinned
+- **Determinism as a contract.** Seeded splits, greedy decoding, pinned
   revisions, and digest-gated comparisons; drift fails loudly.
-- **Completion-only training** — prompt tokens are masked with a
+- **Completion-only training.** Prompt tokens are masked with a
   *proven* prompt/target token boundary; if a tokenizer merges across it,
   training refuses to fall back to full-sequence loss.
-- **Conservative evaluation** — the parser extracts the first balanced
+- **Conservative evaluation.** The parser extracts the first balanced
   JSON span and never repairs output; `no_json`, `invalid_json`, and
   `invalid_shape` all count against every metric.
-- **Honest data policy** — ~52% of xlam rows are multi-call; they are
-  dropped via a declared filter (recorded in the drop summary) because the
-  v1 contract trains and scores exactly one call.
-- **Security by default** — secrets live in the environment only; logs,
+- **Honest data policy.** 52.6% of xlam rows answer with more than one
+  call; they are dropped via a declared filter (recorded in the drop
+  summary) because the v1 contract trains and scores exactly one call.
+- **Security by default.** Secrets live in the environment only; logs,
   manifests, and reports are redaction-scanned; releases are gated by
   `sommelier release preflight`.
-- **GPU-free core** — `import sommelier` never touches torch/CUDA; heavy
+- **GPU-free core.** `import sommelier` never touches torch/CUDA; heavy
   stacks stay behind optional extras and remote images (enforced in CI).
+
+Each of these is a deliberate trade, and the docs record what was
+rejected and why: [design decisions](https://abdelstark.github.io/sommelier/concepts/design-decisions/).
 
 ## 🚀 Install and Quickstart
 
@@ -143,7 +149,7 @@ uv run sommelier format build --config examples/config.smoke.yaml \
   --out examples/artifacts/runs/local/formatted --run-id local --fixture
 ```
 
-Everything above runs on a clean machine — no GPU, no accounts. The
+Everything above runs on a clean machine: no GPU, no accounts. The
 [reproduction guide](docs/guides/reproduction.md) covers the remote
 prerequisites (Modal account, `HF_TOKEN`, license acknowledgement), the
 smoke and full runs, and how to read the report.
@@ -180,8 +186,11 @@ uv run modal run --detach remote_pipeline.py \
 | `sommelier serve adapter` | Optional single-adapter inference endpoint |
 | `sommelier release preflight` | License, notices, acknowledgement, lock, and secret gates |
 
-Expected errors map to documented exit codes (2 input · 3
-dependency/license · 4 resource · 5 invariant).
+Expected errors map to documented
+[exit codes](https://abdelstark.github.io/sommelier/reference/errors/)
+(2 input · 3 dependency/license · 4 resource · 5 invariant); the full
+command reference is in the
+[docs](https://abdelstark.github.io/sommelier/reference/cli/).
 
 ## 🖥️ Serving (optional and illustrative)
 
@@ -215,7 +224,7 @@ curl -s http://127.0.0.1:8000/v1/chat/completions \
 ```
 
 Tool schemas should use the xlam-style flat parameter map shown above
-(`"parameters": {"<param>": {"description": …, "type": …}}`) — the shape
+(`"parameters": {"<param>": {"description": …, "type": …}}`), the shape
 the published adapter was trained on; JSON-Schema-style
 `{"type": "object", "properties": …}` tools are out of distribution and
 typically yield `invalid_json`. Requests are logged with their parse
@@ -226,9 +235,9 @@ never depends on serving.
 
 [`remote_serving.py`](remote_serving.py) deploys the published adapter
 behind vLLM's OpenAI-compatible server on a Modal GPU (scales to zero
-when idle). One deployment registers two models — the base
+when idle). One deployment registers two models, the base
 (`nvidia/Llama-3.1-Nemotron-Nano-8B-v1`) and the LoRA
-(`sommelier-tool-caller`) — so base-vs-adapter A/B requests hit the same
+(`sommelier-tool-caller`), so base-vs-adapter A/B requests hit the same
 endpoint:
 
 ```bash
@@ -240,7 +249,7 @@ uv run modal run remote_serving.py      # smoke: canonical request, parsed
 The adapter loads from the published Hugging Face repo by default;
 `SOMMELIER_ADAPTER_VOLUME_PATH` serves one straight from a pipeline run
 on the artifacts volume instead. Set `SOMMELIER_SERVE_API_KEY` in `.env`
-to require a Bearer token — without it the URL is open, so treat it as
+to require a Bearer token; without it the URL is open, so treat it as
 the illustrative endpoint it is. Cold starts take a few minutes; the
 smoke entrypoint polls readiness before asserting.
 
@@ -277,6 +286,10 @@ module in a clean interpreter. Optional GPU coarse filtering is available
 with `uv sync --extra data-gpu` and the `--gpu` flag on
 `sommelier data prepare`; preparing real rows with `--input` requires at
 least as many valid deduplicated rows as the configured split sizes.
+
+The documentation site builds locally with
+`uv sync --extra docs && uv run mkdocs serve`; CI builds it strict on
+every pull request and deploys it to GitHub Pages on merge.
 
 ## ⚖️ License
 
