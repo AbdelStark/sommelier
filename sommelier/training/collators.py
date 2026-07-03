@@ -34,7 +34,7 @@ def build_completion_labels(
     """Builds completion-only labels: prompt masked, target preserved.
 
     Every prompt token receives ``ignore_index``; assistant target tokens
-    keep their IDs (RFC-0004). A boundary that leaves no target tokens, or
+    keep their IDs. A boundary that leaves no target tokens, or
     that is out of range, fails instead of silently training on the full
     sequence.
     """
@@ -65,7 +65,7 @@ def find_prompt_token_count(
     ``full_text`` must start with ``prompt_text``, and the full sequence's
     token prefix must equal the prompt's own tokenization. When a tokenizer
     merges tokens across the boundary the proof fails and training must
-    stop (RFC-0003: no fallback to full-sequence loss).
+    stop (no fallback to full-sequence loss).
     """
     if not full_text.startswith(prompt_text):
         raise SchemaValidationError(

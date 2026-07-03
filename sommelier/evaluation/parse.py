@@ -68,7 +68,7 @@ def _validate_call_shape(payload: object) -> ToolCall | None:
 
 
 def parse_tool_call(text: str) -> tuple[ToolCall | None, ParseStatus]:
-    """Conservatively parses one tool call from generated text (RFC-0005).
+    """Conservatively parses one tool call from generated text.
 
     Extraction takes the first balanced JSON object or array in the text;
     surrounding prose is ignored, but nothing inside the span is repaired.

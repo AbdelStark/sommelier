@@ -40,8 +40,8 @@ class TextGenerator(Protocol):
 def validate_decoding(config: SommelierConfig) -> DecodingConfig:
     """Builds the decoding config, rejecting anything non-deterministic.
 
-    Reference evaluation requires temperature 0.0 and sampling disabled
-    (RFC-0005); any other setting fails instead of being silently coerced.
+    Reference evaluation requires temperature 0.0 and sampling disabled;
+    any other setting fails instead of being silently coerced.
     """
     if config.eval.temperature != 0.0:
         raise EvaluationError(
@@ -159,7 +159,7 @@ def run_generation(
     """Generates one output per formatted test prompt and persists records.
 
     Prompts come exclusively from the stored ``prompt_text`` of the
-    formatted test split (RFC-0003: evaluation never rebuilds prompts).
+    formatted test split (evaluation never rebuilds prompts).
     Every record is written to ``generations.jsonl`` with its parse status
     and the deterministic decoding config, even when parsing fails.
     """

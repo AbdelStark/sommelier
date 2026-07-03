@@ -10,8 +10,8 @@ if TYPE_CHECKING:
 
 PYTHON_VERSION = "3.13"
 
-# Version pins are added after the first green remote smoke run per
-# RFC-0007; until then the stacks below track latest releases.
+# Version pins are added after the first green remote smoke run;
+# until then the stacks below track latest releases.
 BASE_PACKAGES = ("pydantic>=2.0", "pyyaml>=6.0")
 DATA_PACKAGES = ("cudf-cu12",)
 TRAIN_PACKAGES = (

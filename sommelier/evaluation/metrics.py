@@ -42,7 +42,7 @@ def flatten_arguments(arguments: object, prefix: str = "") -> dict[str, str]:
     """Flattens nested arguments into dotted key paths with canonical values.
 
     Objects extend the path with ``.key``, lists are compared by index with
-    ``[i]`` (RFC-0005), and every leaf value is serialized as canonical
+    ``[i]``, and every leaf value is serialized as canonical
     scalar JSON. Empty objects and arrays are leaves.
     """
     pairs: dict[str, str] = {}

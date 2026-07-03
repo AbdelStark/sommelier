@@ -38,7 +38,7 @@ def build() -> list[ChatMessage]:
     )
 
 
-def test_messages_have_rfc_roles_and_content() -> None:
+def test_messages_have_canonical_roles_and_content() -> None:
     messages = build()
 
     assert [message["role"] for message in messages] == ["system", "user", "assistant"]

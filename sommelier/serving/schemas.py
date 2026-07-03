@@ -13,7 +13,7 @@ ALLOWED_ROLES = ("system", "user", "assistant")
 
 
 class ServeRequest(TypedDict):
-    """RFC-0010 request shape: chat messages plus tool schemas.
+    """Serve request shape: chat messages plus tool schemas.
 
     Serving is deterministic like evaluation: temperature must be exactly
     0.0 and max_tokens positive. Unknown fields are rejected so silent
@@ -36,7 +36,7 @@ class ServeResponse(TypedDict):
 def _fail(message: str) -> SchemaValidationError:
     return SchemaValidationError(
         f"invalid serve request: {message}",
-        hint="Match the RFC-0010 request shape: messages, tools, "
+        hint="Match the serve request shape: messages, tools, "
         "temperature (0.0), and max_tokens.",
     )
 
@@ -121,7 +121,7 @@ def validate_serve_request(payload: object) -> ServeRequest:
 
 
 def build_serve_response(raw_text: str) -> ServeResponse:
-    """Builds the response for generated text, reusing the RFC-0005 parser.
+    """Builds the response for generated text, reusing the evaluation parser.
 
     Parse failures are reported in parse_status, never repaired; the raw
     text is always returned for inspection.

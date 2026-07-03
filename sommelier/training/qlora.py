@@ -72,8 +72,8 @@ def map_resource_failure(
     """Maps OOM and timeout failures to actionable ResourceErrors (exit 4).
 
     The hint names the exact config fields to change; Sommelier never
-    retries with silently altered batch, sequence, or GPU settings
-    (RFC-0004). Unrecognized failures return None and propagate unchanged.
+    retries with silently altered batch, sequence, or GPU settings.
+    Unrecognized failures return None and propagate unchanged.
     """
     lowered = str(error).lower()
     is_oom = (
@@ -111,7 +111,7 @@ def build_default_trainer(config: SommelierConfig) -> AdapterTrainer:
 
     torch/transformers/peft/bitsandbytes are optional extras imported
     inside the stage. Hyperparameters come from the validated config and
-    are never adjusted to fit hardware (RFC-0004).
+    are never adjusted to fit hardware.
     """
     try:
         import torch
@@ -245,7 +245,7 @@ def train_adapter(
     command: list[str],
     trainer: AdapterTrainer | None = None,
 ) -> StageManifest:
-    """Trains the LoRA adapter on the formatted train split (RFC-0004).
+    """Trains the LoRA adapter on the formatted train split.
 
     Reads train and validation splits, trains through the injected or
     default QLoRA trainer, saves the adapter directory under ``out_dir``,

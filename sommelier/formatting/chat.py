@@ -31,7 +31,7 @@ def canonical_json(payload: object) -> str:
 
     Canonical form uses sorted keys, compact separators, and ASCII escapes,
     so byte-identical inputs always produce byte-identical prompt text and
-    digests (RFC-0003).
+    digests.
     """
     return json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
@@ -76,7 +76,7 @@ def validate_assistant_target(content: str, *, context: str = "assistant target"
 
     Explanatory prefixes or suffixes, markdown fences, or non-canonical key
     ordering all fail: the content must parse as JSON and re-serialize to the
-    identical canonical string (RFC-0003: the target is only the JSON call).
+    identical canonical string (the target is only the JSON call).
     """
     try:
         parsed = json.loads(content)
@@ -103,7 +103,7 @@ def build_prompt_messages(
     """Builds the system and user messages of the shared prompt policy.
 
     Formatting, evaluation, and serving all construct prompts through this
-    function so prompt parity is guaranteed by construction (RFC-0010).
+    function so prompt parity is guaranteed by construction.
     """
     tools_json = canonical_json(tools)
     system_content = f"{system_prompt.strip()}\n\nAvailable tools:\n{tools_json}"
@@ -123,7 +123,7 @@ def build_messages(
 ) -> list[ChatMessage]:
     """Builds the three-message chat sequence for one prepared example.
 
-    Per RFC-0003: the system message carries the instruction plus the
+    The system message carries the instruction plus the
     canonical JSON tool schemas, the user message carries the raw query, and
     the assistant message carries only the canonical JSON gold calls.
     """
@@ -257,7 +257,7 @@ def build_formatted_splits(
     command: list[str],
     tokenizer: object | None = None,
 ) -> list[ArtifactRef]:
-    """Builds formatted splits through the tokenizer chat template (RFC-0003).
+    """Builds formatted splits through the tokenizer chat template.
 
     When no tokenizer instance is injected, the configured tokenizer is
     loaded lazily; transformers stays an optional dependency imported inside

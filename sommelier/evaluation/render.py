@@ -64,7 +64,7 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
     """Renders the human-readable report from the authoritative JSON.
 
     The Markdown is a rendering only; automation must consume
-    comparison_report.json (RFC-0009).
+    comparison_report.json.
     """
     shared = comparison["shared"]
     run_id = str(comparison["run_id"])
