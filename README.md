@@ -195,18 +195,34 @@ It reuses the evaluation prompt policy and parser, so responses report
 `parse_status` instead of repairing invalid output:
 
 ```bash
+uv run sommelier serve adapter --config examples/config.full.yaml \
+  --adapter <path-to-adapter-dir>
+
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
     "messages": [{"role": "user", "content": "What is the weather in Paris today?"}],
-    "tools": [{"name": "lookup_weather", "description": "Look up weather for a city.",
-               "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}],
+    "tools": [{"name": "lookup_weather",
+               "description": "Look up the current weather for a city.",
+               "parameters": {"city": {"description": "Name of the city.", "type": "str"}}}],
     "temperature": 0.0,
     "max_tokens": 256
   }'
 ```
 
-The core evaluation claim never depends on serving.
+```json
+{"raw_text": "[{\"arguments\":{\"city\":\"Paris\"},\"name\":\"lookup_weather\"}]",
+ "parsed_call": {"name": "lookup_weather", "arguments": {"city": "Paris"}},
+ "parse_status": "ok", "model_kind": "adapter"}
+```
+
+Tool schemas should use the xlam-style flat parameter map shown above
+(`"parameters": {"<param>": {"description": …, "type": …}}`) — the shape
+the published adapter was trained on; JSON-Schema-style
+`{"type": "object", "properties": …}` tools are out of distribution and
+typically yield `invalid_json`. Requests are logged with their parse
+status to `<adapter-dir>/../logs/serve.jsonl`. The core evaluation claim
+never depends on serving.
 
 ## 📚 Documentation
 
