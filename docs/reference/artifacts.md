@@ -22,7 +22,7 @@ Everything a run produces lives under `<artifact_root>/runs/<run_id>/`:
 │   ├── test.jsonl
 │   └── drop_summary.json        sommelier.drop_summary.v2: what was filtered per language, and why
 ├── formatted/
-│   ├── train.jsonl              sommelier.formatted_example.v1
+│   ├── train.jsonl              sommelier.formatted_example.v2
 │   ├── validation.jsonl
 │   └── test.jsonl
 ├── train/
@@ -48,7 +48,7 @@ Details worth knowing:
 
 ## Schema catalog
 
-`SUPPORTED_SCHEMAS` in [`sommelier/artifacts.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/artifacts.py) is a closed set of fifteen ids. Two more version strings live outside it, listed at the bottom of the table. Superseded versions (`sommelier.config.v1`, `sommelier.prepared_example.v1`, `sommelier.drop_summary.v1`) stay in the set with no current writer, so artifacts from earlier runs keep validating.
+`SUPPORTED_SCHEMAS` in [`sommelier/artifacts.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/artifacts.py) is a closed set of sixteen ids. Two more version strings live outside it, listed at the bottom of the table. Superseded versions (`sommelier.config.v1`, `sommelier.prepared_example.v1`, `sommelier.drop_summary.v1`, `sommelier.formatted_example.v1`) stay in the set with no current writer, so artifacts from earlier runs keep validating.
 
 | Schema id | One record is | Written by |
 |-----------|---------------|------------|
@@ -57,7 +57,7 @@ Details worth knowing:
 | `sommelier.raw_tool_call_row.v1` | one untrusted source row: query plus raw `tools`/`answers` JSON strings, plus `source_example_id` on paired-source rows | produced upstream (dataset export, fixtures); consumed by `data prepare` |
 | `sommelier.prepared_example.v2` | one validated example with parsed tools, gold call, language, and split assignment | `data prepare` |
 | `sommelier.drop_summary.v2` | per-language counts of dropped rows per drop reason, plus split accounting | `data prepare` |
-| `sommelier.formatted_example.v1` | one rendered prompt/target pair with its prompt digest | `format build` |
+| `sommelier.formatted_example.v2` | one rendered prompt/target pair with its language and prompt digest | `format build` |
 | `sommelier.generation.v1` | one raw model output with parse status and decoding config | `eval run` |
 | `sommelier.evaluation_report.v1` | the five metrics plus identity digests for one model | `eval run` |
 | `sommelier.comparison_report.v1` | the gated base-versus-adapter comparison | `report compare` |
@@ -110,11 +110,13 @@ Field lists below are verified against the code; the config schema has its own [
 | `languages` | dict | per language: `counts` per [drop reason](../concepts/data.md), `valid_rows`, `deduplicated_rows`, and final `split_sizes` |
 | `requested` | dict | the configured `train`/`validation`/`test` sizes (they describe the root source; paired sources may run short) |
 
-### `sommelier.formatted_example.v1`
+### `sommelier.formatted_example.v2`
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `example_id`, `split` | str | join keys back to the prepared example |
+| `language` | str | carried from the prepared example; evaluation slices filter on it |
+| `source_example_id` | str \| null | carried from the prepared example |
 | `messages` | list | `{role, content}` for system, user, assistant |
 | `prompt_text` | str | system and user messages rendered with the generation prompt |
 | `target_text` | str | the canonical JSON of the gold calls, nothing else |

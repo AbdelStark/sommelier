@@ -100,34 +100,43 @@ def _audit_sequence_lengths(paths, config) -> None:  # type: ignore[no-untyped-d
 
     tokenizer = load_tokenizer(config)
     max_len = config.train.max_sequence_length
-    lengths: list[int] = []
-    violations: list[str] = []
+    lengths_by_language: dict[str, list[int]] = {}
+    violations_by_language: dict[str, list[str]] = {}
     for split in ("train", "validation"):
         split_path = paths.formatted_dir / f"{split}.jsonl"
         for line in split_path.read_text(encoding="utf-8").splitlines():
             record = json.loads(line)
+            language = str(record.get("language", "unknown"))
             full_tokens = len(tokenizer.encode(record["full_text"], add_special_tokens=False))
-            lengths.append(full_tokens)
+            lengths_by_language.setdefault(language, []).append(full_tokens)
             if full_tokens > max_len:
                 # Anything over budget either loses target tokens to
                 # truncation (silently corrupting labels) or, when the
                 # prompt alone exceeds it, fails the collator outright.
-                violations.append(
+                violations_by_language.setdefault(language, []).append(
                     f"{record['example_id']}: full sequence {full_tokens} tokens "
                     f"> max_sequence_length {max_len}"
                 )
-    lengths.sort()
-    print(
-        "[pipeline] sequence-length audit: "
-        f"n={len(lengths)} p50={lengths[len(lengths) // 2]} "
-        f"p95={lengths[int(len(lengths) * 0.95)]} max={lengths[-1]} "
-        f"budget={max_len}",
-        flush=True,
-    )
-    if violations:
+    # French (or any added language) typically tokenizes longer than
+    # English on this tokenizer, so the budget is verified per language
+    # rather than trusted from the English numbers.
+    for language in sorted(lengths_by_language):
+        lengths = sorted(lengths_by_language[language])
+        print(
+            f"[pipeline] sequence-length audit [{language}]: "
+            f"n={len(lengths)} p50={lengths[len(lengths) // 2]} "
+            f"p95={lengths[int(len(lengths) * 0.95)]} max={lengths[-1]} "
+            f"budget={max_len}",
+            flush=True,
+        )
+    if violations_by_language:
+        offending = sorted(violations_by_language)
+        first_language = offending[0]
+        total = sum(len(violations) for violations in violations_by_language.values())
         raise UserInputError(
-            f"{len(violations)} example(s) cannot fit train.max_sequence_length "
-            f"{max_len}; first: {violations[0]}",
+            f"{total} example(s) cannot fit train.max_sequence_length "
+            f"{max_len} (languages: {', '.join(offending)}); "
+            f"first: {violations_by_language[first_language][0]}",
             hint="Raise train.max_sequence_length above the longest rendered "
             "sequence.",
         )

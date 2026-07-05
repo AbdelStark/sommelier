@@ -114,10 +114,12 @@ One formatted example from `formatted/test.jsonl`, long fields elided:
 {
   "example_id": "test-1",
   "full_text": "[{\"content\":\"You are a tool-calling model. ...",
+  "language": "en",
   "messages": [ "...system, user, and assistant messages..." ],
   "prompt_sha256": "a6888fd273c33cebeb5e1152c6e9fc2e2b308cec3fc31051986ea989fdbe7704",
   "prompt_text": "[{\"content\":\"You are a tool-calling model. ...",
-  "schema_version": "sommelier.formatted_example.v1",
+  "schema_version": "sommelier.formatted_example.v2",
+  "source_example_id": null,
   "split": "test",
   "target_text": "[{\"arguments\":{\"city\":\"Paris\"},\"name\":\"lookup_weather\"}]",
   "template_policy": "tokenizer_chat_template",
@@ -130,7 +132,7 @@ One formatted example from `formatted/test.jsonl`, long fields elided:
 
 ## What fixture mode does not show
 
-Real preparation also writes `data/drop_summary.json`, counting how many raw rows fell to each of the eleven declared drop reasons (multi-call answers, invalid JSON, duplicate queries, and so on). Fixture rows are synthesized already valid, so there is nothing to drop and no drop summary here. [Data policy](../concepts/data.md) covers the filter and why its record matters.
+Real preparation also writes `data/drop_summary.json`, counting per language how many raw rows fell to each of the sixteen declared drop reasons (multi-call answers, invalid JSON, duplicate queries, pairing violations, and so on). Fixture rows are synthesized already valid, so there is nothing to drop and no drop summary here. [Data policy](../concepts/data.md) covers the filter and why its record matters.
 
 ## Stages that need the GPU stack
 

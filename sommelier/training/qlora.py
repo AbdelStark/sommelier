@@ -11,6 +11,7 @@ from sommelier.errors import (
     SommelierError,
     UserInputError,
 )
+from sommelier.formatting.chat import FORMATTED_EXAMPLE_SCHEMA
 from sommelier.manifests import (
     StageManifest,
     build_stage_manifest,
@@ -29,7 +30,7 @@ from sommelier.training.metrics import (
     write_training_metrics,
 )
 
-FORMATTED_SCHEMA: Final = "sommelier.formatted_example.v1"
+FORMATTED_SCHEMA: Final = FORMATTED_EXAMPLE_SCHEMA
 
 
 class AdapterTrainer(Protocol):
@@ -63,6 +64,33 @@ def _read_split(formatted_dir: Path, split: str) -> list[dict[str, object]]:
                 hint="Rebuild the formatted splits with the current pipeline version.",
             )
     return records
+
+
+def _select_training_languages(
+    records: list[dict[str, object]],
+    languages: list[str],
+    *,
+    split: str,
+) -> tuple[list[dict[str, object]], dict[str, int]]:
+    """Keeps the configured training languages and counts what was kept.
+
+    A configured language with zero rows in the split is an error, not a
+    silent skip: training on less data than the config claims would make
+    the run's evidence lie about what the adapter saw.
+    """
+    selected = [record for record in records if record.get("language") in languages]
+    counts = {language: 0 for language in languages}
+    for record in selected:
+        counts[str(record["language"])] += 1
+    empty = sorted(language for language, count in counts.items() if count == 0)
+    if empty:
+        raise UserInputError(
+            f"train.languages includes {', '.join(empty)} but the formatted "
+            f"{split} split has no rows for it",
+            hint="Prepare and format data for every configured training "
+            "language, or remove it from train.languages.",
+        )
+    return selected, counts
 
 
 def map_resource_failure(
@@ -253,8 +281,16 @@ def train_adapter(
     split digests. Validation data is used for eval loss only; the test
     split is never read here (INV-DATA-003).
     """
-    train_examples = _read_split(formatted_dir, "train")
-    validation_examples = _read_split(formatted_dir, "validation")
+    train_examples, train_counts = _select_training_languages(
+        _read_split(formatted_dir, "train"),
+        config.train.languages,
+        split="train",
+    )
+    validation_examples, validation_counts = _select_training_languages(
+        _read_split(formatted_dir, "validation"),
+        config.train.languages,
+        split="validation",
+    )
 
     active_trainer = trainer if trainer is not None else build_default_trainer(config)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -325,6 +361,11 @@ def train_adapter(
         inputs=input_refs,
         outputs=output_refs,
         status="succeeded",
+        details={
+            "train_languages": list(config.train.languages),
+            "train_examples_by_language": train_counts,
+            "validation_examples_by_language": validation_counts,
+        },
     )
     stage_ref = write_stage_manifest(
         manifest,

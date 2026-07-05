@@ -116,6 +116,8 @@ def test_prompt_parity_with_evaluation_policy(tmp_path: Path) -> None:
         {
             "example_id": "parity-1",
             "split": "test",
+            "language": "en",
+            "source_example_id": None,
             "query": QUERY,
             "tools": [dict(tool) for tool in TOOLS],
             "gold_calls": [{"name": "lookup_weather", "arguments": {"city": "Paris"}}],

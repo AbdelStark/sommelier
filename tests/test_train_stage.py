@@ -135,6 +135,95 @@ def test_train_stage_feeds_train_and_validation_splits(tmp_path: Path) -> None:
     assert [example["split"] for example in trainer.validation_examples] == ["validation"]
 
 
+def setup_bilingual_run(
+    tmp_path: Path,
+    train_languages: list[str],
+) -> tuple[SommelierConfig, RunContext, Path]:
+    raw = yaml.safe_load((EXAMPLES_DIR / "config.smoke.yaml").read_text(encoding="utf-8"))
+    raw["data"]["n_train"] = 2
+    raw["data"]["n_validation"] = 1
+    raw["data"]["n_test"] = 1
+    french = dict(raw["datasets"][0])
+    french["language"] = "fr"
+    french["source_id_column"] = "source_example_id"
+    raw["datasets"].append(french)
+    raw["train"]["languages"] = train_languages
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    config = load_config(config_path)
+    context = ensure_run_context(
+        config,
+        config_path=config_path,
+        run_id="train-test-bilingual",
+        project_root=tmp_path,
+    )
+    data_dir = context.run_dir / "data"
+    formatted_dir = context.run_dir / "formatted"
+    prepare_dataset_fixture(config, out_dir=data_dir, context=context, command=["test"])
+    build_formatted_splits_fixture(
+        config,
+        data_dir=data_dir,
+        out_dir=formatted_dir,
+        context=context,
+        command=["test"],
+    )
+    return config, context, formatted_dir
+
+
+def test_train_stage_records_language_counts(tmp_path: Path) -> None:
+    config, context, formatted_dir = setup_run(tmp_path)
+    manifest = train_adapter(
+        config,
+        formatted_dir,
+        context.run_dir / "train" / "adapter",
+        context=context,
+        command=["test"],
+        trainer=StubTrainer(),
+    )
+    details = manifest["details"]
+    assert details["train_languages"] == ["en"]
+    assert details["train_examples_by_language"] == {"en": 2}
+    assert details["validation_examples_by_language"] == {"en": 1}
+
+
+def test_train_stage_filters_to_configured_languages(tmp_path: Path) -> None:
+    config, context, formatted_dir = setup_bilingual_run(tmp_path, ["fr"])
+    trainer = StubTrainer()
+    manifest = train_adapter(
+        config,
+        formatted_dir,
+        context.run_dir / "train" / "adapter",
+        context=context,
+        command=["test"],
+        trainer=trainer,
+    )
+    assert {example["language"] for example in trainer.train_examples} == {"fr"}
+    assert {example["language"] for example in trainer.validation_examples} == {"fr"}
+    assert manifest["details"]["train_examples_by_language"] == {"fr": 2}
+
+
+def test_train_stage_errors_on_language_with_no_rows(tmp_path: Path) -> None:
+    config, context, formatted_dir = setup_bilingual_run(tmp_path, ["en", "fr"])
+    train_path = formatted_dir / "train.jsonl"
+    english_only = [
+        line
+        for line in train_path.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["language"] == "en"
+    ]
+    train_path.write_text("".join(line + "\n" for line in english_only), encoding="utf-8")
+
+    with pytest.raises(UserInputError, match="train.languages includes fr"):
+        train_adapter(
+            config,
+            formatted_dir,
+            context.run_dir / "train" / "adapter",
+            context=context,
+            command=["test"],
+            trainer=StubTrainer(),
+        )
+
+
 def test_train_stage_rejects_missing_split(tmp_path: Path) -> None:
     config, context, formatted_dir = setup_run(tmp_path)
     (formatted_dir / "validation.jsonl").unlink()

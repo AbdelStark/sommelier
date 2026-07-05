@@ -5,9 +5,7 @@ from typing import Protocol
 
 from sommelier.config import SommelierConfig
 from sommelier.errors import ExternalDependencyError, InvariantViolation
-from sommelier.formatting.chat import ChatMessage, build_messages
-
-FORMATTED_EXAMPLE_SCHEMA = "sommelier.formatted_example.v1"
+from sommelier.formatting.chat import FORMATTED_EXAMPLE_SCHEMA, ChatMessage, build_messages
 
 
 class ChatTemplateRenderer(Protocol):
@@ -47,7 +45,7 @@ def render_formatted_example(
 ) -> dict[str, object]:
     """Renders one prepared example through the tokenizer chat template.
 
-    Produces a ``sommelier.formatted_example.v1`` record:
+    Produces a ``sommelier.formatted_example.v2`` record:
 
     - ``prompt_text``: system and user messages rendered with the generation
       prompt appended.
@@ -96,6 +94,8 @@ def render_formatted_example(
         "schema_version": FORMATTED_EXAMPLE_SCHEMA,
         "example_id": example["example_id"],
         "split": example["split"],
+        "language": example["language"],
+        "source_example_id": example.get("source_example_id"),
         "messages": plain,
         "prompt_text": prompt_text,
         "target_text": target_text,

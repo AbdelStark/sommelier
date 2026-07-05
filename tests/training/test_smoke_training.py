@@ -88,7 +88,7 @@ def test_fixture_is_internally_coherent() -> None:
     for split in ("train", "validation"):
         for line in (FIXTURE_DIR / f"{split}.jsonl").read_text(encoding="utf-8").splitlines():
             record = json.loads(line)
-            assert record["schema_version"] == "sommelier.formatted_example.v1"
+            assert record["schema_version"] == "sommelier.formatted_example.v2"
             prompt_text = record["prompt_text"]
             assert record["full_text"].startswith(prompt_text)
             assert record["target_text"] in record["full_text"]

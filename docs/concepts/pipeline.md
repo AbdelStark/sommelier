@@ -11,12 +11,12 @@ flowchart TB
     P1["<b>data prepare</b><br>validate rows · drop multi-call · dedupe · split"]
     P1 -->|prepared_example.v2 + drop summary| P2
     P2["<b>format build</b><br>tokenizer chat template · canonical tools JSON · prompt digests"]
-    P2 -->|formatted_example.v1| E1
-    P2 -->|formatted_example.v1| T
+    P2 -->|formatted_example.v2| E1
+    P2 -->|formatted_example.v2| T
     E1["<b>eval run, base</b><br>greedy decoding · conservative parser"]
     T["<b>train run</b><br>QLoRA · completion-only loss"]
     T -->|adapter/ + training metrics| E2
-    P2 -->|formatted_example.v1| E2
+    P2 -->|formatted_example.v2| E2
     E2["<b>eval run, adapter</b><br>same prompts, parser, decoding, by digest"]
     E1 -->|evaluation_report.json| R
     E2 -->|evaluation_report.json| R
