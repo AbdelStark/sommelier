@@ -18,6 +18,17 @@ datasets:
     query_column: query
     tools_column: tools
     answers_column: answers
+  # The French source is produced by remote_translate.py (constrained
+  # translation of the exact rows this config selects) and staged into the
+  # run by remote_pipeline.py --translation-run-id; the id below is the
+  # dataset's publication name.
+  - language: fr
+    dataset_id: abdelstark/sommelier-xlam-single-call-splits-fr
+    dataset_revision: main
+    query_column: query
+    tools_column: tools
+    answers_column: answers
+    source_id_column: source_example_id
 
 data:
   n_train: 15000
@@ -47,6 +58,9 @@ train:
   lora_rank: 16
   lora_alpha: 32
   lora_dropout: 0.05
+  languages:
+    - en
+    - fr
   target_modules:
     - q_proj
     - k_proj
@@ -58,6 +72,9 @@ train:
 
 eval:
   split: test
+  slices:
+    - en
+    - fr
   temperature: 0.0
   do_sample: false
   max_new_tokens: 512

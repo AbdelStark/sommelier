@@ -24,13 +24,20 @@ uv run sommelier release preflight --config examples/config.full.yaml
 uv run modal run remote_pipeline.py \
   --config examples/config.smoke.yaml --mode smoke --max-rows 2500
 
-# full reference run
-SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=28800 \
+# full bilingual run: translate first, then train on both languages
+SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=14400 \
+uv run modal run --detach remote_translate.py \
+  --config examples/config.full.yaml --run-id fr-translate-2
+
+SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=36000 \
 uv run modal run --detach remote_pipeline.py \
-  --config examples/config.full.yaml --mode full --max-rows 60000
+  --config examples/config.full.yaml --mode full --max-rows 60000 \
+  --translation-run-id fr-translate-2
 ```
 
 Pass `--run-id <name>` to name the run; otherwise an id is generated, and smoke runs always get a `smoke-` prefix so a later full run cannot overwrite them. Run the full pipeline with `--detach` so a dropped local connection does not kill hour three of training; you pull the results off the volume afterwards.
+
+When the config declares paired dataset sources, `--translation-run-id` names the completed `remote_translate.py` run whose rows get staged next to the exported root rows; translation and pipeline must use the same config, mode, and `--max-rows` so the seeded selection picks the same root examples. To evaluate a published adapter instead of training one (the baseline shape), pass `--adapter-id <hf-repo-or-dir>` and optionally `--adapter-revision`; the train stage is skipped.
 
 Two environment variables are read at launch time, before the container starts:
 
@@ -39,7 +46,7 @@ Two environment variables are read at launch time, before the container starts:
 | `SOMMELIER_GPU` | `A10G` | GPU type Modal attaches to the container |
 | `SOMMELIER_TIMEOUT_SECONDS` | `14400` (4 h) | Modal function timeout for the whole run |
 
-The default timeout is too short for the full run, hence `28800` in the reference command. One subtlety: `SOMMELIER_GPU` selects the physical GPU, but its value is not visible inside the container, so the `gpu` field in the returned summary is read from `remote.gpu` in the [config](../reference/configuration.md). Keep the two consistent, as `examples/config.full.yaml` does with `gpu: L40S`.
+The default timeout is too short for the full run: the English-only v1 reference run needed `28800`, and the bilingual run trains on roughly twice the rows and evaluates four cells, hence `36000` above. One subtlety: `SOMMELIER_GPU` selects the physical GPU, but its value is not visible inside the container, so the `gpu` field in the returned summary is read from `remote.gpu` in the [config](../reference/configuration.md). Keep the two consistent, as `examples/config.full.yaml` does with `gpu: L40S`.
 
 ## What the wrapper adds
 
