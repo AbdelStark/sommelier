@@ -451,7 +451,15 @@ def load_vllm_translator(info: TranslatorInfo) -> TranslationModel:
             hint="Run the tool remotely (remote_translate.py) or install vllm.",
         ) from error
 
-    llm = LLM(model=info.model_id, revision=info.model_revision, dtype="bfloat16")
+    # Queries are capped at 2000 characters and outputs at the token budget,
+    # so a short context suffices; the model's native 128k default needs
+    # more KV cache than an L40S has left after bf16 12B weights.
+    llm = LLM(
+        model=info.model_id,
+        revision=info.model_revision,
+        dtype="bfloat16",
+        max_model_len=8192,
+    )
     sampling = SamplingParams(temperature=0.0, max_tokens=info.max_new_tokens)
 
     class _VllmTranslator:
