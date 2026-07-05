@@ -51,7 +51,7 @@ In the current pipeline, a stage that cannot meet its contract raises: the error
 
 ## Schema versioning: fail closed
 
-Every JSON and JSONL record carries a `schema_version` field, and the package keeps a closed set of the sixteen versions it understands (`sommelier.config.v2`, `sommelier.manifest.v1`, `sommelier.formatted_example.v1`, and so on; the full list is in [Artifacts and schemas](../reference/artifacts.md)). Readers fail closed: a record with a missing or unrecognized `schema_version` raises a schema validation error (`SOM202`, exit 2); for an unrecognized version, the hint lists the supported ones.
+Every JSON and JSONL record carries a `schema_version` field, and the package keeps a closed set of the seventeen versions it understands (`sommelier.config.v2`, `sommelier.manifest.v1`, `sommelier.formatted_example.v1`, and so on; the full list is in [Artifacts and schemas](../reference/artifacts.md)). Readers fail closed: a record with a missing or unrecognized `schema_version` raises a schema validation error (`SOM202`, exit 2); for an unrecognized version, the hint lists the supported ones.
 
 The alternative, tolerating unknown versions and reading whatever fields happen to be present, is how silent semantic drift happens: a reader scores records whose meaning it does not actually know. Failing closed makes a format change a visible, deliberate event. When a schema needs to change, it gets a new version identifier, and old readers reject it by construction instead of misreading it.
 

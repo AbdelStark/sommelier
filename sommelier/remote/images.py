@@ -99,6 +99,24 @@ def vllm_serving_image() -> modal.Image:
     ).pip_install(*VLLM_PACKAGES)
 
 
+def translation_image() -> modal.Image:
+    """vLLM batch inference stack with the package source mounted.
+
+    Same CUDA devel base as serving (vLLM needs nvcc for its warm-up JIT),
+    plus the base packages and the sommelier source, because the
+    translation tool drives vLLM offline from inside the package. The
+    datasets package rides along for the raw-row export.
+    """
+    import modal
+
+    return _with_source(
+        modal.Image.from_registry(
+            CUDA_DEVEL_BASE,
+            add_python=PYTHON_VERSION,
+        ).pip_install(*VLLM_PACKAGES, *BASE_PACKAGES, "datasets")
+    )
+
+
 def stage_options(config: SommelierConfig, stage: PipelineStage) -> RemoteStageOptions:
     """GPU and timeout hooks for one remote pipeline stage.
 

@@ -40,37 +40,16 @@ hf_cache_volume = modal.Volume.from_name("sommelier-hf-cache", create_if_missing
 
 def _export_raw_rows(config_path: Path, rows_path: Path, max_rows: int) -> int:
     """Exports the configured HF dataset as raw_tool_call_row.v1 JSONL."""
-    from datasets import load_dataset
-
     from sommelier.config import load_config
+    from sommelier.data.export import export_raw_rows
 
     config = load_config(config_path)
-    source = config.root_dataset
-    dataset = load_dataset(
-        source.dataset_id,
-        split="train",
-        revision=source.dataset_revision,
+    return export_raw_rows(
+        config.root_dataset,
+        rows_path,
+        seed=config.project.seed,
+        max_rows=max_rows,
     )
-    if max_rows and max_rows < len(dataset):
-        dataset = dataset.shuffle(seed=config.project.seed).select(range(max_rows))
-
-    columns = (
-        source.query_column,
-        source.tools_column,
-        source.answers_column,
-    )
-    with rows_path.open("w", encoding="utf-8") as handle:
-        for index, row in enumerate(dataset):
-            record = {
-                "schema_version": "sommelier.raw_tool_call_row.v1",
-                "source_id": f"{source.dataset_id}:{row.get('id', index)}",
-                "query": str(row[columns[0]]),
-                "tools": str(row[columns[1]]),
-                "answers": str(row[columns[2]]),
-                "source_revision": source.dataset_revision,
-            }
-            handle.write(json.dumps(record) + "\n")
-    return len(dataset)
 
 
 def _cleanup_gpu() -> None:

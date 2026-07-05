@@ -48,7 +48,7 @@ Details worth knowing:
 
 ## Schema catalog
 
-`SUPPORTED_SCHEMAS` in [`sommelier/artifacts.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/artifacts.py) is a closed set of sixteen ids. Two more version strings live outside it, listed at the bottom of the table. Superseded versions (`sommelier.config.v1`, `sommelier.prepared_example.v1`, `sommelier.drop_summary.v1`, `sommelier.formatted_example.v1`) stay in the set with no current writer, so artifacts from earlier runs keep validating.
+`SUPPORTED_SCHEMAS` in [`sommelier/artifacts.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/artifacts.py) is a closed set of seventeen ids. Two more version strings live outside it, listed at the bottom of the table. Superseded versions (`sommelier.config.v1`, `sommelier.prepared_example.v1`, `sommelier.drop_summary.v1`, `sommelier.formatted_example.v1`) stay in the set with no current writer, so artifacts from earlier runs keep validating.
 
 | Schema id | One record is | Written by |
 |-----------|---------------|------------|
@@ -62,6 +62,7 @@ Details worth knowing:
 | `sommelier.evaluation_report.v1` | the five metrics plus identity digests for one model | `eval run` |
 | `sommelier.comparison_report.v1` | the gated base-versus-adapter comparison | `report compare` |
 | `sommelier.training_metric.v1` | one training log step (loss, learning rate, tokens) | `train run` |
+| `sommelier.translation_summary.v1` | a paired-dataset build's provenance: translator pin, prompt digest, decoding, and drop counts | `data translate` |
 | `sommelier.log_event.v1` | one structured log line | stage loggers (the serving endpoint logs with it) |
 | `sommelier.release_preflight.v1` | the release gate results | `release preflight` |
 | `sommelier.parser.v1` | not a file schema: the version string of the tool-call parser, recorded in the eval config and every evaluation report | `eval run` |
