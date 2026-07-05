@@ -9,7 +9,7 @@ flowchart TB
     raw[("Salesforce/xlam-function-calling-60k<br>recorded revision")]
     raw -->|raw_tool_call_row.v1| P1
     P1["<b>data prepare</b><br>validate rows · drop multi-call · dedupe · split"]
-    P1 -->|prepared_example.v1 + drop summary| P2
+    P1 -->|prepared_example.v2 + drop summary| P2
     P2["<b>format build</b><br>tokenizer chat template · canonical tools JSON · prompt digests"]
     P2 -->|formatted_example.v1| E1
     P2 -->|formatted_example.v1| T

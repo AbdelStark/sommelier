@@ -65,7 +65,7 @@ examples/artifacts/runs/local/
   "run_id": "local",
   "created_at": "2026-07-03T15:53:36.333569+00:00",
   "git_commit": "d993f6668898c4c143ba14bbff0914a6d5cde254",
-  "config_sha256": "df946dd6f8e08edbb66fcdc085dc9084c6e80e60f3c9281f52d76242ea7ea907",
+  "config_sha256": "7d818906a36eb61ba8f4f92ac8def229d9785f0aed42a42df95c9e1db0964216",
   "dependency_lock_sha256": "efe5f944a509077ebfe36e2b9ceec1381abe9cfc31046f5e4880b3cf1e207cd9",
   "command": ["sommelier", "data", "prepare", "--config", "examples/config.smoke.yaml", "..."],
   "seed": 42,
@@ -74,9 +74,9 @@ examples/artifacts/runs/local/
     {
       "path": "runs/local/data/train.jsonl",
       "kind": "dataset_split",
-      "schema_version": "sommelier.prepared_example.v1",
-      "sha256": "8d2ce23f901a94275b5517a5fa5f88d04a6b9f03dbbbb3ef006fbf851ffb4151",
-      "bytes": 54676
+      "schema_version": "sommelier.prepared_example.v2",
+      "sha256": "80e80b001bbd1b6baa5157618126c727531cfe63d0083aa7cda97b54af0df7ef",
+      "bytes": 59176
     }
   ],
   "status": "succeeded"
@@ -93,9 +93,11 @@ One prepared example from `data/train.jsonl` (fields in on-disk order):
 {
   "example_id": "train-1",
   "gold_calls": [{"arguments": {"city": "Paris"}, "name": "lookup_weather"}],
+  "language": "en",
   "query": "Fixture train request 1: what is the weather in Paris?",
   "query_sha256": "096420be9654fd3bd766614905fd2e811cba984b2b195df1a49c8571ce1f7c28",
-  "schema_version": "sommelier.prepared_example.v1",
+  "schema_version": "sommelier.prepared_example.v2",
+  "source_example_id": null,
   "source_id": "fixture:train-1",
   "source_revision": "main",
   "split": "train",
@@ -104,7 +106,7 @@ One prepared example from `data/train.jsonl` (fields in on-disk order):
 }
 ```
 
-Exactly one gold call per example: that is the v1 contract, enforced at preparation time. `query_sha256` is the query's identity for deduplication and split disjointness, so the same query can never appear in two splits.
+Exactly one gold call per example, enforced at preparation time. `query_sha256` is the query's identity for deduplication and split disjointness, so the same query can never appear in two splits. `language` names the dataset source the example came from, and `source_example_id` is null on root-source rows; on a paired row (a translation) it names the root example whose split this row inherits, as described in [Data policy](../concepts/data.md).
 
 One formatted example from `formatted/test.jsonl`, long fields elided:
 

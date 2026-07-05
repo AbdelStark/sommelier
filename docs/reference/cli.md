@@ -59,7 +59,8 @@ sommelier config validate --config examples/config.full.yaml
 ## data prepare
 
 ```text
-sommelier data prepare --config <yaml> --out <dir> [--run-id <id>] [--input <jsonl>] [--fixture] [--gpu]
+sommelier data prepare --config <yaml> --out <dir> [--run-id <id>] [--input <jsonl>]
+                       [--paired-input LANG=PATH]... [--fixture] [--gpu]
 ```
 
 | Flag | Required | Default | Meaning |
@@ -67,11 +68,12 @@ sommelier data prepare --config <yaml> --out <dir> [--run-id <id>] [--input <jso
 | `--config` | yes | | Config YAML |
 | `--out` | yes | | Directory for the split files |
 | `--run-id` | no | fresh ID | Run identifier |
-| `--input` | no | `tests/fixtures/preparation_rows.jsonl` | Raw JSONL of `sommelier.raw_tool_call_row.v1` records |
+| `--input` | no | `tests/fixtures/preparation_rows.jsonl` | Raw JSONL of `sommelier.raw_tool_call_row.v1` records for the root source |
+| `--paired-input` | no | `<input stem>.<lang>.jsonl` next to `--input` | Raw JSONL for one paired source, as `LANG=PATH`; repeatable |
 | `--fixture` | no | off | Use synthetic rows; skips real validation and splitting |
 | `--gpu` | no | off | GPU dataframe coarse filter before Python validation |
 
-Reads raw rows, validates each against the [data policy](../concepts/data.md), drops failures with a declared reason, deduplicates by normalized query, and writes seeded splits. Writes `train.jsonl`, `validation.jsonl`, and `test.jsonl` plus `drop_summary.json` into `--out`, and `data_manifest.json` into the run directory.
+Reads raw rows, validates each against the [data policy](../concepts/data.md), drops failures with a declared reason, deduplicates by normalized query, and writes seeded splits. When the config declares paired dataset sources, their rows are read from `--paired-input` (or the naming convention next to `--input`) and inherit split assignment from the root rows they name. Writes `train.jsonl`, `validation.jsonl`, and `test.jsonl` plus `drop_summary.json` into `--out`, and `data_manifest.json` into the run directory.
 
 `--fixture` generates synthetic prepared examples instead, for GPU-free end-to-end testing; it writes the three split files but no drop summary, and `--input` and `--gpu` are ignored. `--gpu` runs a cudf coarse filter (null and query-length checks) before the exact Python validation, which cuts row count but never replaces the validation itself; it requires the `data-gpu` extra and fails with an install hint otherwise.
 

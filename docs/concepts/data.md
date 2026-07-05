@@ -6,7 +6,7 @@ Every row of the source dataset is untrusted input. The `data prepare` stage eit
 
 A raw row (`sommelier.raw_tool_call_row.v1`) carries `query`, `tools`, and `answers`, where `tools` and `answers` are raw JSON strings exactly as they appear in [Salesforce/xlam-function-calling-60k](https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k). The strings could be malformed, the wrong shape, or empty, so validation parses them once, checks them against typed schemas, and produces a `PreparedExample` whose `tools` is a list of tool schemas and whose `gold_calls` is a list of typed calls. The design rule: if raw strings flowed downstream, every later stage would have to re-validate untrusted JSON, and each would do it slightly differently.
 
-## Eleven drop reasons
+## Sixteen drop reasons
 
 Validation checks run in a fixed order and a row gets exactly the first reason that fails. The set of reasons is a closed type (`DropReason` in [sommelier/data/types.py](https://github.com/AbdelStark/sommelier/blob/main/sommelier/data/types.py)), and the drop counter is initialized from that type rather than a hand-maintained list, so adding a reason can never desync the counts.
 
@@ -22,9 +22,14 @@ Validation checks run in a fixed order and a row gets exactly the first reason t
 | `invalid_answers_json` | `answers` does not parse as JSON |
 | `invalid_answer_shape` | the answers JSON is not a non-empty list of objects, each with a non-empty string `name` and an object `arguments` |
 | `multi_call_answer` | the answers parse cleanly but contain more than one call |
-| `duplicate_query` | the normalized query hash was already seen in an earlier row |
+| `duplicate_query` | the normalized query hash was already seen in an earlier row of the same language |
+| `missing_source_example` | a paired row names a root example that was dropped, never existed, or was not selected into any split |
+| `duplicate_source_example` | a second paired row names a root example that already has a pair (first one wins) |
+| `pair_tools_mismatch` | a paired row's `tools` string is not byte identical to its root row's |
+| `pair_answers_mismatch` | a paired row's `answers` string is not byte identical to its root row's |
+| `cross_split_duplicate` | a paired row's normalized query equals a root query that sits in a different split |
 
-The first nine are quality checks. The last two are policy, and they deserve their own explanation.
+The first nine are quality checks and apply to every source. `multi_call_answer` and `duplicate_query` are policy. The last five exist only for paired sources and enforce the pairing contract described below.
 
 ## The multi-call drop is a scope decision
 
@@ -37,6 +42,20 @@ The dedupe key is `sha256(normalize_query(query))` where normalization casefolds
 Deduplication runs before splitting, and the ordering is the leakage defense. If you split first and dedupe within each split, two copies of the same query can land in train and test, and the held-out metrics quietly measure memorization. Deduplicating the whole pool first makes a cross-split duplicate impossible by construction: each `query_sha256` exists once in the pool, so it can land in at most one split. The invariant (a `query_sha256` appears in exactly one split) is still re-checked after splitting by intersecting the hash sets pairwise, and any overlap fails the stage. Belt and suspenders, but the belt is the mechanism.
 
 The limit is stated plainly: this is exact dedupe on normalized text. Two paraphrases of the same request hash differently and can still straddle train and test. Semantic deduplication was considered and deferred, because it would add an embedding model dependency to a stage whose whole value is being trivially reproducible.
+
+## Paired sources inherit their splits
+
+A config can declare more than one dataset source under `datasets`, one per language. Exactly one source is the root: it goes through validation, dedupe, and the seeded split exactly as described above, and nothing about that path changes when paired sources exist (the same input and seed produce the same root splits with or without them). Every other source is paired: each of its rows names a root example through `source_example_id`, and the row inherits that example's split. Paired rows are never shuffled or assigned independently, so a translated variant of a query cannot land on the other side of a split boundary from its original.
+
+The pairing contract is enforced at prepare time, not trusted from the dataset producer:
+
+- A paired row's `tools` and `answers` strings must be byte identical to its root row's. The gold answer is the supervision target and the scoring key; if translation changed it, the languages would no longer measure the same task. Violations drop with `pair_tools_mismatch` or `pair_answers_mismatch`.
+- A root example gets at most one pair per language (`duplicate_source_example`), and a pair whose root was dropped or not selected drops with `missing_source_example`.
+- A paired query that coincidentally equals a root query from another split drops with `cross_split_duplicate`; identical to the dedupe ordering argument above, this closes the last path for the same text to appear on both sides of a boundary.
+
+After preparation, split safety is re-asserted across all languages at once: per language disjointness, globally unique example ids, every paired example in the same split as its root, and no query digest in two different splits anywhere. Any violation fails the stage.
+
+Split files mix languages: root rows first, then each paired language in configuration order, each following the root split's example order. A paired source is allowed to arrive short (translation drops rows); the per language `split_sizes` in the drop summary make the shortfall visible instead of silent.
 
 ## Seeded shuffle, fixed-count splits
 
@@ -55,7 +74,7 @@ One operational note: `sommelier data prepare --gpu` runs a cuDF coarse filter (
 
 ## What the reference run dropped
 
-The drop summary (`data/drop_summary.json`, schema `sommelier.drop_summary.v1`) records the count for every reason plus the pool sizes. For the [reference run](../results/reference-run.md) on the recorded dataset revision:
+The drop summary (`data/drop_summary.json`, schema `sommelier.drop_summary.v2`) records, per language, the count for every reason, the pool sizes, and the final split sizes. For the [reference run](../results/reference-run.md) on the recorded dataset revision (a single-source run, so one language section):
 
 | Stage | Rows |
 |-------|------|
@@ -83,4 +102,4 @@ data/
 
 The stage manifest, `data_manifest.json`, lands at the run root (`runs/<run_id>/data_manifest.json`) with checksums of everything above.
 
-Each JSONL row is a `sommelier.prepared_example.v1` record carrying its `query_sha256` and the source revision it came from. Schemas and checksum rules are in the [artifact reference](../reference/artifacts.md); the config fields that control this stage are in the [configuration reference](../reference/configuration.md).
+Each JSONL row is a `sommelier.prepared_example.v2` record carrying its `language`, its `query_sha256`, the source revision it came from, and, on paired rows, the `source_example_id` of its root example. Schemas and checksum rules are in the [artifact reference](../reference/artifacts.md); the config fields that control this stage are in the [configuration reference](../reference/configuration.md).

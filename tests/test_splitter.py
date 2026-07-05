@@ -32,7 +32,9 @@ def _raw_row(source_id: str, query: str) -> RawToolCallRow:
 
 
 def _prepared(source_id: str, query: str) -> PreparedExample:
-    result = validate_raw_row(_raw_row(source_id, query), min_query_chars=10, max_query_chars=2000)
+    result = validate_raw_row(
+        _raw_row(source_id, query), min_query_chars=10, max_query_chars=2000, language="en"
+    )
     assert isinstance(result, dict)
     return result
 
@@ -136,5 +138,6 @@ def test_drop_summary_written(tmp_path: Path) -> None:
         command=["sommelier", "data", "prepare"],
     )
     summary = json.loads((out_dir / "drop_summary.json").read_text(encoding="utf-8"))
-    assert summary["schema_version"] == "sommelier.drop_summary.v1"
-    assert summary["deduplicated_rows"] >= 4
+    assert summary["schema_version"] == "sommelier.drop_summary.v2"
+    assert summary["languages"]["en"]["deduplicated_rows"] >= 4
+    assert summary["languages"]["en"]["split_sizes"] == {"train": 2, "validation": 1, "test": 1}
