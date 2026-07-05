@@ -59,14 +59,18 @@ def test_validate_raw_row_drop_reasons(
     overrides: dict[str, str],
     expected: str,
 ) -> None:
-    result = validate_raw_row(_raw_row(**overrides), min_query_chars=10, max_query_chars=2000)
+    result = validate_raw_row(
+        _raw_row(**overrides), min_query_chars=10, max_query_chars=2000, language="en"
+    )
     assert result == expected
 
 
 def test_validate_raw_row_accepts_valid_row() -> None:
-    result = validate_raw_row(_raw_row(), min_query_chars=10, max_query_chars=2000)
+    result = validate_raw_row(_raw_row(), min_query_chars=10, max_query_chars=2000, language="en")
     assert isinstance(result, dict)
-    assert result["schema_version"] == "sommelier.prepared_example.v1"
+    assert result["schema_version"] == "sommelier.prepared_example.v2"
+    assert result["language"] == "en"
+    assert result["source_example_id"] is None
     assert result["gold_calls"][0]["name"] == "lookup_weather"
 
 
@@ -97,5 +101,5 @@ def test_fixture_rows_are_valid() -> None:
             answers=str(payload["answers"]),
             source_revision=str(payload["source_revision"]),
         )
-        result = validate_raw_row(row, min_query_chars=10, max_query_chars=2000)
+        result = validate_raw_row(row, min_query_chars=10, max_query_chars=2000, language="en")
         assert isinstance(result, dict)

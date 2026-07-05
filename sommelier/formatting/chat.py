@@ -8,7 +8,7 @@ from typing import Literal, TypedDict, cast
 
 from sommelier.artifacts import ArtifactRef, make_artifact_ref
 from sommelier.config import SommelierConfig
-from sommelier.data.types import ToolCall
+from sommelier.data.types import PREPARED_EXAMPLE_SCHEMA, ToolCall
 from sommelier.errors import ArtifactNotFoundError, SchemaValidationError
 from sommelier.run_context import (
     RunContext,
@@ -198,12 +198,19 @@ def build_splits_with_formatter(
     for split in SPLITS:
         split_path = data_dir / f"{split}.jsonl"
         records = read_jsonl_records(split_path)
+        for record in records:
+            if record.get("schema_version") != PREPARED_EXAMPLE_SCHEMA:
+                raise SchemaValidationError(
+                    f"{split_path}: expected {PREPARED_EXAMPLE_SCHEMA} records",
+                    hint="Re-run sommelier data prepare with the current "
+                    "pipeline version.",
+                )
         input_refs.append(
             make_artifact_ref(
                 split_path,
                 artifact_root=context.artifact_root,
                 kind="dataset_split",
-                schema_version="sommelier.prepared_example.v1",
+                schema_version=PREPARED_EXAMPLE_SCHEMA,
             )
         )
         formatted_records = [formatter(record) for record in records]

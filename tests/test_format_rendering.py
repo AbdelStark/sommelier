@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+from pathlib import Path
 
 import pytest
 
-from sommelier.errors import ExternalDependencyError, InvariantViolation
+from sommelier.errors import (
+    ExternalDependencyError,
+    InvariantViolation,
+    SchemaValidationError,
+)
 from sommelier.formatting.templates import prompt_sha256, render_formatted_example
 
 SYSTEM_PROMPT = (
@@ -50,9 +55,11 @@ class PrefixBreakingTokenizer(StubTokenizer):
 
 def make_example() -> dict[str, object]:
     return {
-        "schema_version": "sommelier.prepared_example.v1",
+        "schema_version": "sommelier.prepared_example.v2",
         "example_id": "train-1",
         "source_id": "fixture:train-1",
+        "language": "en",
+        "source_example_id": None,
         "query": "What is the weather in Paris today?",
         "tools": [
             {
@@ -161,3 +168,35 @@ def test_load_tokenizer_requires_transformers() -> None:
     config = load_config(Path("examples/config.smoke.yaml"))
     with pytest.raises(ExternalDependencyError):
         load_tokenizer(config)
+
+
+def test_format_stage_rejects_stale_prepared_schema(tmp_path: Path) -> None:
+    import json
+
+    from sommelier.config import load_config
+    from sommelier.formatting.chat import build_formatted_splits_fixture
+    from sommelier.run_context import ensure_run_context
+
+    config = load_config(Path("examples/config.smoke.yaml"))
+    context = ensure_run_context(
+        config,
+        config_path=Path("examples/config.smoke.yaml"),
+        run_id="stale-schema",
+        project_root=tmp_path,
+    )
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    stale = dict(make_example())
+    stale["schema_version"] = "sommelier.prepared_example.v1"
+    for split in ("train", "validation", "test"):
+        (data_dir / f"{split}.jsonl").write_text(
+            json.dumps(stale) + "\n", encoding="utf-8"
+        )
+    with pytest.raises(SchemaValidationError, match="sommelier.prepared_example.v2"):
+        build_formatted_splits_fixture(
+            config,
+            data_dir=data_dir,
+            out_dir=tmp_path / "formatted",
+            context=context,
+            command=["test"],
+        )

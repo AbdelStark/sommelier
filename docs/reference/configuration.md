@@ -68,7 +68,7 @@ A non-empty list of per-language dataset sources. Each entry:
 | `query_column` | `str` | `"query"` | Column holding the user query, read when raw rows are exported from the source dataset. |
 | `tools_column` | `str` | `"tools"` | Column holding the tool schemas as a JSON string. |
 | `answers_column` | `str` | `"answers"` | Column holding the gold tool calls as a JSON string. |
-| `source_id_column` | `str \| null` | `null` | When set, each row of this source names a row of the root source, and the pair must stay in the same split. When null, this is the root source. |
+| `source_id_column` | `str \| null` | `null` | When set, names the source-dataset column holding the root row reference; like the other column fields it is read when raw rows are exported, mapping into the canonical `source_example_id` raw-row field. When null, this is the root source. |
 
 Exactly one source must omit `source_id_column`: the root source, which gets independent split assignment during data prepare. Every other source is paired, row by row, to root rows through the column this field names. The pairing exists so that a translated variant of a query can never land in a different split than its original, which would leak test content into training. How prepare enforces this is described in [Data policy](../concepts/data.md).
 

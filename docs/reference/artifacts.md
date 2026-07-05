@@ -17,10 +17,10 @@ Everything a run produces lives under `<artifact_root>/runs/<run_id>/`:
 ├── eval_manifest.json
 ├── report_manifest.json
 ├── data/
-│   ├── train.jsonl              sommelier.prepared_example.v1
+│   ├── train.jsonl              sommelier.prepared_example.v2, all languages in one file
 │   ├── validation.jsonl
 │   ├── test.jsonl
-│   └── drop_summary.json        sommelier.drop_summary.v1: what was filtered, and why
+│   └── drop_summary.json        sommelier.drop_summary.v2: what was filtered per language, and why
 ├── formatted/
 │   ├── train.jsonl              sommelier.formatted_example.v1
 │   ├── validation.jsonl
@@ -48,16 +48,15 @@ Details worth knowing:
 
 ## Schema catalog
 
-`SUPPORTED_SCHEMAS` in [`sommelier/artifacts.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/artifacts.py) is a closed set of thirteen ids. Two more version strings live outside it, listed at the bottom of the table.
+`SUPPORTED_SCHEMAS` in [`sommelier/artifacts.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/artifacts.py) is a closed set of fifteen ids. Two more version strings live outside it, listed at the bottom of the table. Superseded versions (`sommelier.config.v1`, `sommelier.prepared_example.v1`, `sommelier.drop_summary.v1`) stay in the set with no current writer, so artifacts from earlier runs keep validating.
 
 | Schema id | One record is | Written by |
 |-----------|---------------|------------|
 | `sommelier.config.v2` | the resolved run configuration (`config.resolved.yaml`) | run-directory creation, before any stage runs |
-| `sommelier.config.v1` | the previous config schema; still recognized so artifacts from earlier runs keep validating | no current writer |
 | `sommelier.manifest.v1` | a stage manifest or the run manifest | every stage |
-| `sommelier.raw_tool_call_row.v1` | one untrusted source row: query plus raw `tools`/`answers` JSON strings | produced upstream (dataset export, fixtures); consumed by `data prepare` |
-| `sommelier.prepared_example.v1` | one validated example with parsed tools, gold call, and split assignment | `data prepare` |
-| `sommelier.drop_summary.v1` | the count of dropped rows per drop reason, plus split accounting | `data prepare` |
+| `sommelier.raw_tool_call_row.v1` | one untrusted source row: query plus raw `tools`/`answers` JSON strings, plus `source_example_id` on paired-source rows | produced upstream (dataset export, fixtures); consumed by `data prepare` |
+| `sommelier.prepared_example.v2` | one validated example with parsed tools, gold call, language, and split assignment | `data prepare` |
+| `sommelier.drop_summary.v2` | per-language counts of dropped rows per drop reason, plus split accounting | `data prepare` |
 | `sommelier.formatted_example.v1` | one rendered prompt/target pair with its prompt digest | `format build` |
 | `sommelier.generation.v1` | one raw model output with parse status and decoding config | `eval run` |
 | `sommelier.evaluation_report.v1` | the five metrics plus identity digests for one model | `eval run` |
@@ -87,28 +86,29 @@ Field lists below are verified against the code; the config schema has its own [
 | `tools` | str | raw JSON string, untrusted until validation |
 | `answers` | str | raw JSON string, untrusted until validation |
 | `source_revision` | str | the pinned dataset revision the row came from |
+| `source_example_id` | str, optional | paired-source rows only: the root example this row translates |
 
-### `sommelier.prepared_example.v1`
+### `sommelier.prepared_example.v2`
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `example_id` | str | stable per-example identifier |
+| `example_id` | str | stable per-example identifier, unique across languages |
 | `source_id` | str | carried through from the raw row |
+| `language` | str | the dataset source this example came from |
+| `source_example_id` | str \| null | on paired rows, the root example this row translates; null on root rows |
 | `query` | str | the request text |
 | `tools` | list[ToolSchema] | parsed `{name, description, parameters}` objects |
-| `gold_calls` | list[ToolCall] | parsed `{name, arguments}`; exactly one call in v1 |
-| `split` | `train` \| `validation` \| `test` | a `query_sha256` appears in exactly one split |
-| `query_sha256` | str | digest of the normalized query, the dedupe key |
+| `gold_calls` | list[ToolCall] | parsed `{name, arguments}`; exactly one call |
+| `split` | `train` \| `validation` \| `test` | a `query_sha256` appears in exactly one split; paired rows share their root's split |
+| `query_sha256` | str | digest of the normalized query, the per-language dedupe key |
 | `source_revision` | str | pinned dataset revision |
 
-### `sommelier.drop_summary.v1`
+### `sommelier.drop_summary.v2`
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `counts` | dict[str, int] | dropped rows per [drop reason](../concepts/data.md) |
-| `valid_rows` | int | rows that survived validation |
-| `deduplicated_rows` | int | rows remaining after deduplication |
-| `requested` | dict | the configured `train`/`validation`/`test` sizes |
+| `languages` | dict | per language: `counts` per [drop reason](../concepts/data.md), `valid_rows`, `deduplicated_rows`, and final `split_sizes` |
+| `requested` | dict | the configured `train`/`validation`/`test` sizes (they describe the root source; paired sources may run short) |
 
 ### `sommelier.formatted_example.v1`
 

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Final, Literal, NotRequired, TypedDict
+
+PREPARED_EXAMPLE_SCHEMA: Final = "sommelier.prepared_example.v2"
+DROP_SUMMARY_SCHEMA: Final = "sommelier.drop_summary.v2"
 
 DropReason = Literal[
     "missing_query",
@@ -14,6 +17,11 @@ DropReason = Literal[
     "invalid_answer_shape",
     "multi_call_answer",
     "duplicate_query",
+    "missing_source_example",
+    "duplicate_source_example",
+    "pair_tools_mismatch",
+    "pair_answers_mismatch",
+    "cross_split_duplicate",
 ]
 
 JsonObject = dict[str, Any]
@@ -26,6 +34,9 @@ class RawToolCallRow(TypedDict):
     tools: str
     answers: str
     source_revision: str
+    # Paired sources only: the example_id of the root row this row is a
+    # translation of. Absent on root source rows.
+    source_example_id: NotRequired[str]
 
 
 class ToolSchema(TypedDict):
@@ -40,9 +51,11 @@ class ToolCall(TypedDict):
 
 
 class PreparedExample(TypedDict):
-    schema_version: Literal["sommelier.prepared_example.v1"]
+    schema_version: Literal["sommelier.prepared_example.v2"]
     example_id: str
     source_id: str
+    language: str
+    source_example_id: str | None
     query: str
     tools: list[ToolSchema]
     gold_calls: list[ToolCall]

@@ -52,6 +52,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Raw JSONL input with sommelier.raw_tool_call_row.v1 records.",
     )
     prepare_parser.add_argument(
+        "--paired-input",
+        action="append",
+        default=[],
+        metavar="LANG=PATH",
+        help="Raw JSONL input for a paired dataset source, e.g. fr=rows.fr.jsonl. "
+        "Repeatable. Defaults to <input stem>.<lang>.jsonl next to --input.",
+    )
+    prepare_parser.add_argument(
         "--fixture",
         action="store_true",
         help="Use synthetic fixture rows instead of real validation and splitting.",
@@ -212,6 +220,16 @@ def cmd_data_prepare(args: argparse.Namespace) -> int:
         command.extend(["--input", str(input_path)])
         if args.gpu:
             command.append("--gpu")
+        paired_input_paths: dict[str, Path] = {}
+        for entry in args.paired_input:
+            language, separator, raw_path = entry.partition("=")
+            if not separator or not language or not raw_path:
+                raise UserInputError(
+                    f"invalid --paired-input value: {entry!r}",
+                    hint="Use the form LANG=PATH, e.g. fr=rows.fr.jsonl.",
+                )
+            command.extend(["--paired-input", entry])
+            paired_input_paths[language] = Path(raw_path).resolve()
         prepare_dataset_from_file(
             config,
             input_path=input_path.resolve(),
@@ -219,6 +237,7 @@ def cmd_data_prepare(args: argparse.Namespace) -> int:
             context=context,
             command=command,
             use_gpu=args.gpu,
+            paired_input_paths=paired_input_paths,
         )
     print(f"data prepare ok: run_id={context.run_id} out={args.out}")
     return 0

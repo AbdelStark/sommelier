@@ -5,6 +5,7 @@ from typing import cast
 
 from sommelier.data.normalize import query_digest
 from sommelier.data.types import (
+    PREPARED_EXAMPLE_SCHEMA,
     DropReason,
     JsonObject,
     PreparedExample,
@@ -81,6 +82,7 @@ def validate_raw_row(
     *,
     min_query_chars: int,
     max_query_chars: int,
+    language: str,
 ) -> PreparedExample | DropReason:
     query = row.get("query", "")
     if not isinstance(query, str) or not query.strip():
@@ -108,9 +110,11 @@ def validate_raw_row(
         return calls_result
 
     return PreparedExample(
-        schema_version="sommelier.prepared_example.v1",
+        schema_version=PREPARED_EXAMPLE_SCHEMA,
         example_id=row["source_id"],
         source_id=row["source_id"],
+        language=language,
+        source_example_id=row.get("source_example_id"),
         query=query.strip(),
         tools=tools_result,
         gold_calls=calls_result,
