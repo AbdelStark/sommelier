@@ -233,6 +233,7 @@ def _package_versions() -> dict[str, str]:
 
 
 @app.function(
+    retries=modal.Retries(max_retries=2, initial_delay=60.0),
     image=train_image(),
     gpu=GPU,
     timeout=TIMEOUT_SECONDS,

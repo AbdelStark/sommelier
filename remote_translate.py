@@ -50,6 +50,7 @@ image = translation_image()
 
 
 @app.function(
+    retries=modal.Retries(max_retries=2, initial_delay=60.0),
     image=image,
     gpu=GPU,
     timeout=TIMEOUT_SECONDS,
