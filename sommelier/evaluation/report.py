@@ -16,9 +16,10 @@ from sommelier.artifacts import (
 from sommelier.config import SommelierConfig, compute_config_digest, load_config
 from sommelier.data.types import ToolCall
 from sommelier.errors import EvaluationError, InvariantViolation, UserInputError
-from sommelier.evaluation.generate import FORMATTED_SCHEMA, GENERATION_SCHEMA, ModelKind
+from sommelier.evaluation.generate import GENERATION_SCHEMA, ModelKind
 from sommelier.evaluation.metrics import ScoredRecord, compute_metrics
 from sommelier.evaluation.parse import ParseStatus
+from sommelier.formatting.chat import FORMATTED_EXAMPLE_SCHEMA as FORMATTED_SCHEMA
 from sommelier.formatting.chat import validate_assistant_target
 from sommelier.manifests import (
     build_stage_manifest,

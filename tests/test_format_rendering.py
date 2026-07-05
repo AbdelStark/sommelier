@@ -102,7 +102,7 @@ def test_formatted_example_contains_required_fields() -> None:
         "template_policy",
     ):
         assert field in record, field
-    assert record["schema_version"] == "sommelier.formatted_example.v1"
+    assert record["schema_version"] == "sommelier.formatted_example.v2"
     assert record["tokenizer_id"] == "stub/tokenizer"
     assert record["tokenizer_revision"] == "rev-1"
 

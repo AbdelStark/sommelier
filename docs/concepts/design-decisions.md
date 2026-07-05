@@ -50,6 +50,12 @@ Rejected: a hosted dashboard as the source of truth. Reproduction that depends o
 
 Rejected: one image with everything, and eager imports at module top. Eager imports make every fixture test pay the GPU-stack tax and make "the tests pass locally" a much weaker statement. A single fat image hides which stage actually needs what. And remote-only stage code was rejected because the local test suite would then no longer exercise the code that runs on the GPU.
 
+## The system prompt stays English for every language
+
+Prepared examples carry a `language`, and a config can train and evaluate on more than one. The system prompt does not follow the data: every language formats through the same English instruction, and only the user query changes language.
+
+Rejected: a translated system prompt per language. The question a multilingual run asks is how the model handles a French request, holding everything else fixed. Translating the instruction would change two variables at once, and any per-language metric gap could then be blamed on either. Instruction-language effects are a real question, but they are a separate experiment, and the boundary belongs in the results rather than mixed into them.
+
 ## Nothing retries or tunes itself
 
 When training hits out-of-memory, it fails with a resource error whose message names the current values of `train.per_device_batch_size`, `train.gradient_accumulation_steps`, `train.max_sequence_length`, and `remote.gpu`, and says those are the fields to change. It does not retry with a smaller batch, and no stage anywhere retries with altered settings.

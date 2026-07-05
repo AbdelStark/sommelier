@@ -6,7 +6,7 @@ import subprocess
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 from sommelier.artifacts import ArtifactRef, make_artifact_ref, write_artifact_atomic
 from sommelier.config import SommelierConfig
@@ -29,6 +29,9 @@ class StageManifest(TypedDict):
     inputs: list[ArtifactRef]
     outputs: list[ArtifactRef]
     status: Literal["succeeded", "failed"]
+    # Optional stage-specific evidence (e.g. training example counts per
+    # language); absent unless a stage has something structured to record.
+    details: NotRequired[dict[str, Any]]
 
 
 class FailedStageManifest(StageManifest):
@@ -108,6 +111,7 @@ def build_stage_manifest(
     dependency_lock_sha256: str | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
+    details: dict[str, Any] | None = None,
 ) -> StageManifest | FailedStageManifest:
     manifest: StageManifest | FailedStageManifest = {
         "schema_version": "sommelier.manifest.v1",
@@ -123,6 +127,8 @@ def build_stage_manifest(
         "outputs": outputs,
         "status": status,
     }
+    if details is not None:
+        manifest["details"] = details
     if status == "failed":
         if error_code is None or error_message is None:
             raise InvariantViolation(

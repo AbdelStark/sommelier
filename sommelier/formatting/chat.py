@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import Final, Literal, TypedDict, cast
 
 from sommelier.artifacts import ArtifactRef, make_artifact_ref
 from sommelier.config import SommelierConfig
@@ -16,6 +16,8 @@ from sommelier.run_context import (
     record_stage_success,
     write_jsonl_records,
 )
+
+FORMATTED_EXAMPLE_SCHEMA: Final = "sommelier.formatted_example.v2"
 
 SplitName = Literal["train", "validation", "test"]
 SPLITS: tuple[SplitName, ...] = ("train", "validation", "test")
@@ -156,9 +158,11 @@ def _format_prepared_example(
     prompt_text = canonical_json(messages[:2])
     full_text = canonical_json(messages)
     return {
-        "schema_version": "sommelier.formatted_example.v1",
+        "schema_version": FORMATTED_EXAMPLE_SCHEMA,
         "example_id": example["example_id"],
         "split": example["split"],
+        "language": example["language"],
+        "source_example_id": example.get("source_example_id"),
         "messages": messages,
         "prompt_text": prompt_text,
         "target_text": target_text,
@@ -182,7 +186,7 @@ def build_splits_with_formatter(
     """Runs the format stage: reads prepared splits, writes formatted splits.
 
     The formatter callable turns one prepared example into one
-    ``sommelier.formatted_example.v1`` record; fixture and tokenizer-rendered
+    ``sommelier.formatted_example.v2`` record; fixture and tokenizer-rendered
     builds share this loop and manifest bookkeeping.
     """
     if not data_dir.exists():
@@ -221,7 +225,7 @@ def build_splits_with_formatter(
                 formatted_path,
                 artifact_root=context.artifact_root,
                 kind="formatted_split",
-                schema_version="sommelier.formatted_example.v1",
+                schema_version=FORMATTED_EXAMPLE_SCHEMA,
             )
         )
 

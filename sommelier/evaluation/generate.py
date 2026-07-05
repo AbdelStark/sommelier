@@ -12,6 +12,7 @@ from sommelier.errors import (
     UserInputError,
 )
 from sommelier.evaluation.parse import parse_tool_call
+from sommelier.formatting.chat import FORMATTED_EXAMPLE_SCHEMA as FORMATTED_SCHEMA
 from sommelier.run_context import (
     RunContext,
     read_jsonl_records,
@@ -20,7 +21,6 @@ from sommelier.run_context import (
 )
 
 GENERATION_SCHEMA: Final = "sommelier.generation.v1"
-FORMATTED_SCHEMA: Final = "sommelier.formatted_example.v1"
 
 ModelKind = Literal["base", "adapter"]
 
