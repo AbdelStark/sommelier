@@ -44,7 +44,9 @@ app = modal.App(APP_NAME)
 artifacts_volume = modal.Volume.from_name("sommelier-artifacts", create_if_missing=True)
 hf_cache_volume = modal.Volume.from_name("sommelier-hf-cache", create_if_missing=True)
 
-image = translation_image().env({"HF_HOME": "/hf-cache", "VLLM_CACHE_ROOT": "/vllm-cache"})
+# Env vars are set inside the function at runtime: the image mounts the
+# package source as its final layer, so no build step may follow it.
+image = translation_image()
 
 
 @app.function(
@@ -64,6 +66,9 @@ def run_remote_translation(
     max_new_tokens: int,
     limit: int,
 ) -> str:
+    os.environ.setdefault("HF_HOME", "/hf-cache")
+    os.environ.setdefault("VLLM_CACHE_ROOT", "/vllm-cache")
+
     from sommelier.config import load_config
     from sommelier.data.export import export_raw_rows
     from sommelier.data.load import load_raw_rows
