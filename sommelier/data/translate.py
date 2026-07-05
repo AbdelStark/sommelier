@@ -170,6 +170,25 @@ def strip_scaffolding(text: str) -> str:
     return out
 
 
+def normalize_numeric_spans(output: str, spans: list[str]) -> str:
+    """Restores protected decimal spans written with a French comma.
+
+    The prompt pins the number format, but a French model still renders
+    0.5 as 0,5 often enough to matter. When a protected span is a decimal
+    number that is missing from the output while its comma variant is
+    present, the variant is rewritten back; nothing else is touched.
+    """
+    for span in spans:
+        if "." not in span or not span.replace(".", "").isdigit():
+            continue
+        if span_present(output, span):
+            continue
+        comma_variant = span.replace(".", ",")
+        pattern = rf"(?<![0-9A-Za-z]){re.escape(comma_variant)}(?![0-9A-Za-z])"
+        output = re.sub(pattern, span, output)
+    return output
+
+
 def _fully_protected(query: str, spans: list[str]) -> bool:
     remainder = query
     for span in spans:
@@ -354,7 +373,9 @@ def translate_rows(
                     hint="The translation model must return one output per prompt.",
                 )
             for item, raw_output in zip(chunk, outputs, strict=True):
-                output = strip_scaffolding(raw_output)
+                output = normalize_numeric_spans(
+                    strip_scaffolding(raw_output), item.spans
+                )
                 rejection = audit_translation(
                     item.row["query"], output, item.spans, max_query_chars=max_query_chars
                 )
