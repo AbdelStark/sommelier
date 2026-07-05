@@ -98,9 +98,9 @@ def build_adapter_service(
         )
 
     if generator is None:
-        from sommelier.evaluation.generate import load_model_generator
+        from sommelier.evaluation.generate import AdapterRef, load_model_generator
 
-        generator = load_model_generator(config, "adapter", adapter_dir)
+        generator = load_model_generator(config, "adapter", AdapterRef(source=str(adapter_dir)))
     if renderer is None:
         from sommelier.formatting.templates import load_tokenizer
 

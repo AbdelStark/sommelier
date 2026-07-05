@@ -150,8 +150,14 @@ def build_parser() -> argparse.ArgumentParser:
     eval_run_parser.add_argument("--out", required=True, type=Path)
     eval_run_parser.add_argument(
         "--adapter",
-        type=Path,
-        help="Adapter directory; required with --model adapter.",
+        type=str,
+        help="Adapter directory or Hugging Face repo id; required with --model adapter.",
+    )
+    eval_run_parser.add_argument(
+        "--adapter-revision",
+        type=str,
+        default=None,
+        help="Revision when --adapter is a Hugging Face repo id.",
     )
     eval_run_parser.add_argument("--run-id", type=str, default=None)
     eval_run_parser.set_defaults(handler=cmd_eval_run)
@@ -197,6 +203,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Raw JSONL input with sommelier.raw_tool_call_row.v1 records.",
     )
     pipeline_run_parser.add_argument("--run-id", type=str, default=None)
+    pipeline_run_parser.add_argument(
+        "--adapter-id",
+        type=str,
+        default=None,
+        help="Evaluate this published adapter (local dir or Hugging Face repo id) "
+        "instead of training one; the train stage is skipped.",
+    )
+    pipeline_run_parser.add_argument(
+        "--adapter-revision",
+        type=str,
+        default=None,
+        help="Revision when --adapter-id is a Hugging Face repo id.",
+    )
     pipeline_run_parser.set_defaults(handler=cmd_pipeline_run)
 
     release_parser = subparsers.add_parser("release", help="Release gate commands.")
@@ -385,7 +404,7 @@ def cmd_eval_run(args: argparse.Namespace) -> int:
             hint="Drop --adapter or evaluate with --model adapter.",
         )
 
-    from sommelier.evaluation.generate import run_generation
+    from sommelier.evaluation.generate import AdapterRef, run_generation
     from sommelier.evaluation.report import write_evaluation_report
 
     config = load_config(args.config)
@@ -411,8 +430,17 @@ def cmd_eval_run(args: argparse.Namespace) -> int:
     ]
     if args.adapter is not None:
         command.extend(["--adapter", str(args.adapter)])
+    if args.adapter_revision is not None:
+        command.extend(["--adapter-revision", args.adapter_revision])
     if run_id is not None:
         command.extend(["--run-id", run_id])
+    adapter = None
+    if args.adapter is not None:
+        adapter_path = Path(args.adapter)
+        adapter = AdapterRef(
+            source=str(adapter_path.resolve()) if adapter_path.exists() else args.adapter,
+            revision=args.adapter_revision,
+        )
     run_generation(
         config,
         formatted_dir=args.data.resolve(),
@@ -420,7 +448,7 @@ def cmd_eval_run(args: argparse.Namespace) -> int:
         model_kind=args.model,
         context=context,
         command=command,
-        adapter_dir=args.adapter.resolve() if args.adapter is not None else None,
+        adapter=adapter,
     )
     write_evaluation_report(
         config,
@@ -429,6 +457,7 @@ def cmd_eval_run(args: argparse.Namespace) -> int:
         model_kind=args.model,
         context=context,
         command=command,
+        adapter=adapter,
     )
     print(f"eval run ok: run_id={context.run_id} out={args.out}")
     return 0
@@ -502,6 +531,8 @@ def cmd_pipeline_run(args: argparse.Namespace) -> int:
         input_path=args.input,
         run_id=args.run_id,
         project_root=Path.cwd(),
+        adapter_id=args.adapter_id,
+        adapter_revision=args.adapter_revision,
     )
     print(f"pipeline run ok: mode={args.mode} run_id={run_id}")
     return 0

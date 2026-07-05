@@ -147,7 +147,8 @@ sommelier format build \
 ## eval run
 
 ```text
-sommelier eval run --config <yaml> --model {base,adapter} --data <dir> --out <dir> [--adapter <dir>] [--run-id <id>]
+sommelier eval run --config <yaml> --model {base,adapter} --data <dir> --out <dir>
+                   [--adapter <dir-or-hf-id>] [--adapter-revision <rev>] [--run-id <id>]
 ```
 
 | Flag | Required | Default | Meaning |
@@ -156,10 +157,11 @@ sommelier eval run --config <yaml> --model {base,adapter} --data <dir> --out <di
 | `--model` | yes | | `base` or `adapter` |
 | `--data` | yes | | Directory with formatted splits |
 | `--out` | yes | | Directory for generations and the report |
-| `--adapter` | with `--model adapter` | | Trained adapter directory |
+| `--adapter` | with `--model adapter` | | Trained adapter directory, or a published Hugging Face repo id |
+| `--adapter-revision` | no | `main` | Revision when `--adapter` is a Hugging Face repo id |
 | `--run-id` | no | inferred from `--data` | Run identifier |
 
-`--adapter` is required with `--model adapter` and rejected with `--model base`; both mistakes fail immediately as user-input errors before any model loads. The command runs two steps: generation (one greedy completion per test prompt, read from the stored `prompt_text`, never rebuilt) and scoring. It writes `generations.jsonl` and `evaluation_report.json` into `--out`, and `eval_manifest.json` into the run directory. Decoding must be deterministic (`temperature` 0.0, sampling off) or the command fails rather than coerce the settings. Metric definitions are in [Metrics](metrics.md); method and parser in [Evaluation](../concepts/evaluation.md).
+`--adapter` is required with `--model adapter` and rejected with `--model base`; both mistakes fail immediately as user-input errors before any model loads. The command runs two steps: generation (one greedy completion per test prompt, read from the stored `prompt_text`, never rebuilt) and scoring. It runs once per configured [eval slice](configuration.md), writing `generations.<slice>.jsonl` per language and one `evaluation_report.json` (per-slice and overall metrics) into `--out`, plus `eval_manifest.json` into the run directory; the manifest details record the slices and, for adapters, the weights' source and revision. Decoding must be deterministic (`temperature` 0.0, sampling off) or the command fails rather than coerce the settings. Metric definitions are in [Metrics](metrics.md); method and parser in [Evaluation](../concepts/evaluation.md).
 
 ```bash
 sommelier eval run \
@@ -217,6 +219,7 @@ sommelier report compare \
 
 ```text
 sommelier pipeline run --config <yaml> --mode {smoke,full} [--input <jsonl>] [--run-id <id>]
+                       [--adapter-id <dir-or-hf-id>] [--adapter-revision <rev>]
 ```
 
 | Flag | Required | Default | Meaning |
@@ -225,8 +228,10 @@ sommelier pipeline run --config <yaml> --mode {smoke,full} [--input <jsonl>] [--
 | `--mode` | yes | | `smoke` or `full` |
 | `--input` | no | `tests/fixtures/preparation_rows.jsonl` | Raw JSONL of `sommelier.raw_tool_call_row.v1` records |
 | `--run-id` | no | fresh ID | Run identifier |
+| `--adapter-id` | no | | Evaluate this published adapter (local dir or Hugging Face repo id); the train stage is skipped |
+| `--adapter-revision` | no | `main` | Revision when `--adapter-id` is a Hugging Face repo id |
 
-Runs the six stages in order (data → format → eval-base → train → eval-adapter → compare) inside one run directory, with per-stage wall clock recorded in `runtime_metadata.json` and, after training, peak GPU memory read from the training metrics. Stage failures propagate with their exit codes; nothing is retried. The command fails up front if `--input` does not exist.
+Runs the six stages in order (data → format → eval-base → train → eval-adapter → compare) inside one run directory, with per-stage wall clock recorded in `runtime_metadata.json` and, after training, peak GPU memory read from the training metrics. Stage failures propagate with their exit codes; nothing is retried. The command fails up front if `--input` does not exist. With `--adapter-id` the run takes the baseline shape: nothing is trained, the adapter evaluation loads the referenced published adapter, and the comparison measures that adapter against the base model on the same prompts.
 
 Smoke mode caps the splits at 100 train, 20 validation, and 20 test examples (taking the minimum with the configured counts) and prefixes the run ID with `smoke-` so a later full run can never overwrite smoke artifacts. Full mode uses the config as written; for the reference configuration that means a GPU and several hours, usually through the [remote driver](../guides/remote-execution.md).
 

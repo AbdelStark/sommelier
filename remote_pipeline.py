@@ -173,6 +173,53 @@ def _wrapped_stages() -> object:
     return PipelineStages(**kwargs)
 
 
+def _stage_paired_rows(
+    config_path: Path,
+    rows_path: Path,
+    translation_run_id: str | None,
+) -> None:
+    """Copies translated paired rows next to the exported root rows.
+
+    Prepare finds paired sources through the <input stem>.<lang>.jsonl
+    convention; the translation entrypoint writes to the artifacts volume
+    under translation/<run_id>/. A config with paired sources requires
+    --translation-run-id naming a completed translation run.
+    """
+    import shutil
+
+    from sommelier.config import load_config
+    from sommelier.data.prepare import paired_input_path
+    from sommelier.errors import UserInputError
+
+    config = load_config(config_path)
+    paired = [source for source in config.datasets if source.source_id_column is not None]
+    if not paired:
+        return
+    if translation_run_id is None:
+        raise UserInputError(
+            "the config declares paired dataset sources but no translation "
+            "run was named",
+            hint="Pass --translation-run-id <id> of a completed "
+            "remote_translate.py run.",
+        )
+    for source in paired:
+        translated = (
+            Path("/artifacts/translation")
+            / translation_run_id
+            / f"rows.{source.language}.jsonl"
+        )
+        if not translated.exists():
+            raise UserInputError(
+                f"translated rows for language {source.language!r} not found: "
+                f"{translated}",
+                hint="Run remote_translate.py with the same config and mode "
+                "first.",
+            )
+        target = paired_input_path(rows_path, source.language)
+        shutil.copy(translated, target)
+        print(f"[pipeline] staged paired rows: {target}", flush=True)
+
+
 def _package_versions() -> dict[str, str]:
     from importlib.metadata import version
 
@@ -197,6 +244,9 @@ def run_remote_pipeline(
     mode: str,
     max_rows: int,
     run_id: str | None = None,
+    adapter_id: str | None = None,
+    adapter_revision: str | None = None,
+    translation_run_id: str | None = None,
 ) -> dict[str, object]:
     os.environ.setdefault("HF_HOME", "/hf-cache")
     # Long-sequence batches fragment the allocator; expandable segments
@@ -217,6 +267,8 @@ def run_remote_pipeline(
     print(f"[pipeline] exported {exported} raw rows", flush=True)
     hf_cache_volume.commit()
 
+    _stage_paired_rows(config_path, rows_path, translation_run_id)
+
     try:
         resolved_run_id = run_pipeline(
             config_path,
@@ -225,6 +277,8 @@ def run_remote_pipeline(
             run_id=run_id,
             project_root=work,
             stages=_wrapped_stages(),  # type: ignore[arg-type]
+            adapter_id=adapter_id,
+            adapter_revision=adapter_revision,
         )
     finally:
         artifacts_volume.commit()
@@ -262,6 +316,9 @@ def main(
     mode: str = "smoke",
     max_rows: int = 2500,
     run_id: str = "",
+    adapter_id: str = "",
+    adapter_revision: str = "",
+    translation_run_id: str = "",
 ) -> None:
     config_yaml = Path(config).read_text(encoding="utf-8")
     result = run_remote_pipeline.remote(
@@ -269,5 +326,8 @@ def main(
         mode,
         max_rows,
         run_id or None,
+        adapter_id or None,
+        adapter_revision or None,
+        translation_run_id or None,
     )
     print(json.dumps(result, indent=2, sort_keys=True))

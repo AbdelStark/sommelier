@@ -100,7 +100,7 @@ def test_evaluation_report_shape(tmp_path: Path) -> None:
     eval_dir = evaluate(config, context, formatted_dir, "base", GOOD_CALL)
 
     report = json.loads((eval_dir / "evaluation_report.json").read_text(encoding="utf-8"))
-    assert report["schema_version"] == "sommelier.evaluation_report.v1"
+    assert report["schema_version"] == "sommelier.evaluation_report.v2"
     assert report["model_kind"] == "base"
     assert report["split"] == "test"
     assert report["parser_version"] == "sommelier.parser.v1"
@@ -112,8 +112,11 @@ def test_evaluation_report_shape(tmp_path: Path) -> None:
         "full_call_exact_match",
     }
     assert report["metrics"]["valid_json_rate"]["value"] == 1.0
+    assert set(report["slices"]) == {"en"}
+    assert report["slices"]["en"]["examples"] == 2
+    assert report["slices"]["en"]["prompt_set_sha256"]
+    assert report["adapter_source"] is None
     assert report["test_split_sha256"]
-    assert report["prompt_set_sha256"]
     assert report["decoding"]["temperature"] == 0.0
     assert report["config_sha256"] == context.config_sha256
 
@@ -124,7 +127,10 @@ def test_comparison_writes_report_and_deltas(tmp_path: Path) -> None:
     compare_evaluations(base_dir, adapter_dir, out_dir, command=["test"])
 
     comparison = json.loads((out_dir / "comparison_report.json").read_text(encoding="utf-8"))
-    assert comparison["schema_version"] == "sommelier.comparison_report.v1"
+    assert comparison["schema_version"] == "sommelier.comparison_report.v2"
+    assert set(comparison["slices"]) == {"en"}
+    assert comparison["slices"]["en"]["deltas"]["valid_json_rate"] == 1.0
+    assert comparison["language_gaps"] == {"reference": "en", "base": {}, "adapter": {}}
     assert comparison["base"]["metrics"]["valid_json_rate"]["value"] == 0.0
     assert comparison["adapter"]["metrics"]["valid_json_rate"]["value"] == 1.0
     assert comparison["deltas"]["valid_json_rate"] == 1.0
@@ -158,7 +164,6 @@ def tamper_report(eval_dir: Path, field: str, value: object) -> None:
     ("field", "value"),
     [
         ("test_split_sha256", "0" * 64),
-        ("prompt_set_sha256", "0" * 64),
         ("parser_version", "sommelier.parser.v0"),
         ("decoding", {"temperature": 0.5, "do_sample": True, "max_new_tokens": 8}),
         ("config_sha256", "0" * 64),
@@ -194,7 +199,7 @@ def test_report_rejects_prompt_digest_mismatch(tmp_path: Path) -> None:
         command=["test"],
         generator=FixedGenerator(GOOD_CALL),
     )
-    generations_path = eval_dir / "generations.jsonl"
+    generations_path = eval_dir / "generations.en.jsonl"
     lines = [
         json.loads(line) for line in generations_path.read_text(encoding="utf-8").splitlines()
     ]

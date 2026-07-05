@@ -57,6 +57,7 @@ PROMPT_TEMPLATE: Final = """Translate the user request below from English to Fre
 Rules:
 - Translate into natural, fluent French.
 - Reproduce every protected span exactly as written, byte for byte, including casing.
+- Keep numbers exactly as written: same digits, decimal point rather than decimal comma.
 - Do not add explanations, quotes, labels, or anything besides the translated request.
 {feedback}{spans}
 User request:
@@ -167,6 +168,25 @@ def strip_scaffolding(text: str) -> str:
             out = out[1:-1].strip()
             break
     return out
+
+
+def normalize_numeric_spans(output: str, spans: list[str]) -> str:
+    """Restores protected decimal spans written with a French comma.
+
+    The prompt pins the number format, but a French model still renders
+    0.5 as 0,5 often enough to matter. When a protected span is a decimal
+    number that is missing from the output while its comma variant is
+    present, the variant is rewritten back; nothing else is touched.
+    """
+    for span in spans:
+        if "." not in span or not span.replace(".", "").isdigit():
+            continue
+        if span_present(output, span):
+            continue
+        comma_variant = span.replace(".", ",")
+        pattern = rf"(?<![0-9A-Za-z]){re.escape(comma_variant)}(?![0-9A-Za-z])"
+        output = re.sub(pattern, span, output)
+    return output
 
 
 def _fully_protected(query: str, spans: list[str]) -> bool:
@@ -353,7 +373,9 @@ def translate_rows(
                     hint="The translation model must return one output per prompt.",
                 )
             for item, raw_output in zip(chunk, outputs, strict=True):
-                output = strip_scaffolding(raw_output)
+                output = normalize_numeric_spans(
+                    strip_scaffolding(raw_output), item.spans
+                )
                 rejection = audit_translation(
                     item.row["query"], output, item.spans, max_query_chars=max_query_chars
                 )
@@ -451,7 +473,15 @@ def load_vllm_translator(info: TranslatorInfo) -> TranslationModel:
             hint="Run the tool remotely (remote_translate.py) or install vllm.",
         ) from error
 
-    llm = LLM(model=info.model_id, revision=info.model_revision, dtype="bfloat16")
+    # Queries are capped at 2000 characters and outputs at the token budget,
+    # so a short context suffices; the model's native 128k default needs
+    # more KV cache than an L40S has left after bf16 12B weights.
+    llm = LLM(
+        model=info.model_id,
+        revision=info.model_revision,
+        dtype="bfloat16",
+        max_model_len=8192,
+    )
     sampling = SamplingParams(temperature=0.0, max_tokens=info.max_new_tokens)
 
     class _VllmTranslator:

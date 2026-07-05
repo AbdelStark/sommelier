@@ -30,11 +30,11 @@ Everything a run produces lives under `<artifact_root>/runs/<run_id>/`:
 │   └── training_metrics.jsonl   sommelier.training_metric.v1, one record per logged step
 ├── eval/
 │   ├── base/
-│   │   ├── generations.jsonl    sommelier.generation.v1, one record per test prompt
-│   │   └── evaluation_report.json   sommelier.evaluation_report.v1
+│   │   ├── generations.<slice>.jsonl   sommelier.generation.v2, one record per test prompt, one file per language slice
+│   │   └── evaluation_report.json   sommelier.evaluation_report.v2
 │   └── adapter/                 the same two files, model_kind "adapter"
 ├── report/
-│   ├── comparison_report.json   sommelier.comparison_report.v1 (authoritative)
+│   ├── comparison_report.json   sommelier.comparison_report.v2 (authoritative)
 │   └── comparison_report.md     human rendering of the JSON report
 └── runtime_metadata.json        sommelier.runtime_metadata.v1: wall clock, GPU, cost evidence
 ```
@@ -48,7 +48,7 @@ Details worth knowing:
 
 ## Schema catalog
 
-`SUPPORTED_SCHEMAS` in [`sommelier/artifacts.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/artifacts.py) is a closed set of seventeen ids. Two more version strings live outside it, listed at the bottom of the table. Superseded versions (`sommelier.config.v1`, `sommelier.prepared_example.v1`, `sommelier.drop_summary.v1`, `sommelier.formatted_example.v1`) stay in the set with no current writer, so artifacts from earlier runs keep validating.
+`SUPPORTED_SCHEMAS` in [`sommelier/artifacts.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/artifacts.py) is a closed set of twenty ids. Two more version strings live outside it, listed at the bottom of the table. Superseded versions (`sommelier.config.v1`, `sommelier.prepared_example.v1`, `sommelier.drop_summary.v1`, `sommelier.formatted_example.v1`, `sommelier.generation.v1`, `sommelier.evaluation_report.v1`, `sommelier.comparison_report.v1`) stay in the set with no current writer, so artifacts from earlier runs keep validating.
 
 | Schema id | One record is | Written by |
 |-----------|---------------|------------|
@@ -58,9 +58,9 @@ Details worth knowing:
 | `sommelier.prepared_example.v2` | one validated example with parsed tools, gold call, language, and split assignment | `data prepare` |
 | `sommelier.drop_summary.v2` | per-language counts of dropped rows per drop reason, plus split accounting | `data prepare` |
 | `sommelier.formatted_example.v2` | one rendered prompt/target pair with its language and prompt digest | `format build` |
-| `sommelier.generation.v1` | one raw model output with parse status and decoding config | `eval run` |
-| `sommelier.evaluation_report.v1` | the five metrics plus identity digests for one model | `eval run` |
-| `sommelier.comparison_report.v1` | the gated base-versus-adapter comparison | `report compare` |
+| `sommelier.generation.v2` | one raw model output with its language, parse status, and decoding config | `eval run` |
+| `sommelier.evaluation_report.v2` | the five metrics per slice and overall, plus identity digests for one model | `eval run` |
+| `sommelier.comparison_report.v2` | the gated base-versus-adapter comparison, per slice, with language gaps | `report compare` |
 | `sommelier.training_metric.v1` | one training log step (loss, learning rate, tokens) | `train run` |
 | `sommelier.translation_summary.v1` | a paired-dataset build's provenance: translator pin, prompt digest, decoding, and drop counts | `data translate` |
 | `sommelier.log_event.v1` | one structured log line | stage loggers (the serving endpoint logs with it) |
@@ -126,35 +126,36 @@ Field lists below are verified against the code; the config schema has its own [
 | `tokenizer_id`, `tokenizer_revision` | str | which tokenizer rendered the template |
 | `template_policy` | str | `tokenizer_chat_template` |
 
-### `sommelier.generation.v1`
+### `sommelier.generation.v2`
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `example_id` | str | must reference a formatted test example |
 | `model_kind` | `base` \| `adapter` | which model produced the output |
+| `language` | str | the evaluation slice this generation belongs to |
 | `prompt_sha256` | str | must equal the formatted example's digest (INV-ARCH-004) |
 | `raw_text` | str | the full generation, retained even on parse failure |
 | `parsed_call` | ToolCall \| null | null whenever `parse_status` is not `ok` |
 | `parse_status` | `ok` \| `no_json` \| `invalid_json` \| `invalid_shape` | see the [metric reference](metrics.md) |
 | `decoding` | dict | `{temperature, do_sample, max_new_tokens}`; must be uniform across the file |
 
-### `sommelier.evaluation_report.v1`
+### `sommelier.evaluation_report.v2`
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `created_at`, `run_id`, `model_kind` | str | report identity |
 | `config_sha256` | str | digest of `config.resolved.yaml` |
 | `split` | `test` | the only split evaluation reads |
-| `metrics` | dict | the five [metric names](metrics.md) mapped to `{value, numerator, denominator}` |
-| `generation_artifact` | str | relative path to the scored `generations.jsonl` |
+| `slices` | dict | per language: `metrics`, `examples`, `prompt_set_sha256`, and the `generation_artifact` path |
+| `metrics` | dict | the five [metric names](metrics.md) across all slices, mapped to `{value, numerator, denominator}` |
+| `adapter_source` | dict \| null | on adapter reports, where the weights came from: `{source, revision, kind}` |
 | `parser_version` | `sommelier.parser.v1` | checked by the comparison gate |
 | `test_split_sha256` | str | digest of the formatted test split file |
-| `prompt_set_sha256` | str | digest over the ordered per-example prompt digests |
 | `decoding` | dict | the uniform decoding config of the generations |
 
-Six of these fields form the identity the [comparison gate](../concepts/determinism.md) checks: `config_sha256`, `split`, `test_split_sha256`, `prompt_set_sha256`, `parser_version`, and `decoding`. `generation_artifact` is evidence, not identity.
+The identity the [comparison gate](../concepts/determinism.md) checks is `config_sha256`, `split`, `test_split_sha256`, `parser_version`, `decoding`, the slice set, and every slice's `prompt_set_sha256`. Generation artifact paths are evidence, not identity.
 
-### `sommelier.comparison_report.v1`
+### `sommelier.comparison_report.v2`
 
 | Field | Type | Notes |
 |-------|------|-------|

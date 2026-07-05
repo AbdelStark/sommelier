@@ -127,7 +127,7 @@ def test_disabled_tracking_keeps_local_reports_complete(tmp_path: Path) -> None:
     config, context, formatted_dir = setup_run(tmp_path, tracking_enabled=False)
     eval_dir = evaluate(config, context, formatted_dir)
 
-    assert (eval_dir / "generations.jsonl").exists()
+    assert (eval_dir / "generations.en.jsonl").exists()
     assert (eval_dir / "evaluation_report.json").exists()
     manifest = json.loads((context.run_dir / "manifest.json").read_text(encoding="utf-8"))
     assert "tracking" not in manifest
