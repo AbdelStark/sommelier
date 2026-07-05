@@ -67,6 +67,10 @@ module = [
     "fastapi.*",
     "uvicorn",
     "uvicorn.*",
+    "vllm",
+    "vllm.*",
+    "datasets",
+    "datasets.*",
 ]
 ignore_missing_imports = true
 # Optional heavy stacks are treated as untyped even when installed, so

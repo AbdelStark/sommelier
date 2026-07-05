@@ -71,6 +71,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prepare_parser.set_defaults(handler=cmd_data_prepare)
 
+    translate_parser = data_subparsers.add_parser(
+        "translate",
+        help="Translate root-source queries into a paired French dataset.",
+    )
+    translate_parser.add_argument(
+        "--input",
+        required=True,
+        type=Path,
+        help="Raw JSONL of the root source's sommelier.raw_tool_call_row.v1 records.",
+    )
+    translate_parser.add_argument("--out", required=True, type=Path)
+    translate_parser.add_argument(
+        "--model-id",
+        required=True,
+        help="Hugging Face id of the translator model (served with vllm).",
+    )
+    translate_parser.add_argument("--model-revision", default="main")
+    translate_parser.add_argument("--max-new-tokens", type=int, default=1024)
+    translate_parser.add_argument(
+        "--max-query-chars",
+        type=int,
+        default=2000,
+        help="Reject translations longer than this, mirroring data.max_query_chars.",
+    )
+    translate_parser.add_argument(
+        "--select-from",
+        type=Path,
+        help="Prepared data directory; only rows selected into its splits translate.",
+    )
+    translate_parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Translate only the first N selected rows (smoke runs).",
+    )
+    translate_parser.set_defaults(handler=cmd_data_translate)
+
     validate_fixtures_parser = data_subparsers.add_parser(
         "validate-fixtures",
         help="Validate synthetic fixture JSONL files.",
@@ -240,6 +277,50 @@ def cmd_data_prepare(args: argparse.Namespace) -> int:
             paired_input_paths=paired_input_paths,
         )
     print(f"data prepare ok: run_id={context.run_id} out={args.out}")
+    return 0
+
+
+def cmd_data_translate(args: argparse.Namespace) -> int:
+    from sommelier.data.load import load_raw_rows
+    from sommelier.data.translate import (
+        PROGRESS_FILENAME,
+        TranslatorInfo,
+        load_vllm_translator,
+        select_example_ids,
+        translate_rows,
+        write_translation_outputs,
+    )
+
+    rows = load_raw_rows(args.input.resolve())
+    input_description = f"{args.input} ({len(rows)} rows)"
+    if args.select_from is not None:
+        selected_ids = select_example_ids(args.select_from.resolve())
+        rows = [row for row in rows if row["source_id"] in selected_ids]
+        input_description += f", selected {len(rows)}"
+    if args.limit:
+        rows = rows[: args.limit]
+
+    translator = TranslatorInfo(
+        model_id=args.model_id,
+        model_revision=args.model_revision,
+        max_new_tokens=args.max_new_tokens,
+    )
+    model = load_vllm_translator(translator)
+    out_dir = args.out.resolve()
+    translated, stats = translate_rows(
+        rows,
+        model,
+        progress_path=out_dir / PROGRESS_FILENAME,
+        max_query_chars=args.max_query_chars,
+    )
+    rows_path, summary_path = write_translation_outputs(
+        out_dir,
+        translated,
+        stats,
+        translator=translator,
+        input_description=input_description,
+    )
+    print(f"data translate ok: rows={rows_path} summary={summary_path}")
     return 0
 
 

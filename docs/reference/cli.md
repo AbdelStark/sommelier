@@ -84,6 +84,26 @@ sommelier data prepare \
   --run-id demo --fixture
 ```
 
+## data translate
+
+```text
+sommelier data translate --input <jsonl> --out <dir> --model-id <hf-id>
+                         [--model-revision <rev>] [--max-new-tokens <n>]
+                         [--select-from <prepared-dir>] [--limit <n>]
+```
+
+| Flag | Required | Default | Meaning |
+|------|----------|---------|---------|
+| `--input` | yes | | Raw JSONL of the root source's `sommelier.raw_tool_call_row.v1` records |
+| `--out` | yes | | Directory for `rows.fr.jsonl`, `translation_summary.json`, and the resume checkpoint |
+| `--model-id` | yes | | Hugging Face id of the translator model, served through vllm |
+| `--model-revision` | no | `main` | Translator revision; recorded in the summary |
+| `--max-new-tokens` | no | `512` | Generation budget per query |
+| `--select-from` | no | | Prepared data directory; only rows selected into its splits are translated |
+| `--limit` | no | all | Translate only the first N rows (smoke runs) |
+
+Builds a paired French dataset from the root source's raw rows. Only the query is translated: `tools` and `answers` are copied byte for byte, and every output must reproduce its protected spans (gold argument values that appear verbatim in the English query) exactly. Failures retry up to twice with the rejection appended to the prompt, then drop with a counted reason in the summary. Output rows carry `source_example_id` naming the root row, ready for [`data prepare`](#data-prepare)'s paired-source path. Progress checkpoints per row, so an interrupted run resumes. This needs a GPU with vllm installed; `remote_translate.py` runs the same tool on Modal, including the raw-row export and split selection.
+
 ## data validate-fixtures
 
 ```text
