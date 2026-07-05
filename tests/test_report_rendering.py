@@ -32,32 +32,65 @@ def fixture_comparison() -> dict[str, Any]:
         "argument_f1": metric(0.9, 72, 80),
         "full_call_exact_match": metric(0.7, 14, 20),
     }
+    deltas = {
+        name: adapter_metrics[name]["value"] - base_metrics[name]["value"]
+        for name in base_metrics
+    }
     return {
-        "schema_version": "sommelier.comparison_report.v1",
+        "schema_version": "sommelier.comparison_report.v2",
         "created_at": "2026-07-02T12:00:00+00:00",
         "run_id": "smoke-fixture-1",
         "shared": {
             "config_sha256": "c" * 64,
             "split": "test",
             "test_split_sha256": "t" * 64,
-            "prompt_set_sha256": "p" * 64,
             "parser_version": "sommelier.parser.v1",
             "decoding": {"temperature": 0.0, "do_sample": False, "max_new_tokens": 512},
+        },
+        "slices": {
+            "en": {
+                "examples": 20,
+                "prompt_set_sha256": "p" * 64,
+                "base": {"metrics": base_metrics},
+                "adapter": {"metrics": adapter_metrics},
+                "deltas": dict(deltas),
+                "generation_artifacts": {
+                    "base": "runs/smoke-fixture-1/eval/base/generations.en.jsonl",
+                    "adapter": "runs/smoke-fixture-1/eval/adapter/generations.en.jsonl",
+                },
+            },
+            "fr": {
+                "examples": 20,
+                "prompt_set_sha256": "q" * 64,
+                "base": {"metrics": base_metrics},
+                "adapter": {"metrics": adapter_metrics},
+                "deltas": dict(deltas),
+                "generation_artifacts": {
+                    "base": "runs/smoke-fixture-1/eval/base/generations.fr.jsonl",
+                    "adapter": "runs/smoke-fixture-1/eval/adapter/generations.fr.jsonl",
+                },
+            },
+        },
+        "language_gaps": {
+            "reference": "en",
+            "base": {"fr": {name: 0.0 for name in base_metrics}},
+            "adapter": {"fr": {name: 0.0 for name in adapter_metrics}},
         },
         "base": {
             "run_id": "smoke-fixture-1",
             "metrics": base_metrics,
-            "generation_artifact": "runs/smoke-fixture-1/eval/base/generations.jsonl",
+            "adapter_source": None,
         },
         "adapter": {
             "run_id": "smoke-fixture-1",
             "metrics": adapter_metrics,
-            "generation_artifact": "runs/smoke-fixture-1/eval/adapter/generations.jsonl",
+            "adapter_source": {
+                "source": "abdelstark/example-adapter",
+                "revision": "main",
+                "kind": "huggingface_repo",
+            },
         },
-        "deltas": {
-            name: adapter_metrics[name]["value"] - base_metrics[name]["value"]
-            for name in base_metrics
-        },
+        "deltas": deltas,
         "runtime": {
             "available": True,
             "schema_version": "sommelier.runtime_metadata.v1",
@@ -91,7 +124,10 @@ def test_markdown_contains_required_sections() -> None:
     for heading in (
         "## Run Identity",
         "## Split Summary",
-        "## Metrics",
+        "## Metrics, all slices",
+        "## Metrics, slice `en`",
+        "## Metrics, slice `fr`",
+        "## Language Gaps",
         "## Runtime and Cost",
         "## Reproduction",
         "## Limitations",
@@ -101,6 +137,8 @@ def test_markdown_contains_required_sections() -> None:
     assert "Evidence class: smoke run" in rendered
     assert "sommelier report compare" in rendered
     assert "production readiness" in rendered
+    assert "machine-translated" in rendered
+    assert "abdelstark/example-adapter" in rendered
 
 
 def test_markdown_renders_metric_deltas() -> None:

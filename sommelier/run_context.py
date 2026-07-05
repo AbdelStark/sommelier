@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from sommelier.artifacts import ArtifactRef
 from sommelier.config import SommelierConfig, write_resolved_config
@@ -85,6 +86,7 @@ def record_stage_success(
     seed: int,
     inputs: list[ArtifactRef],
     outputs: list[ArtifactRef],
+    details: dict[str, Any] | None = None,
 ) -> ArtifactRef:
     manifest = build_stage_manifest(
         stage=stage,
@@ -96,6 +98,7 @@ def record_stage_success(
         inputs=inputs,
         outputs=outputs,
         status="succeeded",
+        details=details,
     )
     stage_ref = write_stage_manifest(
         manifest,

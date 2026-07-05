@@ -8,7 +8,7 @@ from typing import Final, Literal
 
 from sommelier.config import SommelierConfig, load_config
 from sommelier.errors import UserInputError
-from sommelier.evaluation.generate import run_generation
+from sommelier.evaluation.generate import AdapterRef, run_generation
 from sommelier.evaluation.report import compare_evaluations, write_evaluation_report
 from sommelier.formatting.chat import build_formatted_splits
 from sommelier.manifests import create_run_id
@@ -33,7 +33,12 @@ StageFn = Callable[["PipelinePaths", SommelierConfig, RunContext, list[str]], No
 
 @dataclass(frozen=True)
 class PipelinePaths:
-    """Stage directories inside one run, per the required artifact layout."""
+    """Stage directories inside one run, per the required artifact layout.
+
+    ``external_adapter`` switches the run into baseline shape: the train
+    stage is skipped and the adapter evaluation loads the referenced
+    published adapter instead of this run's train output.
+    """
 
     input_path: Path
     data_dir: Path
@@ -42,6 +47,7 @@ class PipelinePaths:
     eval_base_dir: Path
     eval_adapter_dir: Path
     report_dir: Path
+    external_adapter: AdapterRef | None = None
 
 
 def _stage_prepare(
@@ -107,6 +113,15 @@ def _stage_train(
     context: RunContext,
     command: list[str],
 ) -> None:
+    if paths.external_adapter is not None:
+        # Baseline shape: the run evaluates a published adapter, so there
+        # is nothing to train and no train manifest to record.
+        print(
+            f"[pipeline] skipping train stage: evaluating external adapter "
+            f"{paths.external_adapter.source}",
+            flush=True,
+        )
+        return
     train_adapter(
         config,
         paths.formatted_dir,
@@ -122,12 +137,13 @@ def _stage_eval_adapter(
     context: RunContext,
     command: list[str],
 ) -> None:
+    adapter = paths.external_adapter or AdapterRef(source=str(paths.train_dir))
     run_generation(
         config,
         formatted_dir=paths.formatted_dir,
         out_dir=paths.eval_adapter_dir,
         model_kind="adapter",
-        adapter_dir=paths.train_dir,
+        adapter=adapter,
         context=context,
         command=command,
     )
@@ -138,6 +154,7 @@ def _stage_eval_adapter(
         model_kind="adapter",
         context=context,
         command=command,
+        adapter=adapter,
     )
 
 
@@ -203,14 +220,18 @@ def run_pipeline(
     run_id: str | None = None,
     project_root: Path | None = None,
     stages: PipelineStages | None = None,
+    adapter_id: str | None = None,
+    adapter_revision: str | None = None,
 ) -> str:
     """Chains data, format, baseline eval, train, adapter eval, and compare.
 
     Every stage reads and writes inside one run directory under the
     configured artifact root; smoke mode bounds the split sizes through a
-    resolved config override and uses a separate run ID namespace. Stage
-    failures propagate as SommelierError subclasses with their documented
-    exit codes; nothing is retried.
+    resolved config override and uses a separate run ID namespace. With
+    ``adapter_id`` the run takes the baseline shape: training is skipped
+    and the adapter evaluation loads the referenced published adapter.
+    Stage failures propagate as SommelierError subclasses with their
+    documented exit codes; nothing is retried.
     """
     if not input_path.exists():
         raise UserInputError(
@@ -229,6 +250,13 @@ def run_pipeline(
         run_id=resolved_run_id,
         project_root=project_root or Path.cwd(),
     )
+    external_adapter = None
+    if adapter_id is not None:
+        adapter_path = Path(adapter_id)
+        external_adapter = AdapterRef(
+            source=str(adapter_path.resolve()) if adapter_path.exists() else adapter_id,
+            revision=adapter_revision,
+        )
     paths = PipelinePaths(
         input_path=input_path.resolve(),
         data_dir=context.run_dir / "data",
@@ -237,6 +265,7 @@ def run_pipeline(
         eval_base_dir=context.run_dir / "eval" / "base",
         eval_adapter_dir=context.run_dir / "eval" / "adapter",
         report_dir=context.run_dir / "report",
+        external_adapter=external_adapter,
     )
 
     command = [
@@ -252,6 +281,10 @@ def run_pipeline(
         "--run-id",
         resolved_run_id,
     ]
+    if adapter_id is not None:
+        command.extend(["--adapter-id", adapter_id])
+        if adapter_revision is not None:
+            command.extend(["--adapter-revision", adapter_revision])
     initialize_runtime_metadata(context.run_dir, gpu=config.remote.gpu)
     active_stages = stages if stages is not None else PipelineStages()
     for stage_name, stage_fn in active_stages.ordered():

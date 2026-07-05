@@ -43,11 +43,17 @@ Each metric is stored as a value with its numerator and denominator, so no numbe
 
 The metrics are ordered diagnostics, not redundancy: a model can emit valid JSON but name the wrong tool, or name the right tool and fumble one argument. The [reference run](../results/reference-run.md) reports all five for both models.
 
+## Slices and the language gap
+
+Evaluation runs once per configured `eval.slices` language: the formatted test split is partitioned by each example's `language`, every slice is evaluated with the same model, prompt policy, parser, and decoding, and a configured slice with no rows is an error rather than an empty section. The evaluation report carries one metrics block per slice plus the overall block across all slices, each with its own prompt-set digest.
+
+The comparison report adds the measurement multilingual runs exist for: for every non-reference slice (the reference is the first configured slice, English in the v2 setup), it records the per-metric gap against the reference, once for the base model and once for the adapter. The base gap answers how much the model loses on French input before any training; the adapter gap answers how much of that loss the training closed. Because paired slices share byte-identical gold answers and tool schemas by construction, the gap isolates the query language as the only moving variable.
+
 ## Everything is re-scorable
 
-Raw generations are always retained. `generations.jsonl` holds one record per test prompt with the raw generated text, the parsed call (or null), the parse status, the prompt digest, and the decoding config, including every failure. If you distrust the parser, you can re-run it, or your own, over `raw_text` and re-derive every metric from the file. The report stage adds its own consistency checks before scoring: the generation count must equal the test split size, every generation must reference a known example, and every prompt digest must match the formatted split.
+Raw generations are always retained. `generations.<slice>.jsonl` holds one record per test prompt of that slice with the raw generated text, the language, the parsed call (or null), the parse status, the prompt digest, and the decoding config, including every failure. If you distrust the parser, you can re-run it, or your own, over `raw_text` and re-derive every metric from the file. The report stage adds its own consistency checks before scoring: the generation count must equal the slice size, every generation must reference a known example and carry its slice's language, and every prompt digest must match the formatted split.
 
-`evaluation_report.json` records the metrics plus the identity of the conditions they were measured under: config digest, test split digest, ordered prompt-set digest, parser version, and decoding config. Those fields are what the comparison gate checks before it will put base and adapter numbers in the same table; the mechanism is described in [Determinism and the comparison gate](determinism.md).
+`evaluation_report.json` records the metrics plus the identity of the conditions they were measured under: config digest, test split digest, per-slice ordered prompt-set digests, parser version, and decoding config. Those fields, plus the slice set itself, are what the comparison gate checks before it will put base and adapter numbers in the same table; the mechanism is described in [Determinism and the comparison gate](determinism.md). Adapter reports also record where the weights came from, which is how a published adapter is evaluated against a base model without retraining.
 
 ## Known sharp edges
 

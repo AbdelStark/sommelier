@@ -10,7 +10,10 @@ MARKDOWN_FILENAME: Final = "comparison_report.md"
 
 LIMITATIONS: Final = (
     "- Metrics measure schema-valid single tool calls on the configured "
-    "held-out test split only; multi-call plans are out of scope for v1.0.\n"
+    "held-out test split only; multi-call plans are out of scope.\n"
+    "- Non-English slices are machine-translated variants of the English "
+    "test rows, not natively authored requests, and share their gold "
+    "answers by construction.\n"
     "- Argument comparisons are exact canonical-JSON matches; semantically "
     "equivalent but differently formatted values count as mismatches.\n"
     "- Results describe the recorded run (hardware, dependencies, dataset "
@@ -25,15 +28,54 @@ def _evidence_class(run_id: str) -> str:
     return "smoke" if run_id.startswith("smoke-") else "full"
 
 
-def _metric_row(name: str, comparison: dict[str, Any]) -> str:
-    base = comparison["base"]["metrics"][name]
-    adapter = comparison["adapter"]["metrics"][name]
-    delta = comparison["deltas"][name]
+def _metric_row(name: str, block: dict[str, Any]) -> str:
+    base = block["base"]["metrics"][name]
+    adapter = block["adapter"]["metrics"][name]
+    delta = block["deltas"][name]
     return (
         f"| {name} | {base['value']:.4f} ({base['numerator']}/{base['denominator']}) "
         f"| {adapter['value']:.4f} ({adapter['numerator']}/{adapter['denominator']}) "
         f"| {delta:+.4f} |"
     )
+
+
+def _metrics_table(block: dict[str, Any]) -> list[str]:
+    lines = [
+        "| Metric | Base | Adapter | Delta |",
+        "|--------|------|---------|-------|",
+    ]
+    lines.extend(_metric_row(name, block) for name in block["deltas"])
+    return lines
+
+
+def _language_gap_lines(comparison: dict[str, Any]) -> list[str]:
+    gaps = comparison.get("language_gaps", {})
+    reference = gaps.get("reference")
+    base_gaps = gaps.get("base", {})
+    if not base_gaps:
+        return []
+    lines = [
+        "",
+        "## Language Gaps",
+        "",
+        f"Each slice against the `{reference}` reference slice "
+        "(positive means the slice scores higher):",
+        "",
+    ]
+    for slice_language in sorted(base_gaps):
+        lines.extend(
+            [
+                f"### `{slice_language}` minus `{reference}`",
+                "",
+                "| Metric | Base gap | Adapter gap |",
+                "|--------|----------|-------------|",
+            ]
+        )
+        adapter_gaps = comparison["language_gaps"]["adapter"][slice_language]
+        for name, base_gap in base_gaps[slice_language].items():
+            lines.append(f"| {name} | {base_gap:+.4f} | {adapter_gaps[name]:+.4f} |")
+        lines.append("")
+    return lines
 
 
 def _runtime_lines(runtime: dict[str, Any]) -> list[str]:
@@ -70,6 +112,8 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
     run_id = str(comparison["run_id"])
     metric_names = list(comparison["deltas"].keys())
     denominator = comparison["base"]["metrics"][metric_names[0]]["denominator"]
+    slices = comparison["slices"]
+    adapter_source = comparison["adapter"].get("adapter_source")
 
     lines: list[str] = [
         "# Sommelier Comparison Report",
@@ -85,20 +129,40 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
         f"- Config digest: `{shared['config_sha256']}`",
         f"- Parser version: `{shared['parser_version']}`",
         f"- Decoding: `{json.dumps(shared['decoding'], sort_keys=True)}`",
-        "",
-        "## Split Summary",
-        "",
-        f"- Split: {shared['split']}",
-        f"- Examples evaluated: {denominator}",
-        f"- Test split digest: `{shared['test_split_sha256']}`",
-        f"- Prompt set digest: `{shared['prompt_set_sha256']}`",
-        "",
-        "## Metrics",
-        "",
-        "| Metric | Base | Adapter | Delta |",
-        "|--------|------|---------|-------|",
     ]
-    lines.extend(_metric_row(name, comparison) for name in metric_names)
+    if adapter_source is not None:
+        lines.append(
+            f"- Adapter source: `{adapter_source['source']}` "
+            f"({adapter_source['kind']}, revision {adapter_source['revision']})"
+        )
+    lines.extend(
+        [
+            "",
+            "## Split Summary",
+            "",
+            f"- Split: {shared['split']}",
+            f"- Slices: {', '.join(f'`{name}`' for name in slices)}",
+            f"- Examples evaluated: {denominator} across all slices",
+            f"- Test split digest: `{shared['test_split_sha256']}`",
+            "",
+            "## Metrics, all slices",
+            "",
+            *_metrics_table(comparison),
+        ]
+    )
+    for slice_language, block in slices.items():
+        lines.extend(
+            [
+                "",
+                f"## Metrics, slice `{slice_language}`",
+                "",
+                f"- Examples: {block['examples']}",
+                f"- Prompt set digest: `{block['prompt_set_sha256']}`",
+                "",
+                *_metrics_table(block),
+            ]
+        )
+    lines.extend(_language_gap_lines(comparison))
     lines.extend(
         [
             "",
@@ -122,9 +186,14 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
             "--out report",
             "```",
             "",
-            "Generation artifacts: "
-            f"`{comparison['base']['generation_artifact']}` (base), "
-            f"`{comparison['adapter']['generation_artifact']}` (adapter).",
+            "Generation artifacts per slice: "
+            + "; ".join(
+                f"`{slice_language}`: "
+                f"`{block['generation_artifacts']['base']}` (base), "
+                f"`{block['generation_artifacts']['adapter']}` (adapter)"
+                for slice_language, block in slices.items()
+            )
+            + ".",
             "",
             "## Limitations",
             "",

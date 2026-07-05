@@ -16,7 +16,13 @@ from sommelier.artifacts import (
 from sommelier.config import SommelierConfig, compute_config_digest, load_config
 from sommelier.data.types import ToolCall
 from sommelier.errors import EvaluationError, InvariantViolation, UserInputError
-from sommelier.evaluation.generate import GENERATION_SCHEMA, ModelKind
+from sommelier.evaluation.generate import (
+    GENERATION_SCHEMA,
+    AdapterRef,
+    ModelKind,
+    read_test_slices,
+    slice_filename,
+)
 from sommelier.evaluation.metrics import ScoredRecord, compute_metrics
 from sommelier.evaluation.parse import ParseStatus
 from sommelier.formatting.chat import FORMATTED_EXAMPLE_SCHEMA as FORMATTED_SCHEMA
@@ -32,8 +38,8 @@ from sommelier.runtime_metadata import runtime_section
 from sommelier.security import validate_no_secrets
 from sommelier.tracking import track_stage_metrics
 
-EVALUATION_REPORT_SCHEMA: Final = "sommelier.evaluation_report.v1"
-COMPARISON_REPORT_SCHEMA: Final = "sommelier.comparison_report.v1"
+EVALUATION_REPORT_SCHEMA: Final = "sommelier.evaluation_report.v2"
+COMPARISON_REPORT_SCHEMA: Final = "sommelier.comparison_report.v2"
 
 REPORT_FILENAME: Final = "evaluation_report.json"
 COMPARISON_FILENAME: Final = "comparison_report.json"
@@ -42,7 +48,6 @@ _COMPARABILITY_FIELDS: Final = (
     "config_sha256",
     "split",
     "test_split_sha256",
-    "prompt_set_sha256",
     "parser_version",
     "decoding",
 )
@@ -123,40 +128,70 @@ def write_evaluation_report(
     model_kind: ModelKind,
     context: RunContext,
     command: list[str],
+    adapter: AdapterRef | None = None,
 ) -> ArtifactRef:
     """Writes evaluation_report.json next to the generations it scores.
 
-    The report records metrics plus the identity digests the comparison
-    gate checks: config digest, test split digest, ordered prompt set
-    digest, parser version, and decoding config. Configured report fields
-    are redacted before writing.
+    The report carries one metrics section per evaluated slice plus the
+    overall block across all slices, and the identity digests the
+    comparison gate checks: config digest, test split digest, per-slice
+    ordered prompt set digests, parser version, and decoding config.
+    Configured report fields are redacted before writing.
     """
     test_path = formatted_dir / "test.jsonl"
-    formatted_examples = read_jsonl_records(test_path)
-    generations_path = eval_dir / "generations.jsonl"
-    generations = read_jsonl_records(generations_path)
+    by_slice = read_test_slices(config, formatted_dir)
 
-    for generation in generations:
-        if generation.get("schema_version") != GENERATION_SCHEMA:
-            raise EvaluationError(
-                f"{generations_path}: expected {GENERATION_SCHEMA} records",
-                hint="Re-run sommelier eval run to regenerate outputs.",
-            )
-        if generation.get("model_kind") != model_kind:
-            raise EvaluationError(
-                f"{generations_path}: generations belong to "
-                f"{generation.get('model_kind')}, not {model_kind}",
-                hint="Point the report writer at the matching eval directory.",
-            )
+    slices: dict[str, Any] = {}
+    all_scored: list[Any] = []
+    all_decodings: list[dict[str, object]] = []
+    generation_refs: list[ArtifactRef] = []
+    for slice_language in config.eval.slices:
+        generations_path = eval_dir / slice_filename(slice_language)
+        generations = read_jsonl_records(generations_path)
+        for generation in generations:
+            if generation.get("schema_version") != GENERATION_SCHEMA:
+                raise EvaluationError(
+                    f"{generations_path}: expected {GENERATION_SCHEMA} records",
+                    hint="Re-run sommelier eval run to regenerate outputs.",
+                )
+            if generation.get("model_kind") != model_kind:
+                raise EvaluationError(
+                    f"{generations_path}: generations belong to "
+                    f"{generation.get('model_kind')}, not {model_kind}",
+                    hint="Point the report writer at the matching eval directory.",
+                )
+            if generation.get("language") != slice_language:
+                raise EvaluationError(
+                    f"{generations_path}: generation for example "
+                    f"{generation.get('example_id')} carries language "
+                    f"{generation.get('language')!r}, not {slice_language!r}",
+                    hint="Re-run sommelier eval run to regenerate outputs.",
+                )
+        examples = by_slice[slice_language]
+        scored = build_scored_records(examples, generations)
+        all_scored.extend(scored)
+        all_decodings.append(_uniform_decoding(generations))
+        generations_ref = make_artifact_ref(
+            generations_path,
+            artifact_root=context.artifact_root,
+            kind="generations",
+            schema_version=GENERATION_SCHEMA,
+        )
+        generation_refs.append(generations_ref)
+        slices[slice_language] = {
+            "metrics": compute_metrics(scored),
+            "examples": len(examples),
+            "prompt_set_sha256": prompt_set_digest(
+                [str(example["prompt_sha256"]) for example in examples]
+            ),
+            "generation_artifact": generations_ref["path"],
+        }
 
-    scored = build_scored_records(formatted_examples, generations)
-    metrics = compute_metrics(scored)
-    generations_ref = make_artifact_ref(
-        generations_path,
-        artifact_root=context.artifact_root,
-        kind="generations",
-        schema_version=GENERATION_SCHEMA,
-    )
+    if len({json.dumps(decoding, sort_keys=True) for decoding in all_decodings}) != 1:
+        raise InvariantViolation(
+            "slices were generated with different decoding configs",
+            hint="Regenerate every slice with one deterministic decoding config.",
+        )
 
     report: dict[str, Any] = {
         "schema_version": EVALUATION_REPORT_SCHEMA,
@@ -165,14 +200,12 @@ def write_evaluation_report(
         "model_kind": model_kind,
         "config_sha256": context.config_sha256,
         "split": "test",
-        "metrics": metrics,
-        "generation_artifact": generations_ref["path"],
+        "slices": slices,
+        "metrics": compute_metrics(all_scored),
+        "adapter_source": adapter.describe() if adapter is not None else None,
         "parser_version": config.eval.parser_version,
         "test_split_sha256": sha256_file(test_path),
-        "prompt_set_sha256": prompt_set_digest(
-            [str(example["prompt_sha256"]) for example in formatted_examples]
-        ),
-        "decoding": _uniform_decoding(generations),
+        "decoding": all_decodings[0],
     }
     report = redact_configured_fields(report, config.report.redact_fields)
     validate_no_secrets(report, context="evaluation report")
@@ -196,19 +229,25 @@ def write_evaluation_report(
         kind="formatted_split",
         schema_version=FORMATTED_SCHEMA,
     )
+    details: dict[str, Any] = {"eval_slices": list(config.eval.slices)}
+    if adapter is not None:
+        details["adapter_source"] = adapter.describe()
     record_stage_success(
         context,
         stage="eval",
         command=command,
         seed=config.project.seed,
-        inputs=[test_ref, generations_ref],
-        outputs=[generations_ref, report_ref],
+        inputs=[test_ref, *generation_refs],
+        outputs=[*generation_refs, report_ref],
+        details=details,
     )
     track_stage_metrics(
         config,
         context,
         stage=f"eval-{model_kind}",
-        records=[{name: value["value"] for name, value in metrics.items()}],
+        records=[
+            {name: value["value"] for name, value in report["metrics"].items()}
+        ],
     )
     return report_ref
 
@@ -244,11 +283,50 @@ def _assert_comparable(base: dict[str, Any], adapter: dict[str, Any]) -> None:
                 hint="Base and adapter evaluations must share the same test "
                 "split, prompts, parser, decoding, and config.",
             )
+    if set(base["slices"].keys()) != set(adapter["slices"].keys()):
+        raise EvaluationError(
+            "comparison rejected: evaluated slices differ",
+            hint="Base and adapter evaluations must cover the same language "
+            "slices.",
+        )
+    for slice_language, base_slice in base["slices"].items():
+        adapter_slice = adapter["slices"][slice_language]
+        if base_slice.get("prompt_set_sha256") != adapter_slice.get("prompt_set_sha256"):
+            raise EvaluationError(
+                f"comparison rejected: mismatched prompt_set_sha256 for slice "
+                f"{slice_language}",
+                hint="Base and adapter evaluations must score identical "
+                "prompts in every slice.",
+            )
     if set(base["metrics"].keys()) != set(adapter["metrics"].keys()):
         raise EvaluationError(
             "comparison rejected: metric names differ",
             hint="Regenerate both reports with the same pipeline version.",
         )
+
+
+def _metric_deltas(base: dict[str, Any], adapter: dict[str, Any]) -> dict[str, float]:
+    return {
+        name: adapter[name]["value"] - base[name]["value"] for name in base
+    }
+
+
+def _language_gaps(
+    report: dict[str, Any],
+    *,
+    reference: str,
+) -> dict[str, dict[str, float]]:
+    """Per-metric gap of each non-reference slice against the reference."""
+    reference_metrics = report["slices"][reference]["metrics"]
+    gaps: dict[str, dict[str, float]] = {}
+    for slice_language, slice_report in report["slices"].items():
+        if slice_language == reference:
+            continue
+        gaps[slice_language] = {
+            name: slice_report["metrics"][name]["value"] - reference_metrics[name]["value"]
+            for name in reference_metrics
+        }
+    return gaps
 
 
 def compare_evaluations(
@@ -290,26 +368,50 @@ def compare_evaluations(
             hint="Use the run directory whose config produced both evaluations.",
         )
 
-    deltas = {
-        name: adapter_report["metrics"][name]["value"] - base_report["metrics"][name]["value"]
-        for name in base_report["metrics"]
+    slice_languages = list(config.eval.slices)
+    slices: dict[str, Any] = {}
+    for slice_language in slice_languages:
+        base_slice = base_report["slices"][slice_language]
+        adapter_slice = adapter_report["slices"][slice_language]
+        slices[slice_language] = {
+            "examples": base_slice["examples"],
+            "prompt_set_sha256": base_slice["prompt_set_sha256"],
+            "base": {"metrics": base_slice["metrics"]},
+            "adapter": {"metrics": adapter_slice["metrics"]},
+            "deltas": _metric_deltas(base_slice["metrics"], adapter_slice["metrics"]),
+            "generation_artifacts": {
+                "base": base_slice["generation_artifact"],
+                "adapter": adapter_slice["generation_artifact"],
+            },
+        }
+
+    # The first configured slice is the reference the others are measured
+    # against; with one slice the gaps section is empty.
+    reference = slice_languages[0]
+    language_gaps: dict[str, Any] = {
+        "reference": reference,
+        "base": _language_gaps(base_report, reference=reference),
+        "adapter": _language_gaps(adapter_report, reference=reference),
     }
+
     comparison: dict[str, Any] = {
         "schema_version": COMPARISON_REPORT_SCHEMA,
         "created_at": datetime.now(UTC).isoformat(),
         "run_id": run_id,
         "shared": {field: base_report[field] for field in _COMPARABILITY_FIELDS},
+        "slices": slices,
+        "language_gaps": language_gaps,
         "base": {
             "run_id": base_report["run_id"],
             "metrics": base_report["metrics"],
-            "generation_artifact": base_report["generation_artifact"],
+            "adapter_source": base_report.get("adapter_source"),
         },
         "adapter": {
             "run_id": adapter_report["run_id"],
             "metrics": adapter_report["metrics"],
-            "generation_artifact": adapter_report["generation_artifact"],
+            "adapter_source": adapter_report.get("adapter_source"),
         },
-        "deltas": deltas,
+        "deltas": _metric_deltas(base_report["metrics"], adapter_report["metrics"]),
         "runtime": runtime_section(run_dir),
     }
     comparison = redact_configured_fields(comparison, config.report.redact_fields)

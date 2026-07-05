@@ -84,7 +84,7 @@ def test_generations_persist_with_decoding_and_parse_status(tmp_path: Path) -> N
         generator=generator,
     )
 
-    lines = (out_dir / "generations.jsonl").read_text(encoding="utf-8").splitlines()
+    lines = (out_dir / "generations.en.jsonl").read_text(encoding="utf-8").splitlines()
     records = [json.loads(line) for line in lines]
     formatted = [
         json.loads(line)
@@ -93,7 +93,8 @@ def test_generations_persist_with_decoding_and_parse_status(tmp_path: Path) -> N
     assert len(records) == len(formatted)
 
     for record in records:
-        assert record["schema_version"] == "sommelier.generation.v1"
+        assert record["schema_version"] == "sommelier.generation.v2"
+        assert record["language"] == "en"
         assert record["model_kind"] == "base"
         assert record["decoding"] == {
             "temperature": 0.0,
@@ -133,7 +134,7 @@ def test_prompts_come_from_stored_prompt_text(tmp_path: Path) -> None:
 
     records = [
         json.loads(line)
-        for line in (context.run_dir / "eval" / "base" / "generations.jsonl")
+        for line in (context.run_dir / "eval" / "base" / "generations.en.jsonl")
         .read_text(encoding="utf-8")
         .splitlines()
     ]
@@ -157,7 +158,8 @@ def test_eval_manifest_recorded(tmp_path: Path) -> None:
     manifest = json.loads((context.run_dir / "eval_manifest.json").read_text(encoding="utf-8"))
     assert manifest["stage"] == "eval"
     assert manifest["status"] == "succeeded"
-    assert manifest["outputs"][0]["schema_version"] == "sommelier.generation.v1"
+    assert manifest["outputs"][0]["schema_version"] == "sommelier.generation.v2"
+    assert manifest["details"]["eval_slices"] == ["en"]
 
 
 def test_decoding_validation_rejects_sampling(tmp_path: Path) -> None:
