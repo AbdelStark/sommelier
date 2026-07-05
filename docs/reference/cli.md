@@ -50,7 +50,7 @@ sommelier config validate --config <yaml> [--write-resolved <dir>]
 | `--config` | yes | | Path to the config YAML |
 | `--write-resolved` | no | | Directory to write `config.resolved.yaml` into |
 
-Loads and validates the config against `sommelier.config.v1` (unknown fields are rejected in every section) and runs the secret scan on both the raw YAML and the validated dump. With `--write-resolved`, writes `config.resolved.yaml` atomically to the given directory: the fully defaulted form whose SHA-256 digest identifies the config everywhere else in the pipeline. Field-by-field documentation is in [Configuration](configuration.md).
+Loads and validates the config against `sommelier.config.v2` (unknown fields are rejected in every section) and runs the secret scan on both the raw YAML and the validated dump. A `sommelier.config.v1` file still loads: it is upgraded in memory with a deprecation warning, as described in [Configuration](configuration.md). With `--write-resolved`, writes `config.resolved.yaml` atomically to the given directory: the fully defaulted form whose SHA-256 digest identifies the config everywhere else in the pipeline. Field-by-field documentation is in [Configuration](configuration.md).
 
 ```bash
 sommelier config validate --config examples/config.full.yaml

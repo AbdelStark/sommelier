@@ -45,28 +45,29 @@ def _export_raw_rows(config_path: Path, rows_path: Path, max_rows: int) -> int:
     from sommelier.config import load_config
 
     config = load_config(config_path)
+    source = config.root_dataset
     dataset = load_dataset(
-        config.dataset.dataset_id,
+        source.dataset_id,
         split="train",
-        revision=config.dataset.dataset_revision,
+        revision=source.dataset_revision,
     )
     if max_rows and max_rows < len(dataset):
         dataset = dataset.shuffle(seed=config.project.seed).select(range(max_rows))
 
     columns = (
-        config.dataset.query_column,
-        config.dataset.tools_column,
-        config.dataset.answers_column,
+        source.query_column,
+        source.tools_column,
+        source.answers_column,
     )
     with rows_path.open("w", encoding="utf-8") as handle:
         for index, row in enumerate(dataset):
             record = {
                 "schema_version": "sommelier.raw_tool_call_row.v1",
-                "source_id": f"{config.dataset.dataset_id}:{row.get('id', index)}",
+                "source_id": f"{source.dataset_id}:{row.get('id', index)}",
                 "query": str(row[columns[0]]),
                 "tools": str(row[columns[1]]),
                 "answers": str(row[columns[2]]),
-                "source_revision": config.dataset.dataset_revision,
+                "source_revision": source.dataset_revision,
             }
             handle.write(json.dumps(record) + "\n")
     return len(dataset)

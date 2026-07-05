@@ -81,7 +81,7 @@ def build_release_gates(
             f"looked for {base_model!r} in third-party notices",
         )
     )
-    dataset = config.dataset.dataset_id
+    dataset = config.root_dataset.dataset_id
     gates.append(
         _gate(
             "dataset_license",

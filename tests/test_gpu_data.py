@@ -6,7 +6,7 @@ import pytest
 
 from sommelier.config import (
     DataConfig,
-    DatasetConfig,
+    DatasetSourceConfig,
     EvalConfig,
     FormattingConfig,
     ModelConfig,
@@ -24,14 +24,18 @@ from sommelier.errors import ExternalDependencyError
 
 def _config(min_chars: int = 10, max_chars: int = 2000) -> SommelierConfig:
     return SommelierConfig(
-        schema_version="sommelier.config.v1",
+        schema_version="sommelier.config.v2",
         project=ProjectConfig(name="test", artifact_root=Path("artifacts"), seed=1),
         model=ModelConfig(
             base_model_id="test/model",
             base_model_revision="main",
             tokenizer_revision="main",
         ),
-        dataset=DatasetConfig(dataset_id="test/dataset", dataset_revision="main"),
+        datasets=[
+            DatasetSourceConfig(
+                language="en", dataset_id="test/dataset", dataset_revision="main"
+            )
+        ],
         data=DataConfig(
             min_query_chars=min_chars,
             max_query_chars=max_chars,

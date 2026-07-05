@@ -252,5 +252,5 @@ def config_artifact_ref(resolved_config_path: Path, *, artifact_root: Path) -> A
         resolved_config_path,
         artifact_root=artifact_root,
         kind="config",
-        schema_version="sommelier.config.v1",
+        schema_version="sommelier.config.v2",
     )

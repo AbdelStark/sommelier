@@ -1,4 +1,4 @@
-schema_version: sommelier.config.v1
+schema_version: sommelier.config.v2
 
 project:
   name: sommelier-smoke
@@ -11,12 +11,13 @@ model:
   tokenizer_revision: main
   allow_remote_code: false
 
-dataset:
-  dataset_id: Salesforce/xlam-function-calling-60k
-  dataset_revision: main
-  query_column: query
-  tools_column: tools
-  answers_column: answers
+datasets:
+  - language: en
+    dataset_id: Salesforce/xlam-function-calling-60k
+    dataset_revision: main
+    query_column: query
+    tools_column: tools
+    answers_column: answers
 
 data:
   n_train: -100
