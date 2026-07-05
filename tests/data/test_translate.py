@@ -203,6 +203,29 @@ def test_short_numeric_spans_match_only_at_boundaries() -> None:
     assert audit_translation("show page 2 of results", "afficher la page 2", spans) is None
 
 
+def test_normalize_numeric_spans_restores_decimal_points() -> None:
+    from sommelier.data.translate import normalize_numeric_spans
+
+    fixed = normalize_numeric_spans("un taux de 0,5 et 0,05 pour cent", ["0.5", "0.05"])
+    assert fixed == "un taux de 0.5 et 0.05 pour cent"
+    # Untouched when the span is already present or is not a decimal.
+    assert normalize_numeric_spans("taux 0.5", ["0.5"]) == "taux 0.5"
+    assert normalize_numeric_spans("code 1,5x", ["1.5x"]) == "code 1,5x"
+    # A comma variant inside a longer number is not rewritten.
+    assert normalize_numeric_spans("montant 10,55", ["0.5"]) == "montant 10,55"
+
+
+def test_translate_rows_recovers_comma_decimals() -> None:
+    answers = '[{"name":"search_flights","arguments":{"threshold":0.5}}]'
+    rows = [_row(1, "Filter flights above 0.5 rating please", answers)]
+    fake = FakeTranslator(
+        {"Filter flights above 0.5 rating please": ["Filtrer les vols au-dessus de 0,5"]}
+    )
+    translated, stats = translate_rows(rows, fake)
+    assert stats["translated_rows"] == 1
+    assert translated[0]["query"] == "Filtrer les vols au-dessus de 0.5"
+
+
 def test_strip_scaffolding_keeps_embedded_quote_pairs() -> None:
     text = '"cheap hotel" contre "youth hostel"'
     assert strip_scaffolding(text) == text
