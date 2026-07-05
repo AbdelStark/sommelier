@@ -8,7 +8,7 @@ Everything a run produces lives under `<artifact_root>/runs/<run_id>/`:
 
 ```text
 <artifact_root>/runs/<run_id>/
-├── config.resolved.yaml         the frozen config (sommelier.config.v1 as YAML);
+├── config.resolved.yaml         the frozen config (sommelier.config.v2 as YAML);
 │                                its SHA-256 is the config_sha256 every manifest carries
 ├── manifest.json                run manifest: stage → stage-manifest path, run status
 ├── data_manifest.json           stage manifests, one per stage, at the run root
@@ -48,11 +48,12 @@ Details worth knowing:
 
 ## Schema catalog
 
-`SUPPORTED_SCHEMAS` in [`sommelier/artifacts.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/artifacts.py) is a closed set of twelve ids. Two more version strings live outside it, listed at the bottom of the table.
+`SUPPORTED_SCHEMAS` in [`sommelier/artifacts.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/artifacts.py) is a closed set of thirteen ids. Two more version strings live outside it, listed at the bottom of the table.
 
 | Schema id | One record is | Written by |
 |-----------|---------------|------------|
-| `sommelier.config.v1` | the resolved run configuration (`config.resolved.yaml`) | run-directory creation, before any stage runs |
+| `sommelier.config.v2` | the resolved run configuration (`config.resolved.yaml`) | run-directory creation, before any stage runs |
+| `sommelier.config.v1` | the previous config schema; still recognized so artifacts from earlier runs keep validating | no current writer |
 | `sommelier.manifest.v1` | a stage manifest or the run manifest | every stage |
 | `sommelier.raw_tool_call_row.v1` | one untrusted source row: query plus raw `tools`/`answers` JSON strings | produced upstream (dataset export, fixtures); consumed by `data prepare` |
 | `sommelier.prepared_example.v1` | one validated example with parsed tools, gold call, and split assignment | `data prepare` |

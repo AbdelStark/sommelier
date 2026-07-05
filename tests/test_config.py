@@ -1,4 +1,6 @@
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -14,13 +16,141 @@ EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
 
 def test_smoke_example_loads() -> None:
     config = load_config(EXAMPLES_DIR / "config.smoke.yaml")
-    assert config.schema_version == "sommelier.config.v1"
+    assert config.schema_version == "sommelier.config.v2"
     assert config.data.n_train == 100
 
 
 def test_full_example_loads() -> None:
     config = load_config(EXAMPLES_DIR / "config.full.yaml")
     assert config.data.n_train == 15000
+
+
+def test_language_defaults_resolve_to_configured_languages() -> None:
+    config = load_config(EXAMPLES_DIR / "config.smoke.yaml")
+    assert [source.language for source in config.datasets] == ["en"]
+    assert config.train.languages == ["en"]
+    assert config.eval.slices == ["en"]
+    assert config.root_dataset.dataset_id == "Salesforce/xlam-function-calling-60k"
+    assert config.dataset_for("en") is config.root_dataset
+
+
+def _write_v1_document(tmp_path: Path) -> Path:
+    raw = yaml.safe_load((EXAMPLES_DIR / "config.smoke.yaml").read_text())
+    raw["schema_version"] = "sommelier.config.v1"
+    source = dict(raw.pop("datasets")[0])
+    source.pop("language")
+    raw["dataset"] = source
+    config_path = tmp_path / "config-v1.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    return config_path
+
+
+def test_v1_document_upgrades_with_deprecation_warning(tmp_path: Path) -> None:
+    config_path = _write_v1_document(tmp_path)
+    with pytest.warns(DeprecationWarning, match="sommelier.config.v1 is deprecated"):
+        config = load_config(config_path)
+    assert config.schema_version == "sommelier.config.v2"
+    assert [source.language for source in config.datasets] == ["en"]
+    assert config.datasets[0].source_id_column is None
+    assert config.train.languages == ["en"]
+    assert config.eval.slices == ["en"]
+
+
+def test_v1_resolved_form_persists_as_v2(tmp_path: Path) -> None:
+    config_path = _write_v1_document(tmp_path)
+    with pytest.warns(DeprecationWarning):
+        config = load_config(config_path)
+    resolved_path, _ = write_resolved_config(config, tmp_path / "run")
+    resolved = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
+    assert resolved["schema_version"] == "sommelier.config.v2"
+    assert resolved["datasets"][0]["language"] == "en"
+    assert "dataset" not in resolved
+
+
+def _load_modified(tmp_path: Path, mutate: Callable[[dict[str, Any]], None]) -> None:
+    raw = yaml.safe_load((EXAMPLES_DIR / "config.smoke.yaml").read_text())
+    mutate(raw)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    load_config(config_path)
+
+
+def _french_source(raw: dict[str, Any]) -> dict[str, Any]:
+    source = dict(raw["datasets"][0])
+    source["language"] = "fr"
+    source["source_id_column"] = "source_example_id"
+    return source
+
+
+def test_duplicate_dataset_language_rejected(tmp_path: Path) -> None:
+    def mutate(raw: dict[str, Any]) -> None:
+        raw["datasets"].append(dict(raw["datasets"][0]))
+
+    with pytest.raises(ConfigError, match="duplicate dataset language"):
+        _load_modified(tmp_path, mutate)
+
+
+def test_empty_datasets_rejected(tmp_path: Path) -> None:
+    def mutate(raw: dict[str, Any]) -> None:
+        raw["datasets"] = []
+
+    with pytest.raises(ConfigError, match="at least one source"):
+        _load_modified(tmp_path, mutate)
+
+
+def test_second_root_source_rejected(tmp_path: Path) -> None:
+    def mutate(raw: dict[str, Any]) -> None:
+        second = _french_source(raw)
+        second.pop("source_id_column")
+        raw["datasets"].append(second)
+
+    with pytest.raises(ConfigError, match="exactly one dataset source"):
+        _load_modified(tmp_path, mutate)
+
+
+def test_invalid_language_code_rejected(tmp_path: Path) -> None:
+    def mutate(raw: dict[str, Any]) -> None:
+        raw["datasets"][0]["language"] = "FR"
+
+    with pytest.raises(ConfigError, match="ISO 639-1"):
+        _load_modified(tmp_path, mutate)
+
+
+def test_unknown_train_language_rejected(tmp_path: Path) -> None:
+    def mutate(raw: dict[str, Any]) -> None:
+        raw["train"]["languages"] = ["en", "fr"]
+
+    with pytest.raises(ConfigError, match="train.languages references a language"):
+        _load_modified(tmp_path, mutate)
+
+
+def test_unknown_eval_slice_rejected(tmp_path: Path) -> None:
+    def mutate(raw: dict[str, Any]) -> None:
+        raw["eval"]["slices"] = ["fr"]
+
+    with pytest.raises(ConfigError, match="eval.slices references a language"):
+        _load_modified(tmp_path, mutate)
+
+
+def test_duplicate_eval_slice_rejected(tmp_path: Path) -> None:
+    def mutate(raw: dict[str, Any]) -> None:
+        raw["eval"]["slices"] = ["en", "en"]
+
+    with pytest.raises(ConfigError, match="duplicate entry in eval.slices"):
+        _load_modified(tmp_path, mutate)
+
+
+def test_bilingual_config_loads(tmp_path: Path) -> None:
+    raw = yaml.safe_load((EXAMPLES_DIR / "config.smoke.yaml").read_text())
+    raw["datasets"].append(_french_source(raw))
+    raw["eval"]["slices"] = ["en", "fr"]
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    config = load_config(config_path)
+    assert config.train.languages == ["en", "fr"]
+    assert config.eval.slices == ["en", "fr"]
+    assert config.root_dataset.language == "en"
+    assert config.dataset_for("fr").source_id_column == "source_example_id"
 
 
 def test_unknown_field_rejected(tmp_path: Path) -> None:

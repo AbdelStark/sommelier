@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import re
+import warnings
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -12,6 +14,10 @@ from sommelier.errors import ConfigError, SecurityPolicyError
 from sommelier.security import validate_no_secrets
 
 RESOLVED_CONFIG_NAME = "config.resolved.yaml"
+CONFIG_SCHEMA_VERSION = "sommelier.config.v2"
+V1_CONFIG_SCHEMA_VERSION = "sommelier.config.v1"
+
+LANGUAGE_PATTERN = re.compile(r"^[a-z]{2}$")
 
 
 class ProjectConfig(BaseModel):
@@ -40,14 +46,30 @@ class ModelConfig(BaseModel):
     remote_code_reason: str | None = None
 
 
-class DatasetConfig(BaseModel):
+class DatasetSourceConfig(BaseModel):
+    """One language's source dataset.
+
+    The source without ``source_id_column`` is the root source: it gets
+    independent split assignment. A source with ``source_id_column`` is
+    paired: each of its rows names a root row and inherits that row's split.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
+    language: str
     dataset_id: str
     dataset_revision: str
     query_column: str = "query"
     tools_column: str = "tools"
     answers_column: str = "answers"
+    source_id_column: str | None = None
+
+    @field_validator("language")
+    @classmethod
+    def validate_language(cls, value: str) -> str:
+        if not LANGUAGE_PATTERN.fullmatch(value):
+            raise ValueError("language must be a two letter lowercase ISO 639-1 code")
+        return value
 
 
 class DataConfig(BaseModel):
@@ -85,12 +107,14 @@ class TrainConfig(BaseModel):
     lora_alpha: int = 32
     lora_dropout: float = 0.05
     target_modules: list[str]
+    languages: list[str] = Field(default_factory=list)
 
 
 class EvalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     split: Literal["test"] = "test"
+    slices: list[str] = Field(default_factory=lambda: ["en"])
     temperature: float = 0.0
     do_sample: bool = False
     max_new_tokens: int = 512
@@ -125,10 +149,10 @@ class TrackingConfig(BaseModel):
 class SommelierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["sommelier.config.v1"]
+    schema_version: Literal["sommelier.config.v2"]
     project: ProjectConfig
     model: ModelConfig
-    dataset: DatasetConfig
+    datasets: list[DatasetSourceConfig]
     data: DataConfig
     formatting: FormattingConfig
     train: TrainConfig
@@ -150,6 +174,70 @@ class SommelierConfig(BaseModel):
         if self.data.min_query_chars <= 0 or self.data.max_query_chars <= self.data.min_query_chars:
             raise ValueError("max_query_chars must be greater than min_query_chars")
         return self
+
+    @model_validator(mode="after")
+    def validate_dataset_sources(self) -> SommelierConfig:
+        if not self.datasets:
+            raise ValueError("datasets must list at least one source")
+        languages = [source.language for source in self.datasets]
+        duplicates = sorted({lang for lang in languages if languages.count(lang) > 1})
+        if duplicates:
+            raise ValueError(f"duplicate dataset language: {', '.join(duplicates)}")
+        roots = [source for source in self.datasets if source.source_id_column is None]
+        if len(roots) != 1:
+            raise ValueError(
+                "exactly one dataset source must omit source_id_column (the root source)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def resolve_language_references(self) -> SommelierConfig:
+        configured = [source.language for source in self.datasets]
+        if not self.train.languages:
+            self.train.languages = list(configured)
+        for field_name, values in (
+            ("train.languages", self.train.languages),
+            ("eval.slices", self.eval.slices),
+        ):
+            duplicates = sorted({value for value in values if values.count(value) > 1})
+            if duplicates:
+                raise ValueError(f"duplicate entry in {field_name}: {', '.join(duplicates)}")
+            unknown = [value for value in values if value not in configured]
+            if unknown:
+                raise ValueError(
+                    f"{field_name} references a language with no dataset source: "
+                    f"{', '.join(unknown)}"
+                )
+        return self
+
+    @property
+    def root_dataset(self) -> DatasetSourceConfig:
+        for source in self.datasets:
+            if source.source_id_column is None:
+                return source
+        raise ValueError("no root dataset source configured")
+
+    def dataset_for(self, language: str) -> DatasetSourceConfig:
+        for source in self.datasets:
+            if source.language == language:
+                return source
+        raise ValueError(f"no dataset source configured for language {language!r}")
+
+
+def upgrade_v1_document(raw: dict[str, Any]) -> dict[str, Any]:
+    """Upgrades a sommelier.config.v1 mapping to the v2 shape in memory.
+
+    The single ``dataset`` section becomes the one ``en`` entry under
+    ``datasets``; ``train.languages`` and ``eval.slices`` take their v2
+    defaults, which resolve to English only.
+    """
+    upgraded = dict(raw)
+    upgraded["schema_version"] = CONFIG_SCHEMA_VERSION
+    if "dataset" in upgraded and "datasets" not in upgraded:
+        source = dict(upgraded.pop("dataset"))
+        source["language"] = "en"
+        upgraded["datasets"] = [source]
+    return upgraded
 
 
 def _dump_resolved_config(config: SommelierConfig) -> str:
@@ -188,6 +276,16 @@ def load_config(path: Path) -> SommelierConfig:
         validate_no_secrets(raw, context="config")
     except SecurityPolicyError:
         raise
+
+    if raw.get("schema_version") == V1_CONFIG_SCHEMA_VERSION:
+        warnings.warn(
+            f"{path}: {V1_CONFIG_SCHEMA_VERSION} is deprecated; migrate the file to "
+            f"{CONFIG_SCHEMA_VERSION} (the dataset section becomes the one en entry "
+            "under datasets)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        raw = upgrade_v1_document(raw)
 
     try:
         config = SommelierConfig.model_validate(raw)

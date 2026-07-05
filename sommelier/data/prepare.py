@@ -52,7 +52,7 @@ def build_fixture_prepared_examples(config: SommelierConfig) -> FixturePreparedE
                     gold_calls=[{"name": "lookup_weather", "arguments": {"city": "Paris"}}],
                     split=split,
                     query_sha256=query_digest(query),
-                    source_revision=config.dataset.dataset_revision,
+                    source_revision=config.root_dataset.dataset_revision,
                 )
             )
     return prepared

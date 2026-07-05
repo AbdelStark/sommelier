@@ -13,6 +13,7 @@ from sommelier.errors import SchemaValidationError
 SUPPORTED_SCHEMAS = frozenset(
     {
         "sommelier.config.v1",
+        "sommelier.config.v2",
         "sommelier.manifest.v1",
         "sommelier.raw_tool_call_row.v1",
         "sommelier.prepared_example.v1",

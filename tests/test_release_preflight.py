@@ -30,7 +30,7 @@ def make_project(tmp_path: Path) -> tuple[SommelierConfig, Path, Path]:
         f"# Third-Party Notices\n\n"
         f"- Base model: {config.model.base_model_id}\n"
         f"- Required notice: Built with Llama\n"
-        f"- Dataset: {config.dataset.dataset_id}\n",
+        f"- Dataset: {config.root_dataset.dataset_id}\n",
         encoding="utf-8",
     )
     (project_root / "uv.lock").write_text("lock\n", encoding="utf-8")

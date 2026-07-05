@@ -25,14 +25,16 @@ Several fields are typed as a `Literal` with exactly one allowed value: `data.de
 The file must start with the schema declaration:
 
 ```yaml
-schema_version: sommelier.config.v1
+schema_version: sommelier.config.v2
 ```
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `schema_version` | `"sommelier.config.v1"` | required | Identifies the config schema. Any other value fails validation. |
+| `schema_version` | `"sommelier.config.v2"` | required | Identifies the config schema. Any other value fails validation, with one exception below. |
 
 Every section below is required except `tracking`, which defaults to disabled when omitted.
+
+A file declaring `sommelier.config.v1` still loads. The loader upgrades it in memory and emits a `DeprecationWarning`: the single `dataset` section becomes the one `en` entry under `datasets`, and `train.languages` and `eval.slices` resolve to English only. The resolved config written into the run directory is always the v2 form, so two runs of the same settings produce the same `config_sha256` whether the file on disk was v1 or v2.
 
 ## `project`
 
@@ -54,15 +56,21 @@ Every section below is required except `tracking`, which defaults to disabled wh
 
 The `allow_remote_code` and `remote_code_reason` coupling exists so that executing repository code from the Hub is never a one-character change. Turning it on forces you to write down why, and the reason ships inside the resolved config with everything else.
 
-## `dataset`
+## `datasets`
+
+A non-empty list of per-language dataset sources. Each entry:
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
+| `language` | `str` | required | Two-letter lowercase ISO 639-1 code (`en`, `fr`). At most one source per language. |
 | `dataset_id` | `str` | required | Source dataset id, e.g. `Salesforce/xlam-function-calling-60k`. |
 | `dataset_revision` | `str` | required | Dataset revision; stamped into every prepared example as `source_revision`. |
 | `query_column` | `str` | `"query"` | Column holding the user query, read when raw rows are exported from the source dataset. |
 | `tools_column` | `str` | `"tools"` | Column holding the tool schemas as a JSON string. |
 | `answers_column` | `str` | `"answers"` | Column holding the gold tool calls as a JSON string. |
+| `source_id_column` | `str \| null` | `null` | When set, each row of this source names a row of the root source, and the pair must stay in the same split. When null, this is the root source. |
+
+Exactly one source must omit `source_id_column`: the root source, which gets independent split assignment during data prepare. Every other source is paired, row by row, to root rows through the column this field names. The pairing exists so that a translated variant of a query can never land in a different split than its original, which would leak test content into training. How prepare enforces this is described in [Data policy](../concepts/data.md).
 
 ## `data`
 
@@ -102,6 +110,7 @@ One model-level validator guards this section: the three split counts must be po
 | `lora_alpha` | `int` | `32` | LoRA alpha. |
 | `lora_dropout` | `float` | `0.05` | LoRA dropout. |
 | `target_modules` | `list[str]` | required | Projection modules the adapter attaches to. No default: the choice is model-specific and belongs in the record. |
+| `languages` | `list[str]` | all configured | Languages whose examples feed training. Empty or omitted resolves to every language under `datasets`, in configuration order; the resolved config always records the explicit list. Every entry must name a configured source. |
 
 None of these are ever adjusted at runtime. If training runs out of GPU memory, the failure is a `ResourceError` whose hint quotes your current `per_device_batch_size`, `gradient_accumulation_steps`, `max_sequence_length`, and `remote.gpu` and tells you to change one of them yourself. See [Training](../concepts/training.md) and [Errors](errors.md).
 
@@ -110,6 +119,7 @@ None of these are ever adjusted at runtime. If training runs out of GPU memory, 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `split` | `"test"` | pinned | Evaluation only ever reads the held-out test split. |
+| `slices` | `list[str]` | `["en"]` | Language slices to evaluate. Every entry must name a configured source under `datasets`; duplicates are rejected. |
 | `temperature` | `float` | `0.0` | Must be exactly `0.0` at run time; anything else raises `EvaluationError`. |
 | `do_sample` | `bool` | `false` | Must be `false` at run time; `true` raises `EvaluationError`. |
 | `max_new_tokens` | `int` | `512` | Generation budget per prompt. Must be positive. |
