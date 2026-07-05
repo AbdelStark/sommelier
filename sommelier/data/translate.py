@@ -57,6 +57,7 @@ PROMPT_TEMPLATE: Final = """Translate the user request below from English to Fre
 Rules:
 - Translate into natural, fluent French.
 - Reproduce every protected span exactly as written, byte for byte, including casing.
+- Keep numbers exactly as written: same digits, decimal point rather than decimal comma.
 - Do not add explanations, quotes, labels, or anything besides the translated request.
 {feedback}{spans}
 User request:
