@@ -1,6 +1,6 @@
 # The reference run
 
-This page states the published Sommelier result the way a paper would: the exact setup, the numbers with their numerators and denominators, the run identity that makes the comparison verifiable, and the boundaries of the claim. The run is `nemotron-8b-full-3`, executed 2026-07-02 on a single L40S. Everything below comes from the run's own comparison report and runtime metadata, not from memory.
+This page states the published Sommelier result the way a paper would: the exact setup, the numbers with their numerators and denominators, the run identity that makes the comparison verifiable, and the boundaries of the claim. The run is `nemotron-8b-full-3`, executed 2026-07-02 on a single L40S. Everything below comes from the run's own comparison report and runtime metadata, not from memory. The question this run leaves open, whether the same result holds in French, is answered by [the French run](french-run.md).
 
 ## Run identity
 
