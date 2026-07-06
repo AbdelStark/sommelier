@@ -11,11 +11,12 @@
 [![Ruff](https://img.shields.io/badge/lint-ruff-D7FF64?style=for-the-badge)](pyproject.toml)
 [![Mypy](https://img.shields.io/badge/typed-mypy%20strict-2A6DB2?style=for-the-badge)](pyproject.toml)
 
-[![Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-LoRA%20adapter-FFD21E?style=for-the-badge)](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora)
+[![Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-LoRA%20adapter%20(en)-FFD21E?style=for-the-badge)](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora)
+[![Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-LoRA%20adapter%20(en%2Bfr)-FFD21E?style=for-the-badge)](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-fr-en-lora)
 [![Dataset](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-dataset-FFD21E?style=for-the-badge)](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits)
 [![Compute](https://img.shields.io/badge/compute-Modal-7C3AED?style=for-the-badge)](https://modal.com)
 
-**[Documentation](https://abdelstark.github.io/sommelier/)** · **[Quickstart](https://abdelstark.github.io/sommelier/getting-started/quickstart/)** · **[The reference run](https://abdelstark.github.io/sommelier/results/reference-run/)**
+**[Documentation](https://abdelstark.github.io/sommelier/)** · **[Quickstart](https://abdelstark.github.io/sommelier/getting-started/quickstart/)** · **[The reference run](https://abdelstark.github.io/sommelier/results/reference-run/)** · **[The French run](https://abdelstark.github.io/sommelier/results/french-run/)**
 
 </div>
 
@@ -54,6 +55,50 @@ Claim boundaries: these numbers hold for the recorded dataset revision,
 prompt policy, parser, and decoding config. They are not claims of
 production readiness or general agent reliability.
 
+## 🌍 Multilingual result: closing the French gap
+
+Tool calling should work as well in French as in English, and that is a
+claim worth measuring rather than assuming. The v2 experiment built a
+French paired variant of every selected row by **constrained
+translation**: only the query is translated, tool schemas and gold
+answers stay byte identical, every output is audited against the gold
+argument values it must preserve, and each French row inherits its
+English source's train/validation/test split, so a translation can
+never leak across a split boundary.
+
+Full-call exact match on the held-out test slices (en n=1,000,
+fr n=879, same gold answers by construction, same parser and decoding):
+
+| Model | en | fr | Gap |
+|-------|----|----|-----|
+| Base Nemotron-Nano-8B | 0.705 | 0.663 | -4.2 pts |
+| v1 adapter (English-only training) | 0.874 | 0.851 | -2.3 pts |
+| **v2 adapter (mixed en+fr training)** | 0.870 | **0.873** | **+0.3 pts** |
+
+Three findings, measured rather than assumed:
+
+1. **The base model pays about 4 points on French input.** Same tools,
+   same gold calls, only the query language changed.
+2. **English-only fine-tuning transfers most of its gains for free.**
+   Without seeing a single French example, the v1 adapter lifts French
+   full-call accuracy by 18.8 points and halves the language gap.
+3. **A machine-translated training slice closes the gap to noise.**
+   French now matches English on every metric to within a third of a
+   point, at a cost of at most 0.8 points on English (within one
+   standard error at n=1,000; the regression is reported, not hidden).
+
+The whole comparison is anchored by digests: the English prompt set of
+the v2 run is byte-identical to the reference run's, so the two results
+are measured on exactly the same prompts. Setup, per-slice tables with
+counts, runtime, and the boundaries the machine-translated slice adds
+are on [the French run](https://abdelstark.github.io/sommelier/results/french-run/) page.
+
+| Artifact | Where |
+|----------|-------|
+| 🤗 Bilingual adapter + evaluation evidence | [`abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-fr-en-lora`](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-fr-en-lora) |
+| 🤗 French paired rows + translation provenance | [`abdelstark/sommelier-xlam-single-call-splits-fr`](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits-fr) |
+| Translation method and drop accounting | [`sommelier data translate`](https://abdelstark.github.io/sommelier/reference/cli/#data-translate) |
+
 ## 🏗️ Pipeline architecture
 
 One CLI, six stages, no hidden state. Stages communicate only through
@@ -62,19 +107,20 @@ manifest with input/output checksums.
 
 ```text
                          Salesforce/xlam-function-calling-60k
-                                        │
-                                        ▼ raw_tool_call_row.v1
+                                        │  (+ optional paired-language rows,
+                                        ▼ raw_tool_call_row.v1   e.g. the French translation set)
                        ┌────────────────────────────────┐
                        │  1 · data prepare              │  validate rows · drop multi-call
                        │                                │  dedupe queries · split 15k/1k/1k
-                       └───────────────┬────────────────┘  (a query lives in exactly one split)
-                                       │ prepared_example.v1 + drop_summary
+                       └───────────────┬────────────────┘  (a query lives in exactly one split;
+                                       │                    paired rows inherit their root's split)
+                                       │ prepared_example.v2 + drop_summary
                                        ▼
                        ┌────────────────────────────────┐
                        │  2 · format build              │  tokenizer chat template
                        │                                │  canonical tools JSON · prompt_sha256
                        └───────────────┬────────────────┘  sequence-length audit
-                                       │ formatted_example.v1
+                                       │ formatted_example.v2
                      ┌─────────────────┴─────────────────┐
                      ▼                                   ▼
       ┌──────────────────────────┐        ┌──────────────────────────┐
@@ -122,7 +168,12 @@ manifest with input/output checksums.
   `invalid_shape` all count against every metric.
 - **Honest data policy.** 52.6% of xlam rows answer with more than one
   call; they are dropped via a declared filter (recorded in the drop
-  summary) because the v1 contract trains and scores exactly one call.
+  summary) because the contract trains and scores exactly one call.
+- **Byte-identical gold across languages.** A translated row must carry
+  the exact tool schemas and gold answers of its English source, checked
+  at preparation time against the exact source row, and it inherits that
+  row's split; rows whose gold arguments cannot survive translation are
+  dropped with counted reasons, not bent to fit.
 - **Security by default.** Secrets live in the environment only; logs,
   manifests, and reports are redaction-scanned; releases are gated by
   `sommelier release preflight`.
@@ -165,10 +216,15 @@ weights on a volume, and committing artifacts stage by stage:
 uv run modal run remote_pipeline.py \
   --config examples/config.smoke.yaml --mode smoke --max-rows 2500
 
-# full reference run
-SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=28800 \
+# full bilingual run: build the French pairs first, then train on both
+SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=14400 \
+uv run modal run --detach remote_translate.py \
+  --config examples/config.full.yaml --run-id fr-translate-2
+
+SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=36000 \
 uv run modal run --detach remote_pipeline.py \
-  --config examples/config.full.yaml --mode full --max-rows 60000
+  --config examples/config.full.yaml --mode full --max-rows 60000 \
+  --translation-run-id fr-translate-2
 ```
 
 ## 🧰 CLI
@@ -177,6 +233,7 @@ uv run modal run --detach remote_pipeline.py \
 |---------|---------|
 | `sommelier config validate` | Strict config validation (unknown keys rejected) |
 | `sommelier data prepare` | Validate, filter, dedupe, and split raw rows |
+| `sommelier data translate` | Build a French paired dataset by constrained, audited translation |
 | `sommelier data validate-fixtures` | Check the synthetic test fixtures |
 | `sommelier format build` | Render chat templates + prompt digests (`--fixture` for no-tokenizer builds) |
 | `sommelier eval run` | Deterministic generation + `evaluation_report.json` |
@@ -267,6 +324,7 @@ Key entry points:
 | [Quickstart](https://abdelstark.github.io/sommelier/getting-started/quickstart/) | The fixture pipeline on a laptop, no GPU or accounts |
 | [Reproduction guide](docs/guides/reproduction.md) | Clean checkout to full reproduction, with caveats |
 | [The reference run](https://abdelstark.github.io/sommelier/results/reference-run/) | The published result, its evidence, and its boundaries |
+| [The French run](https://abdelstark.github.io/sommelier/results/french-run/) | The multilingual result: the language gap measured and closed |
 | [v1.0 release checklist](docs/release/v1.0-checklist.md) | Every release blocker mapped to machine-checkable evidence |
 | [Changelog](CHANGELOG.md) | Categorized, migration-noted history |
 
@@ -279,7 +337,7 @@ uv run pytest
 uv run sommelier data validate-fixtures
 ```
 
-The suite (300+ tests) includes golden prompt fixtures that fail on any
+The suite (380+ tests) includes golden prompt fixtures that fail on any
 template drift, parser/metric regression snapshots, split-leakage property
 tests, secret-hygiene checks, and an import-discipline gate that walks every
 module in a clean interpreter. Optional GPU coarse filtering is available
@@ -295,9 +353,9 @@ every pull request and deploys it to GitHub Pages on merge.
 
 Code is [MIT](LICENSE). Third-party model, dataset, and package obligations
 are recorded in [licenses/THIRD_PARTY.md](licenses/THIRD_PARTY.md) and
-enforced by `sommelier release preflight`. The published adapter is **Built
+enforced by `sommelier release preflight`. The published adapters are **Built
 with Llama** and subject to the NVIDIA Open Model License and the Llama 3.1
-Community License; the published dataset is CC-BY-4.0 (derivative of
+Community License; the published datasets are CC-BY-4.0 (derivatives of
 Salesforce/xlam-function-calling-60k).
 
 ## 📖 Citation
