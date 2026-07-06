@@ -111,6 +111,7 @@ nav:
       - Metrics: reference/metrics.md
   - Results:
       - The reference run: results/reference-run.md
+      - The French run: results/french-run.md
   - Project:
       - Security model: project/security.md
       - Licensing: project/licensing.md
