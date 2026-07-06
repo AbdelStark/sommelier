@@ -97,6 +97,7 @@ nav:
       - Determinism and the comparison gate: concepts/determinism.md
       - Data policy: concepts/data.md
       - Training approach: concepts/training.md
+      - The adapter and the base model: concepts/adapter.md
       - Evaluation method: concepts/evaluation.md
       - Design decisions: concepts/design-decisions.md
   - Guides:

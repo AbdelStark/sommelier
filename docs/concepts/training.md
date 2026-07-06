@@ -4,7 +4,7 @@
 
 ## The QLoRA setup
 
-The base model loads in 4-bit NF4 quantization with double quantization enabled and bfloat16 compute, then a LoRA adapter is attached on top. Only the adapter weights train; the quantized base stays frozen. This is what lets an 8B model fine-tune on a single mid-range GPU. The values below are the reference configuration from [`examples/config.full.yaml`](https://github.com/AbdelStark/sommelier/blob/main/examples/config.full.yaml):
+The base model loads in 4-bit NF4 quantization with double quantization enabled and bfloat16 compute, then a LoRA adapter is attached on top. Only the adapter weights train; the quantized base stays frozen. This is what lets an 8B model fine-tune on a single mid-range GPU. What the adapter actually is, where its 448 matrices attach inside the transformer, and how it composes with the base at training and inference time is explained on [The adapter and the base model](adapter.md). The values below are the reference configuration from [`examples/config.full.yaml`](https://github.com/AbdelStark/sommelier/blob/main/examples/config.full.yaml):
 
 | Config field | Reference value |
 |---|---|
