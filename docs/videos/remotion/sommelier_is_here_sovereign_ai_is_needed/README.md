@@ -1,7 +1,8 @@
 # Sommelier is here. Sovereign AI is needed.
 
-A 30-second promotional video for [Sommelier](https://github.com/AbdelStark/sommelier),
-built with [Remotion](https://remotion.dev). 1920x1080, 30 fps, ~916 frames.
+A one-minute promotional video for [Sommelier](https://github.com/AbdelStark/sommelier),
+built with [Remotion](https://remotion.dev). 1920x1080, 30 fps, ~1,756 frames
+(~58.5 s), paced so every card, row, and number can actually be read.
 
 ## Narrative arc
 
@@ -10,7 +11,7 @@ built with [Remotion](https://remotion.dev). 1920x1080, 30 fps, ~916 frames.
 | 1 | The problem | Four fact-checked headline cards on gated frontier AI, then the hook: "Should we accept gatekeeping of intelligence?" |
 | 2 | The turn | The NVIDIA Nemotron open stack: open models, open software (NeMo Curator), open recipes (the Nemotron-CC pipeline), plus the official NeMo agent-lifecycle diagram |
 | 3 | The proof, part 1 | Sommelier: fine-tune a small open model into a reliable JSON tool caller, with a live tool-call demo |
-| 4 | The proof, part 2 | Base vs. adapter benchmarks from the reference run (n=1,000, greedy, conservative parser) |
+| 4 | The proof, part 2 | Base vs. adapter benchmarks from the reference run (n=1,000, greedy, conservative parser), with per-metric delta badges |
 | 5 | The economics | One L40S, 3 hours, ~$8 |
 | 6 | The thesis | The weights are yours. Nobody can reprice it. Nobody can deprecate it. Sovereign AI in practice, French gap closed |
 | 7 | CTA | Open code, weights, data, evidence. Repo and Space links |

@@ -20,7 +20,7 @@ const Bar: React.FC<{
     fps,
     delay,
     config: {damping: 200},
-    durationInFrames: 34,
+    durationInFrames: 42,
   });
   const width = (value / 100) * BAR_MAX * progress;
   const shown = value * progress;
@@ -61,11 +61,47 @@ const Bar: React.FC<{
   );
 };
 
+const DeltaBadge: React.FC<{base: number; adapter: number; delay: number}> = ({
+  base,
+  adapter,
+  delay,
+}) => {
+  const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
+  const pop = spring({
+    frame,
+    fps,
+    delay,
+    config: {damping: 14, stiffness: 240},
+  });
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        fontFamily: fonts.mono,
+        fontSize: 26,
+        fontWeight: 700,
+        color: colors.wineBright,
+        background: 'rgba(185, 61, 88, 0.16)',
+        border: `1px solid ${colors.wine}`,
+        borderRadius: 6,
+        padding: '4px 14px',
+        marginLeft: 22,
+        verticalAlign: 'middle',
+        opacity: pop,
+        transform: `scale(${0.7 + pop * 0.3})`,
+      }}
+    >
+      +{(adapter - base).toFixed(1)} pts
+    </span>
+  );
+};
+
 export const S4Numbers: React.FC = () => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const headIn = spring({frame, fps, config: {damping: 200}});
-  const footIn = spring({frame, fps, delay: 104, config: {damping: 200}});
+  const footIn = spring({frame, fps, delay: 190, config: {damping: 200}});
 
   return (
     <Stage>
@@ -87,7 +123,7 @@ export const S4Numbers: React.FC = () => {
         </div>
 
         {METRICS.map((m, i) => {
-          const delay = 14 + i * 22;
+          const delay = 20 + i * 48;
           return (
             <div key={m.label} style={{marginBottom: 40}}>
               <div
@@ -99,6 +135,11 @@ export const S4Numbers: React.FC = () => {
                 }}
               >
                 {m.label}
+                <DeltaBadge
+                  base={m.base}
+                  adapter={m.adapter}
+                  delay={delay + 58}
+                />
               </div>
               <div
                 style={{display: 'flex', flexDirection: 'column', gap: 6}}

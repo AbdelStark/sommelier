@@ -37,8 +37,8 @@ const Line: React.FC<{text: string; delay: number; dimAfter: number}> = ({
 export const S6Sovereignty: React.FC = () => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
-  const punchIn = spring({frame, fps, delay: 76, config: {damping: 16, stiffness: 200}});
-  const noteIn = spring({frame, fps, delay: 100, config: {damping: 200}});
+  const punchIn = spring({frame, fps, delay: 128, config: {damping: 16, stiffness: 200}});
+  const noteIn = spring({frame, fps, delay: 168, config: {damping: 200}});
 
   return (
     <Stage tint="rgba(185, 61, 88, 0.10)">
@@ -54,7 +54,7 @@ export const S6Sovereignty: React.FC = () => {
         }}
       >
         {LINES.map((l, i) => (
-          <Line key={l} text={l} delay={i * 22} dimAfter={78} />
+          <Line key={l} text={l} delay={i * 36} dimAfter={122} />
         ))}
         <div
           style={{

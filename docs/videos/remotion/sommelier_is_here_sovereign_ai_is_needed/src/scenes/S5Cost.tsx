@@ -36,7 +36,7 @@ const Item: React.FC<{
 export const S5Cost: React.FC = () => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
-  const subIn = spring({frame, fps, delay: 56, config: {damping: 200}});
+  const subIn = spring({frame, fps, delay: 92, config: {damping: 200}});
 
   return (
     <Stage tint="rgba(185, 61, 88, 0.10)">
@@ -53,8 +53,8 @@ export const S5Cost: React.FC = () => {
         }}
       >
         <Item text={COST.gpu} delay={0} />
-        <Item text={COST.time} delay={14} />
-        <Item text={COST.dollars} delay={30} accent />
+        <Item text={COST.time} delay={26} />
+        <Item text={COST.dollars} delay={52} accent />
         <div
           style={{
             fontSize: 40,

@@ -9,20 +9,20 @@ import {DEMO_CALL, DEMO_QUERY} from '../data/facts';
 import {colors, fonts} from '../theme';
 import {Stage} from '../components/Layout';
 
-const TYPE_START = 36;
+const TYPE_START = 64;
 
 export const S3Sommelier: React.FC = () => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
 
   const glassIn = spring({frame, fps, config: {damping: 12, stiffness: 180}});
-  const nameIn = spring({frame, fps, delay: 6, config: {damping: 200}});
-  const tagIn = spring({frame, fps, delay: 18, config: {damping: 200}});
-  const termIn = spring({frame, fps, delay: 36, config: {damping: 200}});
+  const nameIn = spring({frame, fps, delay: 8, config: {damping: 200}});
+  const tagIn = spring({frame, fps, delay: 26, config: {damping: 200}});
+  const termIn = spring({frame, fps, delay: 52, config: {damping: 200}});
 
   // Typewriter: query first, then the tool call.
   const queryChars = Math.round(
-    interpolate(frame, [TYPE_START, TYPE_START + 20], [0, DEMO_QUERY.length], {
+    interpolate(frame, [TYPE_START, TYPE_START + 32], [0, DEMO_QUERY.length], {
       extrapolateLeft: 'clamp',
       extrapolateRight: 'clamp',
     }),
@@ -30,7 +30,7 @@ export const S3Sommelier: React.FC = () => {
   const callChars = Math.round(
     interpolate(
       frame,
-      [TYPE_START + 26, TYPE_START + 50],
+      [TYPE_START + 40, TYPE_START + 82],
       [0, DEMO_CALL.length],
       {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'},
     ),
@@ -38,7 +38,7 @@ export const S3Sommelier: React.FC = () => {
   const statusIn = spring({
     frame,
     fps,
-    delay: TYPE_START + 52,
+    delay: TYPE_START + 86,
     config: {damping: 16, stiffness: 260},
   });
 

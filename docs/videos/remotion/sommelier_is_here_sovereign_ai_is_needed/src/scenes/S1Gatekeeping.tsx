@@ -10,8 +10,8 @@ import {HEADLINES} from '../data/headlines';
 import {colors, fonts} from '../theme';
 import {Stage} from '../components/Layout';
 
-const CARD_STAGGER = 22;
-const QUESTION_START = 96;
+const CARD_STAGGER = 45;
+const QUESTION_START = 200;
 
 const Card: React.FC<{
   index: number;
@@ -138,7 +138,7 @@ export const S1Gatekeeping: React.FC = () => {
           <div style={{fontSize: 96, fontWeight: 900, lineHeight: 1.08}}>
             <div>
               {line1.map((w, i) => (
-                <QuestionWord key={w} word={w} delay={QUESTION_START + i * 4} />
+                <QuestionWord key={w} word={w} delay={QUESTION_START + i * 5} />
               ))}
             </div>
             <div>
@@ -146,7 +146,7 @@ export const S1Gatekeeping: React.FC = () => {
                 <QuestionWord
                   key={w}
                   word={w}
-                  delay={QUESTION_START + 12 + i * 5}
+                  delay={QUESTION_START + 15 + i * 6}
                   accent={i === 0}
                 />
               ))}

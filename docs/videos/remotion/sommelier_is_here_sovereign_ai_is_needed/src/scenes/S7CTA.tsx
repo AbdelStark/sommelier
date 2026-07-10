@@ -10,11 +10,11 @@ export const S7CTA: React.FC = () => {
   const {fps} = useVideoConfig();
 
   const glassIn = spring({frame, fps, config: {damping: 12, stiffness: 190}});
-  const nameIn = spring({frame, fps, delay: 4, config: {damping: 200}});
-  const linksIn = spring({frame, fps, delay: 58, config: {damping: 200}});
-  const footIn = spring({frame, fps, delay: 74, config: {damping: 200}});
+  const nameIn = spring({frame, fps, delay: 6, config: {damping: 200}});
+  const linksIn = spring({frame, fps, delay: 88, config: {damping: 200}});
+  const footIn = spring({frame, fps, delay: 110, config: {damping: 200}});
 
-  const underline = spring({frame, fps, delay: 16, config: {damping: 200}, durationInFrames: 30});
+  const underline = spring({frame, fps, delay: 20, config: {damping: 200}, durationInFrames: 34});
 
   return (
     <Stage tint="rgba(185, 61, 88, 0.14)">
@@ -57,7 +57,7 @@ export const S7CTA: React.FC = () => {
             const e = spring({
               frame,
               fps,
-              delay: 28 + i * 7,
+              delay: 42 + i * 11,
               config: {damping: 16, stiffness: 240},
             });
             return (

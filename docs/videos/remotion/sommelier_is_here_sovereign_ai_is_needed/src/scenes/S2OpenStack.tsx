@@ -34,8 +34,8 @@ const LAYERS = [
 ];
 
 // The rows make their case, then hand the stage to the diagram beat.
-const ROWS_OUT = 86;
-const DIAGRAM_IN = 94;
+const ROWS_OUT = 196;
+const DIAGRAM_IN = 206;
 
 const Row: React.FC<{
   index: string;
@@ -113,7 +113,7 @@ export const S2OpenStack: React.FC = () => {
     delay: DIAGRAM_IN,
     config: {damping: 22, stiffness: 160},
   });
-  const punchIn = spring({frame, fps, delay: DIAGRAM_IN + 14, config: {damping: 200}});
+  const punchIn = spring({frame, fps, delay: DIAGRAM_IN + 24, config: {damping: 200}});
 
   return (
     <Stage tint="rgba(118, 185, 0, 0.08)">
@@ -147,7 +147,7 @@ export const S2OpenStack: React.FC = () => {
               index={l.index}
               name={l.name}
               detail={l.detail}
-              delay={30 + i * 16}
+              delay={40 + i * 35}
             />
           ))}
         </div>
