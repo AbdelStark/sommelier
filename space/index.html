@@ -1,0 +1,1624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sommelier · reproducible tool-calling fine-tuning for small open models</title>
+<meta name="description" content="Fine-tune small open models into reliable JSON tool callers. Reproducible, end to end, on a single GPU. QLoRA adapters on NVIDIA Llama-3.1-Nemotron-Nano-8B-v1 with published evidence.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-mml-chtml.js" defer></script>
+<style>
+:root{
+  /* surfaces: warm paper, tinted toward the wine hue */
+  --bg:#faf8f4;            /* page paper */
+  --bg-2:#fffefb;          /* raised surface: panels, cards */
+  --panel-solid:#f6f2ea;   /* code / recessed surface */
+  --line:#e9e3d8;          /* hairline */
+  --line-2:#d9d1c2;        /* stronger hairline */
+  --cream:#f7f2e8;         /* callout wash */
+
+  /* ink */
+  --ink:#2a251f;           /* body text */
+  --ink-dim:#5d564c;       /* secondary text */
+  --ink-faint:#8d8577;
+  --label:#6f6759;   /* readable micro-label ink, 5.3:1 on paper */     /* tertiary, labels, axes */
+  --paper:#1c1712;         /* strongest text: headings, emphasis */
+  --paper-2:#2e2820;
+
+  /* the one accent: wine */
+  --acid:#7b2d3e;          /* text-grade wine */
+  --acid-dim:#5f2231;      /* hover, darker */
+  --acid-glow:rgba(123,45,62,.07);
+
+  /* chart series (validated) + semantics */
+  --wine-mark:#9e3450;     /* v2 marks */
+  --azure:#3e6fb0;         /* v1 marks, info */
+  --bronze:#a87a35;        /* base-model marks */
+  --amber:#855a10;         /* warnings, mismatches */
+  --rose:#b0393b;          /* errors, negative */
+  --good:#2e7d43;          /* success, exact */
+  --violet:#5c4e8a;        /* syntax keywords */
+
+  --mono:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --serif:'Newsreader', Georgia, 'Times New Roman', serif;
+  --display:'Fraunces', Georgia, serif;
+}
+*, *::before, *::after { box-sizing:border-box; }
+html, body { margin:0; padding:0; }
+html { scroll-behavior:smooth; }
+body {
+  background:var(--bg);
+  color:var(--ink);
+  font:400 13.5px/1.55 var(--mono);
+  -webkit-font-smoothing:antialiased;
+  border-top:3px solid var(--acid);
+}
+::selection { background:rgba(123,45,62,.14); }
+a { color:var(--acid); text-decoration:none; }
+a:hover { text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:3px; }
+em { font-style:italic; color:var(--acid); }
+strong, b { color:var(--paper); font-weight:500; }
+:focus-visible { outline:2px solid var(--acid); outline-offset:2px; }
+code {
+  font:500 .8em/1.3 var(--mono);
+  color:var(--acid-dim);
+  background:var(--panel-solid);
+  padding:.1em .35em;
+  border:1px solid var(--line);
+}
+.wrap, .container { max-width:1020px; margin:0 auto; padding:0 28px; }
+.grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:22px; }
+.grid-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:20px; }
+.grid-4 { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; }
+@media (max-width:760px){
+  .grid-2, .grid-3, .grid-4 { grid-template-columns:1fr; }
+}
+
+/* nav */
+.topnav {
+  position:sticky; top:0; z-index:50;
+  background:rgba(250,248,244,.92);
+  backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);
+}
+.topnav .wrap {
+  display:flex; gap:18px; align-items:baseline;
+  padding:14px 28px;
+  font:500 10.5px/1 var(--mono);
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  overflow-x:auto;
+  white-space:nowrap;
+}
+.topnav a { color:var(--ink-dim); text-decoration:none; transition:color .15s; }
+.topnav a:hover { color:var(--acid); text-decoration:none; }
+.topnav .brand {
+  font:italic 600 16px/1 var(--display);
+  letter-spacing:0;
+  text-transform:none;
+  color:var(--paper);
+  margin-right:auto;
+}
+
+/* hero */
+.hero { padding:96px 0 72px; border-bottom:1px solid var(--line); }
+.hero-grid { display:grid; grid-template-columns:1.35fr 1fr; gap:56px; align-items:start; }
+@media (max-width:820px){ .hero-grid { grid-template-columns:1fr; } .title { font-size:58px !important; } }
+.ident {
+  font:500 11px/1.6 var(--mono);
+  letter-spacing:.22em;
+  text-transform:uppercase;
+  color:var(--acid);
+  margin-bottom:28px;
+}
+.title {
+  font:600 92px/.98 var(--display);
+  letter-spacing:-.015em;
+  color:var(--paper);
+  margin:0 0 26px;
+}
+.title sub {
+  font:500 18px/1 var(--mono);
+  color:var(--ink-faint);
+  vertical-align:super;
+  margin-left:12px;
+  letter-spacing:.08em;
+}
+.deck { font:400 21px/1.55 var(--serif); color:var(--ink); max-width:560px; }
+.deck em { font-style:italic; color:var(--acid); }
+.links { display:flex; flex-wrap:wrap; gap:9px; margin-top:30px; }
+.pill {
+  display:inline-flex; align-items:center; gap:8px;
+  padding:7px 13px;
+  border:1px solid var(--line-2);
+  background:var(--bg-2);
+  font:500 10.5px/1 var(--mono);
+  letter-spacing:.1em;
+  text-transform:uppercase;
+  color:var(--ink-dim); text-decoration:none;
+  transition:border-color .15s, color .15s;
+}
+.pill:hover { border-color:var(--acid); color:var(--acid); text-decoration:none; }
+.pill .dot { width:5px; height:5px; border-radius:50%; background:var(--acid); }
+.stat-panel {
+  border:1px solid var(--line-2);
+  background:var(--bg-2);
+  padding:26px 24px 18px;
+}
+.stat-label {
+  font:500 10px/1 var(--mono);
+  letter-spacing:.22em;
+  text-transform:uppercase;
+  color:var(--acid);
+  margin-bottom:16px;
+  padding-bottom:12px;
+  border-bottom:1px solid var(--line);
+}
+.stat-row {
+  display:flex; justify-content:space-between; gap:14px; align-items:baseline;
+  padding:8.5px 0;
+  border-bottom:1px dotted var(--line-2);
+  font:400 12px/1.45 var(--mono);
+}
+.stat-row:last-child { border-bottom:none; }
+.stat-row .k { color:var(--label); letter-spacing:.14em; text-transform:uppercase; font-size:10.5px; }
+.stat-row .v { color:var(--ink); text-align:right; }
+.stat-row .v b { color:var(--paper); font-weight:600; }
+
+/* sections */
+.s { position:relative; padding:84px 0 64px; border-bottom:1px solid var(--line); }
+.s::before {
+  content:attr(data-num);
+  position:absolute;
+  top:44px; right:calc(max(0px,(100vw - 1020px)/2) + 28px);
+  font:600 170px/1 var(--display);
+  color:#f1ece1;
+  letter-spacing:-.03em;
+  pointer-events:none;
+  z-index:0;
+}
+.s > .container { position:relative; z-index:1; }
+.section-head { display:flex; gap:16px; align-items:baseline; margin-bottom:26px; }
+.section-num {
+  font:600 12px/1 var(--mono);
+  color:var(--acid);
+  letter-spacing:.18em;
+  padding-bottom:5px;
+  border-bottom:2px solid var(--acid);
+}
+.section-kind {
+  font:500 10px/1 var(--mono);
+  color:var(--label);
+  letter-spacing:.22em;
+  text-transform:uppercase;
+}
+.s-title {
+  font:600 42px/1.12 var(--display);
+  color:var(--paper);
+  letter-spacing:-.012em;
+  margin:0 0 16px;
+  max-width:820px;
+}
+.s-title em { font-style:italic; color:var(--acid); }
+.s-deck { font:400 18px/1.6 var(--serif); color:var(--ink-dim); max-width:640px; margin:0 0 36px; }
+.prose { font:400 17px/1.68 var(--serif); color:var(--ink); max-width:660px; }
+.prose b { color:var(--paper); }
+.prose p { margin:0 0 17px; }
+
+/* panels, callouts, cards, tables */
+.panel { border:1px solid var(--line-2); background:var(--bg-2); padding:20px; margin:16px 0; }
+.panel.acid { border-color:var(--acid); }
+.panel-h {
+  font:500 10px/1.5 var(--mono);
+  letter-spacing:.16em;
+  text-transform:uppercase;
+  color:var(--label);
+  margin-bottom:13px;
+}
+.callout {
+  padding:16px 18px;
+  margin:20px 0;
+  max-width:760px;
+  border-left:2px solid var(--acid);
+  background:var(--cream);
+  font:400 15px/1.6 var(--serif);
+  color:var(--ink);
+}
+.callout.warn { border-left-color:var(--amber); background:#f8f1e2; }
+.callout.warn .lbl { color:var(--amber); }
+.callout .lbl {
+  display:block;
+  font:500 10px/1 var(--mono);
+  letter-spacing:.2em;
+  text-transform:uppercase;
+  color:var(--acid);
+  margin-bottom:7px;
+}
+.card { border:1px solid var(--line); background:var(--bg-2); padding:20px; position:relative; }
+.card .num {
+  font:500 10px/1 var(--mono);
+  color:var(--label);
+  letter-spacing:.18em;
+  position:absolute; top:16px; right:16px;
+}
+.card h5 {
+  font:600 15px/1.35 var(--display);
+  color:var(--paper);
+  letter-spacing:.005em;
+  margin:0 0 8px;
+  padding-right:34px;
+}
+.card p { font:400 14px/1.6 var(--serif); color:var(--ink-dim); margin:0; }
+.table-scroll { overflow-x:auto; }
+.spec-table { width:100%; border-collapse:collapse; font:400 12.5px/1.45 var(--mono); font-variant-numeric:tabular-nums; }
+.spec-table th, .spec-table td { padding:9px 12px; border-bottom:1px solid var(--line); text-align:left; }
+.spec-table th {
+  font-weight:500;
+  color:var(--label);
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  font-size:10px;
+  border-bottom:1px solid var(--line-2);
+}
+.spec-table td { color:var(--ink); }
+.spec-table td b { color:var(--paper); font-weight:600; }
+.spec-table tr:hover td { background:#f7f3ea; }
+
+/* code */
+.code {
+  position:relative;
+  padding:18px 18px 15px;
+  margin:16px 0;
+  background:var(--panel-solid);
+  border:1px solid var(--line);
+  border-left:2px solid var(--acid);
+  font:400 12px/1.6 var(--mono);
+  color:#3c362d;
+  overflow-x:auto;
+  white-space:pre;
+}
+.code[data-file]::before {
+  content:attr(data-file);
+  display:block;
+  font:500 10.5px/1.4 var(--mono);
+  letter-spacing:.16em;
+  text-transform:uppercase;
+  color:var(--label);
+  margin-bottom:11px;
+  padding-bottom:9px;
+  border-bottom:1px dotted var(--line-2);
+}
+.tk-k { color:var(--violet); }
+.tk-s { color:#8a5a28; }
+.tk-n { color:var(--azure); }
+.tk-c { color:var(--ink-faint); font-style:italic; }
+.tk-f { color:var(--acid); }
+.tk-t { color:var(--good); }
+.tk-o { color:var(--ink-dim); }
+.note {
+  padding:13px 15px;
+  margin-bottom:11px;
+  background:var(--bg-2);
+  border:1px solid var(--line);
+  border-left:2px solid var(--line-2);
+  font:400 14px/1.6 var(--serif);
+  color:var(--ink);
+}
+.note .ln {
+  display:inline-block;
+  width:20px; height:20px;
+  text-align:center;
+  font:600 10px/20px var(--mono);
+  background:var(--paper-2);
+  color:#faf8f4;
+  margin-right:9px;
+  letter-spacing:0;
+}
+.note b { color:var(--paper); }
+
+/* tabs */
+.tabs { margin:20px 0; }
+.tab-bar { display:flex; gap:0; border-bottom:1px solid var(--line-2); flex-wrap:wrap; }
+.tab-btn {
+  padding:11px 16px;
+  background:transparent;
+  border:none;
+  border-bottom:2px solid transparent;
+  margin-bottom:-1px;
+  font:500 10.5px/1 var(--mono);
+  letter-spacing:.1em;
+  text-transform:uppercase;
+  color:var(--label);
+  cursor:pointer;
+  transition:color .15s, border-color .15s;
+}
+.tab-btn:hover { color:var(--ink); }
+.tab-btn.active { color:var(--acid); border-bottom-color:var(--acid); }
+.tab-pane { display:none; }
+.tab-pane.active { display:block; }
+
+/* demos */
+.demo { margin:20px 0; background:var(--bg-2); border:1px solid var(--line-2); padding:20px; }
+.demo-controls {
+  display:flex; flex-wrap:wrap; gap:10px; align-items:center;
+  margin-bottom:16px;
+  font:500 11px/1 var(--mono);
+}
+.demo-controls button {
+  padding:8px 13px;
+  background:var(--bg);
+  border:1px solid var(--line-2);
+  color:var(--ink-dim);
+  font:500 10.5px/1 var(--mono);
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  cursor:pointer;
+  transition:border-color .15s, color .15s, background .15s;
+}
+.demo-controls button:hover { border-color:var(--acid); color:var(--acid); }
+.demo-controls button b { color:var(--acid); margin-left:4px; }
+.demo-controls button.on { border-color:var(--acid); color:var(--acid); background:var(--acid-glow); }
+.demo svg, .demo canvas { width:100%; height:auto; background:#fdfcfa; border:1px solid var(--line); display:block; }
+.demo-readout {
+  display:flex; flex-wrap:wrap; gap:22px;
+  margin-top:13px;
+  font:400 11.5px/1.6 var(--mono);
+  color:var(--ink-dim);
+}
+.demo-readout b { color:var(--paper); font-weight:600; }
+
+/* quiz */
+.quiz-q { border:1px solid var(--line-2); padding:20px; margin:16px 0; background:var(--bg-2); }
+.quiz-q .qn { font:500 10px/1 var(--mono); color:var(--acid); letter-spacing:.18em; }
+.quiz-q .qt { font:600 19px/1.4 var(--display); color:var(--paper); margin:8px 0 15px; }
+.quiz-opts { display:grid; gap:8px; }
+.quiz-opt {
+  display:block;
+  padding:11px 14px;
+  background:var(--bg);
+  border:1px solid var(--line-2);
+  font:400 15px/1.5 var(--serif);
+  color:var(--ink);
+  text-align:left;
+  cursor:pointer;
+  transition:border-color .15s;
+}
+.quiz-opt:hover { border-color:var(--ink-faint); }
+.quiz-opt.right { border-color:var(--good); background:#eef4ec; color:var(--good); }
+.quiz-opt.wrong { border-color:var(--rose); background:#f8edea; color:var(--rose); }
+.quiz-exp {
+  margin-top:12px; padding:12px 14px;
+  font:400 14px/1.55 var(--serif);
+  color:var(--ink-dim);
+  border-left:2px solid var(--good);
+  background:var(--cream);
+  display:none;
+}
+.quiz-exp.show { display:block; }
+.quiz-exp b { color:var(--paper); }
+
+/* footer */
+footer.btm {
+  padding:52px 0 64px;
+  border-top:1px solid var(--line);
+  font:500 10.5px/2 var(--mono);
+  color:var(--label);
+  letter-spacing:.14em;
+  text-transform:uppercase;
+}
+footer.btm .fmark { font:italic 600 19px/1 var(--display); color:var(--paper); letter-spacing:0; text-transform:none; margin-bottom:10px; }
+footer.btm .legal { text-transform:none; letter-spacing:.02em; font:400 11.5px/1.8 var(--mono); color:var(--label); max-width:620px; margin-top:10px; }
+footer.btm b { color:var(--acid); }
+footer.btm a { color:var(--ink-dim); text-decoration:none; }
+footer.btm a:hover { color:var(--acid); }
+
+/* equation block */
+.eq { margin:26px 0; padding:18px 20px; border:1px solid var(--line); background:var(--bg-2); overflow-x:auto; overflow-y:hidden; max-width:760px; }
+.eq-label { display:block; font:500 10.5px/1 var(--mono); letter-spacing:.16em; text-transform:uppercase; color:var(--label); margin-bottom:8px; }
+mjx-container { max-width:100%; }
+
+/* subsection heading */
+.s-sub { font:600 24px/1.25 var(--display); color:var(--paper); margin:36px 0 12px; }
+
+/* keep phrases whole */
+.nw { white-space:nowrap; }
+
+/* grid top-edge alignment */
+.grid-2 > .panel, .grid-3 > .panel, .grid-2 > div > .panel:first-child, .grid-2 > div > .prose > p:first-child { margin-top:0; }
+
+/* mobile nav: no native scrollbar, fade instead */
+@media (max-width:900px){
+  .topnav .wrap { scrollbar-width:none; mask-image:linear-gradient(90deg,#000 calc(100% - 36px),transparent); -webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 36px),transparent); }
+  .topnav .wrap::-webkit-scrollbar { display:none; }
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="wrap">
+    <a href="#top" class="brand">sommelier</a>
+    <a href="#tldr">tl;dr</a>
+    <a href="#why">why</a>
+    <a href="#nemotron">nemotron</a>
+    <a href="#data">data</a>
+    <a href="#pipeline">pipeline</a>
+    <a href="#train">training</a>
+    <a href="#eval">eval</a>
+    <a href="#results">results</a>
+    <a href="#fr">français</a>
+    <a href="#outputs">outputs</a>
+    <a href="#use">use</a>
+    <a href="#repro">repro</a>
+    <a href="#limits">limits</a>
+    <a href="#quiz">quiz</a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <div class="hero-grid">
+      <div>
+        <div class="ident"><span class="nw">tool-calling fine-tuning</span> · <span class="nw">nvidia nemotron</span> · <span class="nw">evidence over trust</span></div>
+        <h1 class="title">Sommelier<sub>2026</sub></h1>
+        <p class="deck">Fine-tune a small open model into a reliable JSON tool caller, on one GPU, in about three hours, for about eight dollars. <em>Every number on this page traces to a published artifact.</em></p>
+        <div class="links">
+          <a class="pill" href="https://github.com/AbdelStark/sommelier" target="_blank" rel="noopener"><span class="dot"></span>github</a>
+          <a class="pill" href="https://abdelstark.github.io/sommelier/" target="_blank" rel="noopener"><span class="dot"></span>docs</a>
+          <a class="pill" href="https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora" target="_blank" rel="noopener"><span class="dot"></span>adapter · en</a>
+          <a class="pill" href="https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-fr-en-lora" target="_blank" rel="noopener"><span class="dot"></span>adapter · en+fr</a>
+          <a class="pill" href="https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits" target="_blank" rel="noopener"><span class="dot"></span>dataset · en</a>
+          <a class="pill" href="https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits-fr" target="_blank" rel="noopener"><span class="dot"></span>dataset · fr</a>
+          <a class="pill" href="https://huggingface.co/nvidia/Llama-3.1-Nemotron-Nano-8B-v1" target="_blank" rel="noopener"><span class="dot"></span>base model</a>
+        </div>
+      </div>
+      <aside class="stat-panel">
+        <div class="stat-label">the reference run, at a glance</div>
+        <div class="stat-row"><span class="k">base model</span><span class="v"><b>Nemotron-Nano-8B-v1</b></span></div>
+        <div class="stat-row"><span class="k">method</span><span class="v">QLoRA · NF4 · <b>r=16</b></span></div>
+        <div class="stat-row"><span class="k">adapter size</span><span class="v"><b>168 MB</b> · 0.52% of 8B</span></div>
+        <div class="stat-row"><span class="k">training</span><span class="v">15,000 ex · 2 epochs · <b>16.7M tokens</b></span></div>
+        <div class="stat-row"><span class="k">hardware</span><span class="v"><b>1× L40S</b> · 3h 3m · 26,306 MiB peak</span></div>
+        <div class="stat-row"><span class="k">gpu bill</span><span class="v">about <b>$8</b> · billing console</span></div>
+        <div class="stat-row"><span class="k">eval</span><span class="v">1,000 held-out · greedy · t=0</span></div>
+        <div class="stat-row"><span class="k">valid json</span><span class="v">0.916 → <b>1.000</b></span></div>
+        <div class="stat-row"><span class="k">full-call exact</span><span class="v">0.705 → <b>0.874</b></span></div>
+        <div class="stat-row"><span class="k">french gap (v2)</span><span class="v">-4.2 pts → <b>+0.3 pts</b></span></div>
+        <div class="stat-row"><span class="k">licenses</span><span class="v">MIT code · <b>Built with Llama</b></span></div>
+      </aside>
+    </div>
+  </div>
+</header>
+
+<!-- ============================ 01 TL;DR ============================ -->
+<section class="s" id="tldr" data-num="01">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">01</span>
+      <span class="section-kind">orientation</span>
+    </div>
+    <h2 class="s-title">What Sommelier actually is, in one screen.</h2>
+    <p class="s-deck">A reference implementation for adapting a small open language model to emit exactly one schema-valid JSON tool call per request, built on one premise: a fine-tuning claim is only as good as its evidence.</p>
+
+    <div class="grid-2" style="margin-bottom:24px">
+      <div class="card">
+        <span class="num">C1</span>
+        <h5>One task, done strictly</h5>
+        <p>Given a user query and a set of tool schemas, the model must emit one JSON object: <code>{"name": ..., "arguments": ...}</code>. Nothing else counts. A conservative parser scores every output; every parse failure counts against every metric.</p>
+      </div>
+      <div class="card">
+        <span class="num">C2</span>
+        <h5>A 168 MB correction to an 8B model</h5>
+        <p>QLoRA training moves 41,943,040 adapter parameters, 0.52% of the base model's 8.03 billion. The frozen base stays byte-identical to NVIDIA's published checkpoint, so the adapter is the complete diff between the two compared systems.</p>
+      </div>
+      <div class="card">
+        <span class="num">C3</span>
+        <h5>+16.9 points, gated by digests</h5>
+        <p>Full-call exact match rises from 0.705 to 0.874 on 1,000 held-out prompts. The comparison report refuses to exist unless both sides provably used identical data, prompts, parser, and decoding, checked by SHA-256.</p>
+      </div>
+      <div class="card">
+        <span class="num">C4</span>
+        <h5>The French gap, measured then closed</h5>
+        <p>The base model loses 4.2 points on French queries. Mixing machine-translated French rows into training closes the gap to +0.3 points, with tool schemas and gold answers byte-identical across both languages.</p>
+      </div>
+    </div>
+
+    <div class="eq named">
+      <span class="eq-label">the whole method</span>
+      $$ h = W_0\,x \;+\; \frac{\alpha}{r}\,B A\,x \qquad r=16,\;\alpha=32,\; W_0 \text{ frozen} $$
+    </div>
+
+    <div class="callout">
+      <span class="lbl">the contribution</span>
+      Sommelier is not a new algorithm. It is a complete, auditable recipe: six pipeline stages that communicate only through schema-versioned, checksummed files, a parser that never repairs model output, and a comparison gate that refuses mismatched evidence. The adapters, the datasets, the splits, and the raw evaluation reports are all public. You can re-derive every number.
+    </div>
+  </div>
+</section>
+
+<!-- ============================ 02 WHY ============================ -->
+<section class="s" id="why" data-num="02">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">02</span>
+      <span class="section-kind">sovereign ai</span>
+    </div>
+    <h2 class="s-title">Why post-train your <em>own</em> model at all.</h2>
+    <p class="s-deck">The strategic argument for small open models plus task adapters, and the measurement that makes it concrete.</p>
+
+    <div class="prose">
+      <p>Most teams consume language models the way they consume electricity: a hosted API, a per-token bill, and no say over what happens behind the socket. That trade is often right. It stops being right when the capability is core to your product, when your data cannot leave, or when the model must work in your language, your regulation, your vocabulary. Then the question becomes: <b>can you hold the capability yourself?</b></p>
+      <p>Post-training is how you hold it. A pinned open checkpoint plus a small trained adapter is a capability you own: you can pin it, audit it, re-run it, and ship it anywhere a GPU runs. NVIDIA frames this as sovereign AI. Announcing Nemotron 3, the company put it directly: organizations "from Europe to South Korea" are adopting open models "to build AI systems aligned to their own data, regulations and values." Jensen Huang at GTC Paris 2025: "You can now ask and get questions answered in the language, in the culture, in the sensibility of your country."</p>
+      <p>The economics point the same way. NVIDIA Research's position paper <a href="https://arxiv.org/abs/2506.02153" target="_blank" rel="noopener">Small Language Models are the Future of Agentic AI</a> argues that agentic systems mostly make small, repetitive, low-variation calls: route an input, pick a tool, format arguments. For that work, small specialized models are "sufficiently powerful, inherently more suitable, and necessarily more economical" than frontier generalists.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">what "owning the capability" means, concretely</div>
+      <div class="table-scroll">
+      <table class="spec-table">
+        <tr><th>property</th><th>hosted frontier api</th><th>pinned base + your adapter</th></tr>
+        <tr><td>weights</td><td>provider's, unversioned for you</td><td><b>pinned revision, byte-auditable</b></td></tr>
+        <tr><td>behavior over time</td><td>can change under you</td><td><b>frozen until you retrain</b></td></tr>
+        <tr><td>task capability</td><td>prompt, hope, re-prompt</td><td><b>a 168 MB artifact you version</b></td></tr>
+        <tr><td>your data</td><td>leaves the building</td><td><b>stays on your GPU</b></td></tr>
+        <tr><td>language coverage</td><td>whatever the provider tuned</td><td><b>measured, then trained where it lags</b></td></tr>
+        <tr><td>evidence</td><td>a marketing benchmark</td><td><b>re-runnable comparison report</b></td></tr>
+        <tr><td>marginal cost</td><td>per token, forever</td><td>about $8 of training, then your serving</td></tr>
+      </table>
+      </div>
+    </div>
+
+    <div class="prose">
+      <p>Sommelier's contribution to this argument is a worked, measured example of the regional-language case. Tool calling should work as well in French as in English; that is a claim worth measuring rather than assuming. Section 09 shows the measurement: the open base model quietly loses 4.2 points of full-call exact match when the user writes French, and one constrained-translation training run closes the gap to noise. If your users write French, or Korean, or Hindi, that gap is invisible until you measure it, and fixable once you can post-train.</p>
+    </div>
+
+    <div class="callout">
+      <span class="lbl">why this needs open models</span>
+      Nothing in sections 04 through 10 is possible against a closed API: you cannot pin its weights, quantify its update cadence, mask its prompt tokens, or attach a LoRA to it. The entire evidence chain starts with a base model whose exact bytes are public.
+    </div>
+  </div>
+</section>
+
+<!-- ============================ 03 NEMOTRON ============================ -->
+<section class="s" id="nemotron" data-num="03">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">03</span>
+      <span class="section-kind">the base model</span>
+    </div>
+    <h2 class="s-title">Nemotron: the base model is an open post-training story.</h2>
+    <p class="s-deck">Sommelier builds on nvidia/Llama-3.1-Nemotron-Nano-8B-v1. What makes the Nemotron effort unusual is not just open weights; it is that NVIDIA publishes the post-training data, the recipes, and the training code too.</p>
+
+    <div class="grid-2">
+      <div>
+        <div class="panel">
+          <div class="panel-h">nvidia/Llama-3.1-Nemotron-Nano-8B-v1</div>
+          <div class="table-scroll">
+          <table class="spec-table">
+            <tr><th>field</th><th>value</th></tr>
+            <tr><td>derived from</td><td>Meta Llama-3.1-8B-Instruct</td></tr>
+            <tr><td>architecture</td><td>dense decoder-only, 32 blocks, 8.03B params</td></tr>
+            <tr><td>post-training</td><td>SFT (math, code, reasoning, tool calling), then RL: REINFORCE (RLOO) + online RPO; final = SFT ⊕ RPO checkpoint merge</td></tr>
+            <tr><td>reasoning toggle</td><td>system prompt: <code>detailed thinking on</code> / <code>off</code></td></tr>
+            <tr><td>context</td><td>128K tokens</td></tr>
+            <tr><td>released</td><td>2025-03-18</td></tr>
+            <tr><td>license</td><td>NVIDIA Open Model License + Llama 3.1 Community License</td></tr>
+          </table>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="prose" style="font-size:15px;line-height:1.62">
+          <p>The Nano-8B is the small tier of the <a href="https://arxiv.org/abs/2505.00949" target="_blank" rel="noopener">Llama-Nemotron family</a> (Nano 8B, Super 49B, Ultra 253B). The larger tiers are Llama 3 checkpoints taken through neural architecture search, distillation, and continued pretraining; all three then share a reasoning-focused SFT + large-scale RL phase, with the Nano keeping the unmodified Llama 3.1 8B architecture. The paper claims these are the first open-source models with a runtime reasoning toggle.</p>
+          <p>Sommelier treats this model the way the license intends: as a foundation to specialize. Tool calling is one of the four capabilities its SFT phase explicitly targeted, which makes the base a fair, strong baseline; under Sommelier's evaluation policy (greedy decoding, conservative parser) it already gets 70.5% of full calls exactly right before any adapter.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">what nvidia actually opens, and when</div>
+      <div class="table-scroll">
+      <table class="spec-table">
+        <tr><th>release</th><th>date</th><th>what is open</th><th>source</th></tr>
+        <tr><td><b>Llama-Nemotron</b> (Nano 8B / Super 49B / Ultra 253B)</td><td>2025-03 to 2025-05</td><td>weights (NVIDIA Open Model License), full post-training dataset (CC-BY-4.0), NeMo / NeMo-Aligner / Megatron-LM code, paper</td><td><a href="https://arxiv.org/abs/2505.00949" target="_blank" rel="noopener">arXiv:2505.00949</a></td></tr>
+        <tr><td><b>Nemotron Nano 2</b> (9B hybrid Mamba-Transformer)</td><td>2025-08</td><td>weights incl. base checkpoints, most pre/post-training data; 12B base pretrained on 20T tokens (FP8 recipe)</td><td><a href="https://arxiv.org/abs/2508.14444" target="_blank" rel="noopener">arXiv:2508.14444</a></td></tr>
+        <tr><td><b>NVFP4 pretraining</b></td><td>2025-09</td><td>4-bit floating-point pretraining recipe validated to a 10T-token horizon</td><td><a href="https://arxiv.org/abs/2509.25149" target="_blank" rel="noopener">arXiv:2509.25149</a></td></tr>
+        <tr><td><b>Nemotron 3</b> (Nano / Super / Ultra, hybrid latent MoE)</td><td>2025-12</td><td>Nano weights at launch (Super and Ultra announced for H1 2026), training datasets, RL environments and libraries, aimed at multi-agent systems</td><td><a href="https://nvidianews.nvidia.com/news/nvidia-debuts-nemotron-3-family-of-open-models" target="_blank" rel="noopener">nvidianews</a></td></tr>
+      </table>
+      </div>
+    </div>
+
+    <div class="callout">
+      <span class="lbl">why the open post-training data matters</span>
+      Open weights alone let you run a model. Open post-training data and recipes let you understand it, reproduce it, and extend it. The <a href="https://huggingface.co/datasets/nvidia/Llama-Nemotron-Post-Training-Dataset" target="_blank" rel="noopener">Llama-Nemotron post-training dataset</a> (millions of rows, CC-BY-4.0) is the same category of artifact as Sommelier's published splits: the difference between "trust our benchmark" and "check our work". Announcing Nemotron 3, Jensen Huang: "Open innovation is the foundation of AI progress. With Nemotron, we're transforming advanced AI into an open platform that gives developers the transparency and efficiency they need to build agentic systems at scale."
+    </div>
+  </div>
+</section>
+
+<!-- ============================ 04 DATA ============================ -->
+<section class="s" id="data" data-num="04">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">04</span>
+      <span class="section-kind">data</span>
+    </div>
+    <h2 class="s-title">60,000 rows in, 17,000 out, every drop counted.</h2>
+    <p class="s-deck">The source is Salesforce's xlam-function-calling-60k. Sommelier drops every excluded row under a declared, counted reason: what it keeps, what it drops, and why are all on record.</p>
+
+    <div class="prose">
+      <p><a href="https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k" target="_blank" rel="noopener">xlam-function-calling-60k</a> (CC-BY-4.0, gated) contains 60,000 query-plus-tools examples produced by Salesforce's <a href="https://arxiv.org/abs/2406.18518" target="_blank" rel="noopener">APIGen</a> pipeline over 3,673 executable APIs in 21 categories, each verified by format checks, actual execution, and semantic review; a 600-sample human audit found over 95% correct. Sommelier trains and scores exactly one call per request, so the 52.6% of rows whose gold answer contains two or more calls are dropped under a declared reason, not silently. The docs put it plainly: "These rows are not bad data. They are out of scope."</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">the reference run's data funnel (recorded in the drop summary)</div>
+      <svg viewBox="0 0 900 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Data funnel from 60,000 source rows to 17,000 split rows">
+        <defs><marker id="farrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#6f6759"/></marker></defs>
+        <rect x="10" y="30" width="240" height="46" fill="#fffefb" stroke="#d9d1c2"/>
+        <text x="130" y="49" text-anchor="middle" fill="#1c1712" font-family="IBM Plex Mono" font-size="13" font-weight="700">60,000</text>
+        <text x="130" y="66" text-anchor="middle" fill="#6e675c" font-family="IBM Plex Mono" font-size="11">source rows read</text>
+        <path d="M250 53 L300 53" stroke="#6f6759" stroke-width="1.5"/>
+        <rect x="300" y="30" width="240" height="46" fill="#fffefb" stroke="#d9d1c2"/>
+        <text x="420" y="49" text-anchor="middle" fill="#1c1712" font-family="IBM Plex Mono" font-size="13" font-weight="700">28,461</text>
+        <text x="420" y="66" text-anchor="middle" fill="#6e675c" font-family="IBM Plex Mono" font-size="11">valid single-call rows</text>
+        <path d="M540 53 L590 53" stroke="#6f6759" stroke-width="1.5"/>
+        <rect x="590" y="30" width="240" height="46" fill="#fffefb" stroke="#d9d1c2"/>
+        <text x="710" y="49" text-anchor="middle" fill="#1c1712" font-family="IBM Plex Mono" font-size="13" font-weight="700">26,735</text>
+        <text x="710" y="66" text-anchor="middle" fill="#6e675c" font-family="IBM Plex Mono" font-size="11">after query dedupe</text>
+        <path d="M370 76 L370 120" stroke="#b0393b" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="378" y="112" fill="#b0393b" font-family="IBM Plex Mono" font-size="11">-31,539 multi_call_answer (52.6%)</text>
+        <path d="M660 76 L660 145" stroke="#b0393b" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="668" y="137" fill="#b0393b" font-family="IBM Plex Mono" font-size="11">-1,726 duplicate_query</text>
+        <path d="M830 53 L848 53 L848 165 L646 165" stroke="#6f6759" stroke-width="1.5" fill="none" marker-end="url(#farrow)"/>
+        <rect x="360" y="142" width="280" height="46" fill="#fffefb" stroke="#7b2d3e"/>
+        <text x="500" y="161" text-anchor="middle" fill="#7b2d3e" font-family="IBM Plex Mono" font-size="13" font-weight="700">15,000 / 1,000 / 1,000</text>
+        <text x="500" y="178" text-anchor="middle" fill="#6e675c" font-family="IBM Plex Mono" font-size="10.5">train / val / test · seed 42 · 9,735 unused</text>
+      </svg>
+    </div>
+
+    <div class="grid-2">
+      <div class="note"><span class="ln">A</span><b>Dedupe before split.</b> The dedupe key is <code>sha256(normalize_query(q))</code>, computed before splitting, so a duplicated query can never sit in train and test at once. The docs call the post-split re-assertion "belt and suspenders, but the belt is the mechanism."</div>
+      <div class="note"><span class="ln">B</span><b>Sixteen declared drop reasons.</b> Every dropped row gets the first failing reason from a closed, ordered list (missing_query, invalid_tools_json, multi_call_answer, duplicate_query, ...). On this dataset revision, all nine quality reasons count zero; every drop is policy, not dirt.</div>
+    </div>
+
+    <div class="prose"><p>Both derived datasets are public under CC-BY-4.0. The English dataset publishes the exact prepared splits plus the chat-formatted training text; the French dataset publishes 14,936 paired rows whose tool schemas and gold answers are byte-identical to their English sources. Browse them here:</p></div>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="tab-btn active" data-tab="0">en · prepared/test (the held-out 1,000)</button>
+        <button class="tab-btn" data-tab="1">fr · paired rows (14,936)</button>
+      </div>
+      <div class="tab-panes">
+        <div class="tab-pane active" data-tab="0">
+          <iframe src="https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits/embed/viewer/prepared/test" frameborder="0" width="100%" height="430" loading="lazy" title="English dataset viewer" style="border:1px solid var(--line-2)"></iframe>
+        </div>
+        <div class="tab-pane" data-tab="1">
+          <iframe src="https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits-fr/embed/viewer" frameborder="0" width="100%" height="430" loading="lazy" title="French dataset viewer" style="border:1px solid var(--line-2)"></iframe>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ 05 PIPELINE ============================ -->
+<section class="s" id="pipeline" data-num="05">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">05</span>
+      <span class="section-kind">architecture</span>
+    </div>
+    <h2 class="s-title">Six stages, one gate, <em>no hidden state</em>.</h2>
+    <p class="s-deck">Stages communicate only through schema-versioned files under an artifact root; every transition writes a manifest with SHA-256 checksums of its inputs and outputs. Click any block to inspect it.</p>
+
+    <div class="demo">
+      <svg id="pipeSvg" viewBox="0 0 900 430" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="parrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#6f6759"/>
+          </marker>
+        </defs>
+        <g class="pnode" data-id="source">
+          <rect x="330" y="10" width="240" height="44" fill="#fffefb" stroke="#d9d1c2"/>
+          <text x="450" y="28" text-anchor="middle" fill="#3c362d" font-family="IBM Plex Mono" font-size="12">xlam-function-calling-60k</text>
+          <text x="450" y="44" text-anchor="middle" fill="#6f6759" font-family="IBM Plex Mono" font-size="10.5">+ optional French paired rows</text>
+        </g>
+        <path d="M450 54 L450 84" stroke="#6f6759" stroke-width="1.5" marker-end="url(#parrow)"/>
+        <g class="pnode" data-id="prepare">
+          <rect x="330" y="88" width="240" height="44" fill="#fffefb" stroke="#d9d1c2"/>
+          <text x="450" y="106" text-anchor="middle" fill="#3c362d" font-family="IBM Plex Mono" font-size="12">1 · data prepare</text>
+          <text x="450" y="122" text-anchor="middle" fill="#6f6759" font-family="IBM Plex Mono" font-size="10.5">validate · drop · dedupe · split</text>
+        </g>
+        <path d="M450 132 L450 162" stroke="#6f6759" stroke-width="1.5" marker-end="url(#parrow)"/>
+        <g class="pnode" data-id="format">
+          <rect x="330" y="166" width="240" height="44" fill="#fffefb" stroke="#d9d1c2"/>
+          <text x="450" y="184" text-anchor="middle" fill="#3c362d" font-family="IBM Plex Mono" font-size="12">2 · format build</text>
+          <text x="450" y="200" text-anchor="middle" fill="#6f6759" font-family="IBM Plex Mono" font-size="10.5">chat template · prompt_sha256</text>
+        </g>
+        <path d="M330 188 L160 188 L160 240" stroke="#6f6759" stroke-width="1.5" fill="none" marker-end="url(#parrow)"/>
+        <path d="M570 188 L740 188 L740 240" stroke="#6f6759" stroke-width="1.5" fill="none" marker-end="url(#parrow)"/>
+        <g class="pnode" data-id="evalbase">
+          <rect x="40" y="244" width="240" height="52" fill="#fffefb" stroke="#d9d1c2"/>
+          <text x="160" y="263" text-anchor="middle" fill="#3c362d" font-family="IBM Plex Mono" font-size="12">3 · eval run --model base</text>
+          <text x="160" y="280" text-anchor="middle" fill="#6f6759" font-family="IBM Plex Mono" font-size="10.5">greedy · t=0 · conservative parser</text>
+        </g>
+        <g class="pnode" data-id="train">
+          <rect x="620" y="244" width="240" height="52" fill="#fffefb" stroke="#d9d1c2"/>
+          <text x="740" y="263" text-anchor="middle" fill="#3c362d" font-family="IBM Plex Mono" font-size="12">4 · train run</text>
+          <text x="740" y="280" text-anchor="middle" fill="#6f6759" font-family="IBM Plex Mono" font-size="10.5">QLoRA · completion-only loss</text>
+        </g>
+        <path d="M740 296 L740 326" stroke="#6f6759" stroke-width="1.5" marker-end="url(#parrow)"/>
+        <g class="pnode" data-id="evaladapter">
+          <rect x="620" y="330" width="240" height="52" fill="#fffefb" stroke="#d9d1c2"/>
+          <text x="740" y="349" text-anchor="middle" fill="#3c362d" font-family="IBM Plex Mono" font-size="12">5 · eval run --model adapter</text>
+          <text x="740" y="366" text-anchor="middle" fill="#6f6759" font-family="IBM Plex Mono" font-size="10.5">same prompts, parser, decoding</text>
+        </g>
+        <path d="M160 296 L160 400 L330 400" stroke="#6f6759" stroke-width="1.5" fill="none" marker-end="url(#parrow)"/>
+        <path d="M620 356 L594 356 L594 400 L574 400" stroke="#6f6759" stroke-width="1.5" fill="none" marker-end="url(#parrow)"/>
+        <g class="pnode" data-id="gate">
+          <rect x="330" y="378" width="240" height="44" fill="#f7f2e8" stroke="#7b2d3e"/>
+          <text x="450" y="396" text-anchor="middle" fill="#7b2d3e" font-family="IBM Plex Mono" font-size="12">6 · report compare</text>
+          <text x="450" y="412" text-anchor="middle" fill="#6e675c" font-family="IBM Plex Mono" font-size="10.5">THE GATE · refuses mismatched digests</text>
+        </g>
+      </svg>
+      <div id="pipeDetails" class="panel" style="margin:14px 0 0;min-height:150px">
+        <div class="panel-h">click a stage to inspect</div>
+        <p style="color:var(--ink-dim);font:400 14px/1.5 var(--serif);margin:0">Each stage names what it consumes, what it produces, and which invariant protects it.</p>
+      </div>
+    </div>
+
+    <div class="callout">
+      <span class="lbl">why a gate and not a warning</span>
+      Incomparability is invisible in the output: a metrics table computed from mismatched prompts looks identical to one computed from matched prompts. The gate checks six digest fields (config, split, test-split bytes, prompt-set, parser version, decoding) and refuses to write a comparison report on any mismatch. From the design docs: "the existence of comparison_report.json is itself the proof that the identity checks passed."
+    </div>
+  </div>
+</section>
+
+<!-- ============================ 06 TRAINING ============================ -->
+<section class="s" id="train" data-num="06">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">06</span>
+      <span class="section-kind">training</span>
+    </div>
+    <h2 class="s-title">A <em>168 MB correction</em> to an 8 billion parameter model.</h2>
+    <p class="s-deck">QLoRA composes three precisions on purpose: the frozen base stored in 4-bit NF4, compute in bfloat16, and a float32 adapter that holds the entire learned change.</p>
+
+    <div class="grid-2">
+      <div class="prose" style="font-size:15px;line-height:1.62">
+        <p>LoRA constrains the weight update of each targeted projection to a low-rank product: instead of moving all 16.8 million entries of a <code>q_proj</code>, training learns two thin matrices A (16×4096) and B (4096×16) whose product, scaled by α/r = 2, is added to the frozen weight. B starts at zero, so the untrained adapter is exactly a no-op; every point of measured improvement is attributable to training and nothing else.</p>
+        <p>The adapter attaches to all seven linear projections of each of the 32 blocks (q, k, v, o, gate, up, down), following the QLoRA paper's finding that adapting every linear layer recovers full fine-tuning quality. Total: 448 tensors, 41,943,040 parameters, 0.52% of the base's 8.03 billion, 168 MB on disk. The docs' summary: "the correction that turns the base model into a reliable tool caller is, in parameter count, one thirty-second of one component of the network it corrects."</p>
+        <p>NF4 stores the frozen base in blocks of 64 weights with one absmax scale each, snapped to 16 levels placed at standard-normal quantiles; double quantization compresses the scales themselves. The 16 GB bfloat16 base fits in roughly 5.7 GB. Dequantization happens per matmul; the docs put it: "the quantization is a storage format, not a compute format."</p>
+      </div>
+      <div>
+        <div class="panel">
+          <div class="panel-h">reference hyperparameters (examples/config.full.yaml)</div>
+          <div class="table-scroll">
+          <table class="spec-table">
+            <tr><th>knob</th><th>value</th></tr>
+            <tr><td>quantization</td><td>nf4-4bit, double quant, bf16 compute</td></tr>
+            <tr><td>lora rank / alpha / dropout</td><td><b>16 / 32 / 0.05</b></td></tr>
+            <tr><td>target modules</td><td>q, k, v, o, gate, up, down proj</td></tr>
+            <tr><td>epochs</td><td>2</td></tr>
+            <tr><td>batch</td><td>4 per device × 4 accumulation = 16</td></tr>
+            <tr><td>learning rate</td><td>2e-4, cosine, warmup 0.03</td></tr>
+            <tr><td>max sequence length</td><td>4,096 tokens</td></tr>
+            <tr><td>optimizer steps</td><td>938 / epoch · <b>1,876 total</b> · ~5.9 s each</td></tr>
+            <tr><td>wall clock / memory</td><td>10,996 s · peak 26,306 MiB</td></tr>
+          </table>
+          </div>
+        </div>
+        <div class="callout warn" style="margin-top:14px">
+          <span class="lbl">a real oom, kept as a comment</span>
+          Batch 8 without gradient checkpointing exceeded a 44 GiB L40S in the first full run. The fix (batch 4 × accumulation 4, explicit checkpointing) lives in the code with the reason attached. Nothing retries or resizes itself; per the design docs, "auto-tuning turns the config from a record into a suggestion."
+        </div>
+      </div>
+    </div>
+
+    <div class="demo">
+      <div class="demo-controls">
+        <span style="font:500 11px/1 var(--mono);color:var(--ink-dim)">the actual loss curve · run <b style="color:var(--acid)">nemotron-8b-full-3</b> · 1,876 steps, log scale</span>
+      </div>
+      <svg id="lossSvg" viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="demo-readout">
+        <span>train loss: <b>1.085 → 0.042</b></span>
+        <span>eval loss: <b>0.038</b> @ step 938 · <b>0.030</b> @ step 1,876</span>
+        <span>tokens seen: <b>16,668,132</b></span>
+        <span>source: <a href="https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora/blob/main/reports/training_metrics.jsonl" target="_blank" rel="noopener">reports/training_metrics.jsonl</a></span>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="note"><span class="ln">A</span><b>Completion-only loss.</b> Prompt tokens are labeled -100 and excluded from the loss; gradient flows only through the tokens the model must produce at inference time. Spending gradient on reproducing the system message and tool schemas teaches the wrong thing.</div>
+      <div class="note"><span class="ln">B</span><b>The boundary is proven, not assumed.</b> The format stage fails unless the rendered full text starts with the rendered prompt text, and the collator re-proves the boundary at token level per example. If a tokenizer merges across it, training refuses rather than silently falling back to full-sequence loss. The design docs: "a failed run costs a rerun. An invisible objective change costs the comparison."</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ 07 EVALUATION ============================ -->
+<section class="s" id="eval" data-num="07">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">07</span>
+      <span class="section-kind">evaluation</span>
+    </div>
+    <h2 class="s-title">A parser that <em>refuses to be kind</em>.</h2>
+    <p class="s-deck">The evaluator extracts the first balanced JSON span from the model's output and never repairs it. Every parse failure counts against every metric. Try it below: this playground runs a faithful JavaScript port of sommelier.parser.v1.</p>
+
+    <div class="prose">
+      <p>A lenient parser that fixes trailing commas or picks the most plausible of several objects answers a different question: not "can this model emit a valid tool call" but "can this model plus my repair heuristics emit one". Repair moves work from the model to the harness by an amount you cannot measure, and that amount differs between base and adapter. So the parser is deliberately conservative, and its strictness cannot favor either side, because both face the identical parser.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">the five metrics, exactly as computed (sommelier/evaluation/metrics.py)</div>
+      <div class="table-scroll">
+      <table class="spec-table">
+        <tr><th>metric</th><th>numerator</th><th>denominator</th></tr>
+        <tr><td>valid_json_rate</td><td>records with parse_status ok</td><td rowspan="4">all records, including every parse failure (INV-DATA-005)</td></tr>
+        <tr><td>function_name_accuracy</td><td>ok ∧ predicted name equals gold name</td></tr>
+        <tr><td>argument_exact_match</td><td>ok ∧ canonical JSON of arguments equals gold's</td></tr>
+        <tr><td><b>full_call_exact_match</b></td><td>ok ∧ name equals ∧ arguments equal</td></tr>
+        <tr><td>argument_f1</td><td>2 × matched (path, value) pairs</td><td>predicted pairs + gold pairs, pooled; failed parses still contribute their gold pairs</td></tr>
+      </table>
+      </div>
+      <p style="font:400 13px/1.5 var(--serif);color:var(--ink-dim);margin:10px 0 0">Equality is canonical-JSON equality: sorted keys, compact separators. The docs are explicit about the incentive: "reports would look better if failures were dropped from the denominator, which is precisely why they are not."</p>
+    </div>
+
+    <div class="demo">
+      <div class="demo-controls">
+        <button id="pp-preset-0">base: prose refusal</button>
+        <button id="pp-preset-1">base: bare arguments</button>
+        <button id="pp-preset-2">base: invalid json</button>
+        <button id="pp-preset-3">adapter output</button>
+        <button id="pp-preset-4">multi-call (synthetic)</button>
+      </div>
+      <textarea id="pp-input" spellcheck="false" style="width:100%;min-height:180px;background:var(--bg);border:1px solid var(--line);color:var(--ink);font:400 12px/1.55 var(--mono);padding:12px;resize:vertical;box-sizing:border-box"></textarea>
+      <div class="demo-readout" style="align-items:center">
+        <span>parse_status: <b id="pp-status">--</b></span>
+        <span id="pp-why" style="color:var(--ink-faint)"></span>
+      </div>
+      <pre class="code" id="pp-extracted" data-file="parsed_call" style="margin-bottom:0;min-height:40px">--</pre>
+      <p style="font:400 12.5px/1.5 var(--serif);color:var(--ink-faint);margin:10px 0 0">JS port of <a href="https://github.com/AbdelStark/sommelier/blob/main/sommelier/evaluation/parse.py" target="_blank" rel="noopener">sommelier/evaluation/parse.py</a>: first balanced span, string-and-escape aware, shape must be exactly <code>{"name", "arguments"}</code> or a one-element array of it. The Python module is canonical; the published numbers come from it, not from this widget. The refusal, bare-arguments, invalid-JSON, and adapter presets are verbatim outputs from the reference run; the multi-call preset is a synthetic illustration of the one-call contract.</p>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <span class="num">S1</span>
+        <h5>no_json</h5>
+        <p>No opening brace or bracket anywhere. Typical base failure: a polite prose answer asking for clarification instead of calling the tool. 9 of 1,000 base outputs.</p>
+      </div>
+      <div class="card">
+        <span class="num">S2</span>
+        <h5>invalid_json</h5>
+        <p>An opening bracket exists but no balanced span extracts, or json.loads rejects the span. 11 of 1,000 base outputs.</p>
+      </div>
+      <div class="card">
+        <span class="num">S3</span>
+        <h5>invalid_shape</h5>
+        <p>Valid JSON, wrong shape. The base's dominant failure at 64 of 1,000: in 50 cases it emitted the arguments object bare, without the name/arguments wrapper, and in 14 it added or renamed keys.</p>
+      </div>
+      <div class="card">
+        <span class="num">S4</span>
+        <h5>ok</h5>
+        <p>Exactly one call with exactly the keys name and arguments. Base: 916 of 1,000. Adapter: 1,000 of 1,000. "ok" only means parseable; the arguments can still be wrong, which is what the other four metrics measure.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ 08 RESULTS ============================ -->
+<section class="s" id="results" data-num="08">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">08</span>
+      <span class="section-kind">results</span>
+    </div>
+    <h2 class="s-title">Base versus adapter, under identical conditions.</h2>
+    <p class="s-deck">Two full runs are published. v1 trained on 15,000 English rows (run nemotron-8b-full-3); v2 trained on the same English rows plus 13,113 French pairs (run nemotron-8b-fr-full-4). Both evaluated greedily on the same held-out prompts, by digest.</p>
+
+    <div class="demo">
+      <div class="demo-controls" id="rx-metrics"></div>
+      <svg id="rxSvg" viewBox="0 0 900 330" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="demo-readout" id="rx-readout"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">the reference run, full table (en, n=1,000)</div>
+      <div class="table-scroll">
+      <table class="spec-table">
+        <tr><th>metric</th><th>base</th><th>v1 adapter</th><th>Δ</th></tr>
+        <tr><td>valid JSON rate</td><td>0.9160 <span style="color:var(--ink-faint)">(916/1000)</span></td><td><b>1.0000</b> <span style="color:var(--ink-faint)">(1000/1000)</span></td><td style="color:var(--good);font-weight:600">+0.0840</td></tr>
+        <tr><td>function name accuracy</td><td>0.9110 <span style="color:var(--ink-faint)">(911/1000)</span></td><td><b>0.9960</b> <span style="color:var(--ink-faint)">(996/1000)</span></td><td style="color:var(--good);font-weight:600">+0.0850</td></tr>
+        <tr><td>argument exact match</td><td>0.7070 <span style="color:var(--ink-faint)">(707/1000)</span></td><td><b>0.8760</b> <span style="color:var(--ink-faint)">(876/1000)</span></td><td style="color:var(--good);font-weight:600">+0.1690</td></tr>
+        <tr><td>argument F1</td><td>0.7569 <span style="color:var(--ink-faint)">(3858/5097)</span></td><td><b>0.9291</b> <span style="color:var(--ink-faint)">(5122/5513)</span></td><td style="color:var(--good);font-weight:600">+0.1722</td></tr>
+        <tr><td><b>full-call exact match</b></td><td>0.7050 <span style="color:var(--ink-faint)">(705/1000)</span></td><td><b>0.8740</b> <span style="color:var(--ink-faint)">(874/1000)</span></td><td style="color:var(--good);font-weight:600">+0.1690</td></tr>
+      </table>
+      </div>
+    </div>
+
+    <div class="prose">
+      <p>Read the columns top to bottom and the adapter's remaining errors localize. Validity saturates (1000/1000). Naming is nearly solved (996/1000). What remains is argument construction: 996 correct names, 876 exact argument matches, 874 fully exact calls. The metrics are ordered diagnostics, not redundancy.</p>
+    </div>
+
+    <div class="callout">
+      <span class="lbl">claim boundaries, quoted</span>
+      "These numbers hold for the recorded dataset revision, prompt policy, parser, and decoding config. They are not claims of production readiness or general agent reliability." Argument comparison is exact canonical JSON: a semantically equivalent value spelled differently counts as a miss, for both sides equally. Nothing here ranks the model against any public benchmark or hosted model. One run, one seed.
+    </div>
+  </div>
+</section>
+
+<!-- ============================ 09 FRENCH ============================ -->
+<section class="s" id="fr" data-num="09">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">09</span>
+      <span class="section-kind">multilingual</span>
+    </div>
+    <h2 class="s-title">The French gap: <em>measured, then closed</em>.</h2>
+    <p class="s-deck">The measurement changes exactly one variable: the language of the user's query. Tool schemas, gold answers, parser, and decoding stay byte-identical, so whatever moves in the numbers is the language.</p>
+
+    <div class="prose">
+      <p>The v2 experiment built a French paired variant of every selected row by <b>constrained translation</b>. Only the query is translated (Mistral-Nemo-Instruct-2407, greedy). Tool schemas and gold answers stay byte-identical to the English source, enforced at preparation time. Every gold argument value that appears verbatim in the English query is a <b>protected span</b> that must survive translation byte for byte, with boundary-aware matching so a protected "2" is not satisfied by "2026". Each French row inherits its English source's train/validation/test split, so a translation can never leak across a split boundary. Rows whose translation fails any audit are dropped with a counted reason: of 17,000 selected rows, 14,936 pairs survived (2,011 lost a protected span, 53 came back untranslated). The pairs inherit their sources’ splits, 13,113 train and 879 test with the rest validation, which is why training saw 13,113 rows while 14,936 are published.</p>
+    </div>
+
+    <div class="panel acid">
+      <div class="panel-h">full-call exact match · same gold answers by construction · en n=1,000 · fr n=879</div>
+      <div class="table-scroll">
+      <table class="spec-table">
+        <tr><th>model</th><th>en</th><th>fr</th><th>gap (fr - en)</th></tr>
+        <tr><td>base Nemotron-Nano-8B</td><td>0.7050</td><td>0.6633</td><td style="color:var(--rose)">-4.2 pts</td></tr>
+        <tr><td>v1 adapter (English-only training)</td><td><b>0.8740</b></td><td>0.8510</td><td style="color:var(--amber)">-2.3 pts</td></tr>
+        <tr><td><b>v2 adapter (mixed en+fr training)</b></td><td>0.8700</td><td><b>0.8726</b></td><td style="color:var(--good);font-weight:600"><b>+0.3 pts</b></td></tr>
+      </table>
+      </div>
+    </div>
+
+    <div class="grid-3">
+      <div class="card">
+        <span class="num">F1</span>
+        <h5>The base pays ~4 points on French</h5>
+        <p>Same tools, same gold calls, same parser; only the query language changed. The penalty concentrates in argument construction: argument exact match drops from 0.707 to 0.666.</p>
+      </div>
+      <div class="card">
+        <span class="num">F2</span>
+        <h5>English-only training transfers most gains</h5>
+        <p>Without a single French example, the v1 adapter lifts French full-call exact match 18.8 points (0.663 to 0.851), narrowing the gap from 4.2 to 2.3 points. Format discipline transfers across languages for free.</p>
+      </div>
+      <div class="card">
+        <span class="num">F3</span>
+        <h5>A translated slice closes the rest</h5>
+        <p>With 13,113 French pairs mixed in, French matches English on every metric to within a third of a point. Cost on English: at most 0.8 points, within one standard error at n=1,000; the regression is reported, not hidden.</p>
+      </div>
+    </div>
+
+    <div class="prose">
+      <p>The comparison is anchored end to end: the v2 run's English prompt set is byte-identical to the reference run's (digest <code>a0da8fa2…</code>), so both experiments scored exactly the same 1,000 English prompts. Training took 5 h 42 min (3,516 steps over 28,113 rows) at a nearly identical peak (26,369 vs 26,306 MiB); French rows cost the same tokens as English ones (p95 711 vs 716 tokens), so the bilingual run's extra bill is purely its extra rows.</p>
+      <p>The recipe generalizes: measure the regional gap under controlled conditions, then close it with data you can publish. The same method, unchanged, applies to any language whose gold arguments survive translation audits.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ 10 OUTPUTS ============================ -->
+<section class="s" id="outputs" data-num="10">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">10</span>
+      <span class="section-kind">evidence</span>
+    </div>
+    <h2 class="s-title">Read the model's <em>actual outputs</em>.</h2>
+    <p class="s-deck">Aggregates hide texture. Below: what happened to each of the 1,000 held-out prompts, and a browser over real generations from the published runs. Nothing is paraphrased.</p>
+
+    <div class="demo">
+      <div class="demo-controls">
+        <button id="mx-en" class="on">en · reference run</button>
+        <button id="mx-fr">fr · french run</button>
+        <span style="font:500 11px/1 var(--mono);color:var(--ink-faint)">base outcome (rows) → adapter outcome (columns)</span>
+      </div>
+      <div id="mx-table" class="table-scroll"></div>
+      <div class="demo-readout" id="mx-note"></div>
+    </div>
+
+    <div class="demo">
+      <div class="demo-controls">
+        <button id="sb-prev">← prev</button>
+        <span style="font:500 11px/1 var(--mono);color:var(--ink-dim)">example <b id="sb-pos" style="color:var(--acid)">1</b> / 15</span>
+        <button id="sb-next">next →</button>
+        <span id="sb-tag" style="font:500 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint)"></span>
+      </div>
+      <div id="sb-body"></div>
+    </div>
+
+    <p style="font:400 13px/1.55 var(--serif);color:var(--ink-dim)">Samples are drawn verbatim from <code>generations.jsonl</code> of runs nemotron-8b-full-3 and nemotron-8b-fr-full-4, joined with the published test split. The selection covers every major cell of the matrix above, including the cases where the adapter is wrong. Verdicts use the same canonical-JSON comparison as the published metrics.</p>
+  </div>
+</section>
+
+<!-- ============================ 11 USE ============================ -->
+<section class="s" id="use" data-num="11">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">11</span>
+      <span class="section-kind">use the adapters</span>
+    </div>
+    <h2 class="s-title">Run the adapters, four ways.</h2>
+    <p class="s-deck">Both adapters load onto the unquantized bfloat16 base. Pick the English one for English-only traffic, the en+fr one for bilingual traffic. The prompt policy is part of the contract: reproduce it exactly.</p>
+
+    <div class="tabs">
+      <div class="tab-bar">
+        <button class="tab-btn active" data-tab="0">transformers + peft</button>
+        <button class="tab-btn" data-tab="1">vllm</button>
+        <button class="tab-btn" data-tab="2">modal (scale to zero)</button>
+        <button class="tab-btn" data-tab="3">sommelier serve</button>
+      </div>
+      <div class="tab-panes">
+        <div class="tab-pane active" data-tab="0">
+          <pre class="code" data-file="usage.py · from the model card"><span class="tk-k">import</span> json, torch
+<span class="tk-k">from</span> peft <span class="tk-k">import</span> PeftModel
+<span class="tk-k">from</span> transformers <span class="tk-k">import</span> AutoModelForCausalLM, AutoTokenizer
+
+BASE = <span class="tk-s">"nvidia/Llama-3.1-Nemotron-Nano-8B-v1"</span>
+ADAPTER = <span class="tk-s">"abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora"</span>
+
+tokenizer = AutoTokenizer.from_pretrained(BASE)
+model = AutoModelForCausalLM.from_pretrained(BASE, dtype=<span class="tk-s">"auto"</span>, device_map=<span class="tk-s">"auto"</span>)
+model = PeftModel.from_pretrained(model, ADAPTER)   <span class="tk-c"># A</span>
+
+SYSTEM = (<span class="tk-s">"You are a tool-calling model. Select the correct tool "</span>
+          <span class="tk-s">"and return only the JSON tool call. Do not include explanations."</span>)
+tools = [{<span class="tk-s">"name"</span>: <span class="tk-s">"lookup_weather"</span>,
+          <span class="tk-s">"description"</span>: <span class="tk-s">"Look up the current weather for a city."</span>,
+          <span class="tk-s">"parameters"</span>: {<span class="tk-s">"city"</span>: {<span class="tk-s">"description"</span>: <span class="tk-s">"Name of the city."</span>,
+                                  <span class="tk-s">"type"</span>: <span class="tk-s">"str"</span>}}}]   <span class="tk-c"># B</span>
+tools_json = json.dumps(tools, separators=(<span class="tk-s">","</span>, <span class="tk-s">":"</span>), sort_keys=<span class="tk-n">True</span>)
+messages = [
+  {<span class="tk-s">"role"</span>: <span class="tk-s">"system"</span>, <span class="tk-s">"content"</span>: <span class="tk-t">f</span><span class="tk-s">"{SYSTEM}\n\nAvailable tools:\n{tools_json}"</span>},
+  {<span class="tk-s">"role"</span>: <span class="tk-s">"user"</span>, <span class="tk-s">"content"</span>: <span class="tk-s">"What is the weather in Paris today?"</span>},
+]
+prompt = tokenizer.apply_chat_template(messages, tokenize=<span class="tk-n">False</span>,
+                                       add_generation_prompt=<span class="tk-n">True</span>)
+inputs = tokenizer(prompt, return_tensors=<span class="tk-s">"pt"</span>,
+                   add_special_tokens=<span class="tk-n">False</span>).to(model.device)  <span class="tk-c"># C</span>
+out = model.generate(**inputs, do_sample=<span class="tk-n">False</span>, max_new_tokens=<span class="tk-n">512</span>)
+print(tokenizer.decode(out[0][inputs[<span class="tk-s">"input_ids"</span>].shape[1]:],
+                       skip_special_tokens=<span class="tk-n">True</span>))
+<span class="tk-c"># [{"arguments":{"city":"Paris"},"name":"lookup_weather"}]</span></pre>
+          <div class="grid-3">
+              <div class="note"><span class="ln">A</span><b>Never merged.</b> The adapter stays a separate 168 MB artifact on top of the pinned base. The docs' reason: "a merged model would bury a 168 MB claim inside a 16 GB artifact."</div>
+              <div class="note"><span class="ln">B</span><b>xlam-style flat parameter maps.</b> This is the schema shape the adapter was trained on. JSON-Schema-style <code>{"type": "object", "properties": ...}</code> tools are out of distribution and typically fail to parse.</div>
+              <div class="note"><span class="ln">C</span><b>No double BOS.</b> The rendered chat template already contains the BOS token, so tokenize with <code>add_special_tokens=False</code>, exactly as the evaluator does.</div>
+          </div>
+          <div class="callout" style="margin-top:14px">
+                <span class="lbl">bilingual variant</span>
+                Swap the adapter id for <code>…-xlam-tool-calling-fr-en-lora</code> and French queries work at English-level accuracy. Same base, same prompt policy, same license terms.
+          </div>
+        </div>
+        <div class="tab-pane" data-tab="1">
+          <pre class="code" data-file="$ vllm (same flags the published Modal deployment uses)">vllm serve nvidia/Llama-3.1-Nemotron-Nano-8B-v1 \
+  --dtype bfloat16 \
+  --enable-lora --max-lora-rank <span class="tk-n">16</span> \
+  --lora-modules sommelier-tool-caller=abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora</pre>
+          <pre class="code" data-file="$ query it (openai-compatible)">curl -s http://localhost:8000/v1/chat/completions \
+  -H <span class="tk-s">'Content-Type: application/json'</span> \
+  -d <span class="tk-s">'{
+    "model": "sommelier-tool-caller",
+    "messages": [
+      {"role": "system", "content": "You are a tool-calling model. Select the correct tool and return only the JSON tool call. Do not include explanations.\n\nAvailable tools:\n[{\"description\":\"Look up the current weather for a city.\",\"name\":\"lookup_weather\",\"parameters\":{\"city\":{\"description\":\"Name of the city.\",\"type\":\"str\"}}}]"},
+      {"role": "user", "content": "What is the weather in Paris today?"}
+    ],
+    "temperature": 0.0,
+    "max_tokens": 512
+  }'</span></pre>
+          <p style="font:400 13px/1.55 var(--serif);color:var(--ink-dim)">One server registers two model names, the base id and <code>sommelier-tool-caller</code>, so base-versus-adapter A/B requests hit the same endpoint. Tool schemas go in the system message as canonical JSON: sorted keys, compact separators, the exact policy the adapter saw in training.</p>
+        </div>
+        <div class="tab-pane" data-tab="2">
+          <pre class="code" data-file="$ modal"><span class="tk-c"># deploys vLLM + the published adapter behind an OpenAI-compatible URL</span>
+<span class="tk-c"># (scales to zero when idle; cold start takes a few minutes)</span>
+git clone https://github.com/AbdelStark/sommelier && <span class="tk-k">cd</span> sommelier
+uv run modal deploy remote_serving.py    <span class="tk-c"># URL printed on deploy</span>
+uv run modal run remote_serving.py       <span class="tk-c"># smoke: canonical request, parsed</span></pre>
+          <p style="font:400 13px/1.55 var(--serif);color:var(--ink-dim)">The smoke entrypoint sends the canonical weather request and parses the reply with sommelier's own parser, so a green smoke run means the serving path agrees with the evaluation path. Set <code>SOMMELIER_SERVE_API_KEY</code> to require a Bearer token; without it the URL is open.</p>
+        </div>
+        <div class="tab-pane" data-tab="3">
+          <pre class="code" data-file="$ sommelier serve adapter (illustrative, not production)">uv run sommelier serve adapter --config examples/config.full.yaml \
+  --adapter &lt;path-to-adapter-dir&gt;
+
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H <span class="tk-s">'Content-Type: application/json'</span> \
+  -d <span class="tk-s">'{"messages": [{"role": "user", "content": "What is the weather in Paris today?"}],
+       "tools": [{"name": "lookup_weather",
+                  "description": "Look up the current weather for a city.",
+                  "parameters": {"city": {"description": "Name of the city.", "type": "str"}}}],
+       "temperature": 0.0, "max_tokens": 256}'</span>
+
+<span class="tk-c"># response reports parse_status instead of repairing output:</span>
+<span class="tk-c"># {"raw_text": "[{\"arguments\":{\"city\":\"Paris\"},\"name\":\"lookup_weather\"}]",</span>
+<span class="tk-c">#  "parsed_call": {"name": "lookup_weather", "arguments": {"city": "Paris"}},</span>
+<span class="tk-c">#  "parse_status": "ok", "model_kind": "adapter"}</span></pre>
+          <p style="font:400 13px/1.55 var(--serif);color:var(--ink-dim)">Deliberately not a production system: no autoscaling, no multi-tenant isolation, no streaming. It reuses the evaluation prompt policy and parser, which is the point; the response tells you honestly whether the output parsed.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout warn">
+      <span class="lbl">license obligations travel with the weights</span>
+      The adapters are Llama 3.1 derivatives ("Built with Llama") governed by the NVIDIA Open Model License and the Llama 3.1 Community License. The datasets are CC-BY-4.0 derivatives of Salesforce/xlam-function-calling-60k. Sommelier's code is MIT, and <code>sommelier release preflight</code> machine-checks the notices before any release.
+    </div>
+  </div>
+</section>
+
+<!-- ============================ 12 REPRODUCE ============================ -->
+<section class="s" id="repro" data-num="12">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">12</span>
+      <span class="section-kind">reproduce</span>
+    </div>
+    <h2 class="s-title">From clean checkout to your own comparison report.</h2>
+    <p class="s-deck">Three ladders: a fixture run on a laptop (no GPU, no accounts), a smoke run (one GPU, about half an hour), the full run (one GPU, under four hours, about eight dollars).</p>
+
+    <div class="panel">
+      <div class="panel-h">prerequisites</div>
+      <div class="table-scroll">
+      <table class="spec-table">
+        <tr><th>rung</th><th>needs</th><th>gets you</th></tr>
+        <tr><td>fixture</td><td>Python 3.13+, uv</td><td>data prepare + format build on synthetic rows; byte-identical rerun outputs</td></tr>
+        <tr><td>smoke</td><td>+ Modal account, HF token, xlam gate accepted</td><td>the full six-stage chain at 100/20/20 (the docs: "a plumbing check, not a measurement")</td></tr>
+        <tr><td>full</td><td>same, ~4 GPU-hours on an L40S</td><td>the published numbers, within noise: bit-identical generations across GPU stacks are not guaranteed</td></tr>
+      </table>
+      </div>
+    </div>
+
+    <h3 class="s-sub">Rung 1 · laptop, no GPU</h3>
+    <pre class="code" data-file="$ bash">git clone https://github.com/AbdelStark/sommelier && <span class="tk-k">cd</span> sommelier
+uv sync --extra dev && uv run pytest          <span class="tk-c"># 380+ tests</span>
+uv run sommelier data prepare --config examples/config.smoke.yaml --fixture \
+  --out examples/artifacts/runs/local/data --run-id local
+uv run sommelier format build --config examples/config.smoke.yaml \
+  --data examples/artifacts/runs/local/data \
+  --out examples/artifacts/runs/local/formatted --run-id local --fixture</pre>
+
+    <h3 class="s-sub">Rungs 2 and 3 · the real thing on Modal</h3>
+    <pre class="code" data-file="$ bash"><span class="tk-c"># smoke first. always smoke before you spend hours.</span>
+uv run modal run remote_pipeline.py \
+  --config examples/config.smoke.yaml --mode smoke --max-rows <span class="tk-n">2500</span>
+
+<span class="tk-c"># the reference run (en)</span>
+SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=<span class="tk-n">28800</span> \
+uv run modal run --detach remote_pipeline.py \
+  --config examples/config.full.yaml --mode full --max-rows <span class="tk-n">60000</span>
+
+<span class="tk-c"># the bilingual run (en+fr): build the French pairs, then train on both</span>
+SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=<span class="tk-n">14400</span> \
+uv run modal run --detach remote_translate.py \
+  --config examples/config.full.yaml --run-id fr-translate-2
+SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=<span class="tk-n">36000</span> \
+uv run modal run --detach remote_pipeline.py \
+  --config examples/config.full.yaml --mode full --max-rows <span class="tk-n">60000</span> \
+  --translation-run-id fr-translate-2</pre>
+
+    <div class="grid-2">
+      <div class="note"><span class="ln">A</span><b>What lands where.</b> Every stage commits its artifacts to a Modal volume as it finishes: <code>config.resolved.yaml</code>, per-stage manifests with SHA-256 checksums, splits, formatted text, the adapter, raw generations, and the two reports. A failed run leaves explicit failed manifests, never silent partial state.</div>
+      <div class="note"><span class="ln">B</span><b>Budget audit before the GPU burns.</b> The pipeline audits every rendered training sequence against the 4,096-token budget right after formatting, in the reproduction guide’s words "so a budget mistake costs seconds, not GPU hours." The longest real xlam row renders to 2,166 tokens.</div>
+    </div>
+
+    <div class="callout">
+      <span class="lbl">what reproduction means here</span>
+      Determinism is claimed for data preparation, formatting, and evaluation; GPU training is not claimed bit-reproducible. Expect the same splits, the same prompts (digest a0da8fa2…), the same parser verdicts, and metrics within noise of the published run. The eight-dollar figure is the maintainer’s billing-console total; the run record itself logs cost as unavailable rather than guessing.
+    </div>
+  </div>
+</section>
+
+<!-- ============================ 13 LIMITS ============================ -->
+<section class="s" id="limits" data-num="13">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">13</span>
+      <span class="section-kind">honesty</span>
+    </div>
+    <h2 class="s-title">Where the claims stop.</h2>
+    <p class="s-deck">Scope discipline is part of the method. These boundaries come from the project's own docs.</p>
+
+    <div class="grid-2">
+      <div class="card">
+        <span class="num">L1</span>
+        <h5>One call per request, by contract</h5>
+        <p>52.6% of xlam rows answer with multiple calls and are filtered out under a declared reason. The published numbers say nothing about multi-call planning, multi-turn agents, tool execution, or retry logic.</p>
+      </div>
+      <div class="card">
+        <span class="num">L2</span>
+        <h5>Exact match is deliberately harsh</h5>
+        <p>"2" (string) does not match 2 (number); date spellings differ; lists compare by index. Semantically equivalent arguments count as misses, for base and adapter equally. Absolute numbers are pessimistic; the delta stays fair.</p>
+      </div>
+      <div class="card">
+        <span class="num">L3</span>
+        <h5>The French test set is machine-translated</h5>
+        <p>Reviewed on samples, not natively authored. 12.1% of pairs were excluded because gold arguments embed English text, so the French slice leans toward language-neutral arguments. Instruction-language effects are unmeasured: the system prompt stays English by design.</p>
+      </div>
+      <div class="card">
+        <span class="num">L4</span>
+        <h5>One run, one seed, no benchmark ranking</h5>
+        <p>Nothing here ranks the model against public benchmarks or hosted models. The only claim is base versus adapter, under provably identical conditions, on this task. The v2-versus-v1 English difference (0.3 to 0.8 points) is within one standard error and stays undecided.</p>
+      </div>
+      <div class="card">
+        <span class="num">L5</span>
+        <h5>Training is not bit-reproducible</h5>
+        <p>Determinism guarantees cover preparation, formatting, and evaluation. GPU training varies across driver stacks; reproducers should expect metrics within noise, not identical bytes.</p>
+      </div>
+      <div class="card">
+        <span class="num">L6</span>
+        <h5>Serving is illustrative</h5>
+        <p>Both serving paths exist to let you poke the adapter, not to carry production traffic. No autoscaling, no isolation, no streaming, no auth by default. The evaluation claim never depends on serving.</p>
+      </div>
+    </div>
+
+    <h3 class="s-sub" style="margin-top:40px">Going deeper</h3>
+    <ol style="font-family:var(--serif);font-size:15.5px;line-height:1.7;color:var(--ink);padding-left:18px;max-width:820px">
+      <li><b>The Sommelier docs</b>: <a href="https://abdelstark.github.io/sommelier/" target="_blank" rel="noopener">abdelstark.github.io/sommelier</a>. Start with <a href="https://abdelstark.github.io/sommelier/concepts/design-decisions/" target="_blank" rel="noopener">design decisions</a>: every strictness on this page is a documented trade with its rejected alternative.</li>
+      <li><b>QLoRA</b> (Dettmers et al., 2023): <a href="https://arxiv.org/abs/2305.14314" target="_blank" rel="noopener">arXiv:2305.14314</a>. NF4, double quantization, and the all-linear-layers finding this recipe follows.</li>
+      <li><b>LoRA</b> (Hu et al., 2021): <a href="https://arxiv.org/abs/2106.09685" target="_blank" rel="noopener">arXiv:2106.09685</a>. The low-rank hypothesis itself.</li>
+      <li><b>Llama-Nemotron</b> (NVIDIA, 2025): <a href="https://arxiv.org/abs/2505.00949" target="_blank" rel="noopener">arXiv:2505.00949</a>. How the base model was made, and what NVIDIA opened alongside it.</li>
+      <li><b>APIGen</b> (Salesforce, 2024): <a href="https://arxiv.org/abs/2406.18518" target="_blank" rel="noopener">arXiv:2406.18518</a>. Where the 60,000 verified tool-calling rows come from.</li>
+      <li><b>Small Language Models are the Future of Agentic AI</b> (NVIDIA Research, 2025): <a href="https://arxiv.org/abs/2506.02153" target="_blank" rel="noopener">arXiv:2506.02153</a>. The economics behind specializing small models.</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ============================ 14 QUIZ ============================ -->
+<section class="s" id="quiz" data-num="14">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-num">14</span>
+      <span class="section-kind">mastery check</span>
+    </div>
+    <h2 class="s-title">Self-quiz.</h2>
+    <p class="s-deck">Ten questions on the core ideas. Tap an option to reveal the answer.</p>
+    <div id="quiz-container"></div>
+  </div>
+</section>
+
+<footer class="btm">
+  <div class="container">
+    <div class="fmark">sommelier</div>
+    <p>reproducible tool-calling fine-tuning for small open models</p>
+    <p style="margin-top:6px">
+      <a href="https://github.com/AbdelStark/sommelier" target="_blank" rel="noopener">github</a> &nbsp;·&nbsp;
+      <a href="https://abdelstark.github.io/sommelier/" target="_blank" rel="noopener">docs</a> &nbsp;·&nbsp;
+      <a href="https://huggingface.co/abdelstark" target="_blank" rel="noopener">hugging face</a> &nbsp;·&nbsp;
+      maintained by abdelstark
+    </p>
+    <p class="legal">Code MIT. Adapters are Built with Llama, under the NVIDIA Open Model License and the Llama 3.1 Community License. Datasets CC-BY-4.0. Every number on this page traces to a run artifact or a cited source.</p>
+  </div>
+</footer>
+
+<script>
+/* ---------- generic tabs ---------- */
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.tab;
+    const container = btn.closest('.tabs');
+    container.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    container.querySelectorAll(':scope > .tab-panes > .tab-pane').forEach(p => p.classList.toggle('active', p.dataset.tab === tab));
+  });
+});
+
+/* ---------- 05 pipeline inspector ---------- */
+(function(){
+  const D = {
+    source: { kind:'input', title:'Salesforce/xlam-function-calling-60k', rows:[
+      ['schema','sommelier.raw_tool_call_row.v1'],['revision','pinned in config (dataset_revision, required, no default)'],['license','CC-BY-4.0, gated']],
+      desc:'60,000 query + tools + answers rows generated by APIGen and verified by execution. Optionally joined by paired-language rows, e.g. the 14,936-row French translation set, which must carry byte-identical tools and answers.'},
+    prepare: { kind:'stage 1', title:'sommelier data prepare', rows:[
+      ['consumes','raw rows (untrusted JSON strings)'],['produces','prepared_example.v2 splits + drop summary'],['invariant','a normalized query lives in exactly one split']],
+      desc:'Validates every row against 16 declared drop reasons in fixed order, drops multi-call answers by policy, dedupes on sha256(normalize_query(q)) before splitting, then writes seeded 15,000/1,000/1,000 splits. Reference run: 5.6 seconds.'},
+    format: { kind:'stage 2', title:'sommelier format build', rows:[
+      ['consumes','prepared examples'],['produces','formatted_example.v2 (prompt_text, target_text, full_text, prompt_sha256)'],['invariant','full_text must start with prompt_text, or the stage fails']],
+      desc:'Renders each example through the tokenizer’s own chat template at the pinned revision. Tools are canonicalized (sorted keys, compact separators) into the system message. The target is canonical JSON of the gold call, nothing else. Every prompt gets a SHA-256 digest that travels with it for the rest of the pipeline. Reference run: 16.9 seconds.'},
+    evalbase: { kind:'stage 3', title:'sommelier eval run --model base', rows:[
+      ['consumes','formatted test split (never rebuilt, read by digest)'],['produces','generations.jsonl + evaluation_report.json'],['decoding','temperature 0.0, do_sample false, max_new_tokens 512, enforced not coerced']],
+      desc:'One greedy completion per prompt against the frozen bfloat16 base. Every raw generation is stored with its parse status; a flattering rerun cannot replace the record. Reference run: 823.5 seconds for 1,000 prompts.'},
+    train: { kind:'stage 4', title:'sommelier train run', rows:[
+      ['consumes','formatted train + validation splits'],['produces','train/adapter/ + training_metrics.jsonl (every step)'],['invariant','INV-DATA-003: the test split is never read']],
+      desc:'QLoRA with completion-only loss. The prompt/target token boundary is re-proven per example before any gradient step; if a tokenizer merges across it, training refuses rather than falling back to full-sequence loss. NaN loss fails closed. Reference run: 10,996 seconds, 1,876 steps.'},
+    evaladapter: { kind:'stage 5', title:'sommelier eval run --model adapter', rows:[
+      ['consumes','the same formatted test split, by digest'],['produces','generations.jsonl + evaluation_report.json'],['symmetry','same stage code as the base eval, run twice; no separate baseline script that could drift']],
+      desc:'Identical prompts, parser, and decoding as stage 3, with the adapter attached to the same bfloat16 base. Reference run: 923.4 seconds.'},
+    gate: { kind:'stage 6 · the gate', title:'sommelier report compare', rows:[
+      ['consumes','both evaluation reports + the run’s config.resolved.yaml'],['produces','comparison_report.json (authoritative) + .md (human rendering)'],['invariant','INV-DATA-006: no report unless conditions are provably identical']],
+      desc:'Refuses to write anything unless config digest, split, test-split digest, per-slice prompt-set digests, parser version, and the full decoding dict agree exactly, and re-hashes the run’s own resolved config to block smuggled reports. Rejections name the mismatched field. Reference run: 1.3 seconds.'}
+  };
+  const panel = document.getElementById('pipeDetails');
+  document.querySelectorAll('#pipeSvg .pnode').forEach(g => {
+    g.style.cursor = 'pointer';
+    g.addEventListener('click', () => {
+      const d = D[g.dataset.id]; if (!d) return;
+      document.querySelectorAll('#pipeSvg .pnode rect').forEach(r => r.setAttribute('stroke', r.closest('.pnode').dataset.id==='gate' ? '#7b2d3e' : '#d9d1c2'));
+      g.querySelector('rect').setAttribute('stroke','#7b2d3e');
+      panel.innerHTML = '<div class="panel-h">' + d.kind + ' :: ' + d.title + '</div>' +
+        '<table class="spec-table">' + d.rows.map(r => '<tr><th style="width:180px">' + r[0] + '</th><td>' + r[1] + '</td></tr>').join('') + '</table>' +
+        '<p style="margin:12px 0 0;font:400 14px/1.55 var(--serif);color:var(--ink)">' + d.desc + '</p>';
+    });
+  });
+})();
+
+/* ---------- 06 loss curve (real data) ---------- */
+(function(){
+  const C = {"points":[[1,1.0855],[2,1.2671],[3,1.0339],[4,1.2],[5,0.9934],[6,0.7277],[7,0.4603],[8,0.3896],[9,0.1483],[10,0.0873],[11,0.2236],[12,0.1023],[13,0.224],[14,0.169],[15,0.0609],[16,0.0416],[17,0.0818],[18,0.1508],[19,0.0806],[20,0.0868],[30,0.1295],[40,0.0888],[50,0.0084],[60,0.2237],[70,0.0882],[80,0.0221],[90,0.0265],[100,0.0346],[110,0.1094],[120,0.0547],[130,0.0293],[140,0.0423],[150,0.0783],[160,0.0623],[170,0.1151],[180,0.0391],[190,0.1109],[200,0.0611],[210,0.0472],[220,0.0221],[230,0.0408],[240,0.0097],[250,0.1061],[260,0.0394],[270,0.0203],[280,0.0467],[290,0.07],[300,0.0342],[310,0.0074],[320,0.0298],[330,0.0395],[340,0.2147],[350,0.0152],[360,0.0723],[370,0.0194],[380,0.0267],[390,0.1984],[400,0.0135],[410,0.0107],[420,0.0597],[430,0.0199],[440,0.0243],[450,0.0236],[460,0.0414],[470,0.0076],[480,0.0144],[490,0.0776],[500,0.0022],[510,0.0137],[520,0.008],[530,0.0065],[540,0.0169],[550,0.0029],[560,0.0676],[570,0.0773],[580,0.0175],[590,0.016],[600,0.0597],[610,0.0384],[620,0.02],[630,0.1024],[640,0.0256],[650,0.0536],[660,0.0091],[670,0.0227],[680,0.1043],[690,0.063],[700,0.0305],[710,0.059],[720,0.0648],[730,0.0083],[740,0.0047],[750,0.0012],[760,0.0406],[770,0.0677],[780,0.0192],[790,0.0311],[800,0.287],[810,0.0069],[820,0.0372],[830,0.1255],[840,0.0224],[850,0.6975],[860,0.08],[870,0.0424],[880,0.0432],[890,0.0647],[900,0.0488],[910,0.0063],[920,0.0267],[930,0.0427],[940,0.025],[950,0.0131],[960,0.0305],[970,0.0242],[980,0.0267],[990,0.0119],[1000,0.0066],[1010,0.0061],[1020,0.0136],[1030,0.0112],[1040,0.0015],[1050,0.0499],[1060,0.0362],[1070,0.0116],[1080,0.0286],[1090,0.0059],[1100,0.0205],[1110,0.0084],[1120,0.0032],[1130,0.0137],[1140,0.0178],[1150,0.0232],[1160,0.0128],[1170,0.0263],[1180,0.0017],[1190,0.0082],[1200,0.0065],[1210,0.0031],[1220,0.0066],[1230,0.0569],[1240,0.0047],[1250,0.0037],[1260,0.0136],[1270,0.0062],[1280,0.1204],[1290,0.0111],[1300,0.0089],[1310,0.0137],[1320,0.0011],[1330,0.0532],[1340,0.0184],[1350,0.0007],[1360,0.0182],[1370,0.0007],[1380,0.0412],[1390,0.0134],[1400,0.0093],[1410,0.0017],[1420,0.0042],[1430,0.0043],[1440,0.0079],[1450,0.057],[1460,0.0194],[1470,0.0107],[1480,0.0475],[1490,0.0005],[1500,0.015],[1510,0.0788],[1520,0.0581],[1530,0.0116],[1540,0.0894],[1550,0.0267],[1560,0.005],[1570,0.1241],[1580,0.0176],[1590,0.0049],[1600,0.01],[1610,0.0062],[1620,0.0434],[1630,0.0126],[1640,0.0329],[1650,0.0361],[1660,0.0014],[1670,0.0039],[1680,0.0037],[1690,0.0029],[1700,0.0138],[1710,0.0108],[1720,0.0165],[1730,0.0052],[1740,0.0019],[1750,0.0117],[1760,0.002],[1770,0.0149],[1780,0.0051],[1790,0.0192],[1800,0.0142],[1810,0.0116],[1820,0.0186],[1830,0.0004],[1840,0.0042],[1850,0.0223],[1860,0.0033],[1870,0.0005],[1876,0.0452],[1876,0.0422]],"eval":[[938,0.0381],[1876,0.0303]],"final":0.0422,"steps":1876};
+  const svg = document.getElementById('lossSvg');
+  const W=900, H=300, L=60, R=16, T=16, B=34;
+  const xmax=1876, ymin=Math.log10(0.028), ymax=Math.log10(1.25);
+  const X = s => L + (s/xmax)*(W-L-R);
+  const Y = v => T + (1 - (Math.log10(v)-ymin)/(ymax-ymin))*(H-T-B);
+  let h='';
+  [1.0,0.3,0.1,0.03].forEach(g => {
+    h += '<line x1="'+L+'" y1="'+Y(g)+'" x2="'+(W-R)+'" y2="'+Y(g)+'" stroke="#eae4d9" stroke-width="1"/>' +
+         '<text x="'+(L-8)+'" y="'+(Y(g)+4)+'" text-anchor="end" fill="#6f6759" font-family="IBM Plex Mono" font-size="10">'+g+'</text>';
+  });
+  [0,469,938,1407,1876].forEach(s => {
+    h += '<text x="'+X(s)+'" y="'+(H-12)+'" text-anchor="middle" fill="#6f6759" font-family="IBM Plex Mono" font-size="10">'+s+'</text>';
+  });
+  h += '<line x1="'+X(938)+'" y1="'+T+'" x2="'+X(938)+'" y2="'+(H-B)+'" stroke="#d9d1c2" stroke-width="1" stroke-dasharray="3,4"/>' +
+       '<text x="'+(X(938)+6)+'" y="'+(T+12)+'" fill="#6f6759" font-family="IBM Plex Mono" font-size="10">epoch 2 begins</text>';
+  let path='M';
+  C.points.forEach(p => { path += X(p[0]).toFixed(1)+','+Y(Math.max(p[1],0.028)).toFixed(1)+' L'; });
+  h += '<path d="'+path.slice(0,-2)+'" fill="none" stroke="#3e6fb0" stroke-width="1.8"/>';
+  C.eval.forEach(e => {
+    const rightEdge = e[0] > 1700;
+    const lx = rightEdge ? X(e[0])-8 : X(e[0])+9;
+    h += '<circle cx="'+X(e[0])+'" cy="'+Y(e[1])+'" r="4" fill="#2a251f"/>' +
+         '<text x="'+lx+'" y="'+(Y(e[1])-10)+'" text-anchor="'+(rightEdge?'end':'start')+'" fill="#4a443b" stroke="#fdfcfa" stroke-width="3" paint-order="stroke" font-family="IBM Plex Mono" font-size="10">eval '+e[1]+'</text>';
+  });
+  h += '<text x="'+(L+10)+'" y="'+(T+14)+'" fill="#3e6fb0" stroke="#fdfcfa" stroke-width="3.5" paint-order="stroke" font-family="IBM Plex Mono" font-size="11">train loss (log scale)</text>' +
+       '<text x="'+(W-R)+'" y="'+(T+14)+'" text-anchor="end" fill="#6f6759" font-family="IBM Plex Mono" font-size="10">optimizer step →</text>';
+  svg.innerHTML = h;
+})();
+
+/* ---------- 07 parser playground: JS port of sommelier.parser.v1 ---------- */
+(function(){
+  const OPEN={'{':'}','[':']'};
+  function extractSpan(text){
+    let start=-1;
+    for(let i=0;i<text.length;i++){ if(text[i]==='{'||text[i]==='['){start=i;break;} }
+    if(start<0) return {span:null, sawOpen:false};
+    const stack=[]; let inStr=false, esc=false;
+    for(let i=start;i<text.length;i++){
+      const c=text[i];
+      if(inStr){ if(esc){esc=false;} else if(c==='\\'){esc=true;} else if(c==='"'){inStr=false;} continue; }
+      if(c==='"'){inStr=true; continue;}
+      if(c==='{'||c==='['){stack.push(OPEN[c]); continue;}
+      if(c==='}'||c===']'){
+        if(!stack.length||stack[stack.length-1]!==c) return {span:null,sawOpen:true};
+        stack.pop();
+        if(!stack.length) return {span:text.slice(start,i+1),sawOpen:true};
+      }
+    }
+    return {span:null,sawOpen:true};
+  }
+  function isPlainObject(v){ return v!==null && typeof v==='object' && !Array.isArray(v); }
+  function validateShape(v){
+    if(Array.isArray(v)){ if(v.length!==1) return null; v=v[0]; }
+    if(!isPlainObject(v)) return null;
+    const keys=Object.keys(v).sort();
+    if(keys.length!==2||keys[0]!=='arguments'||keys[1]!=='name') return null;
+    if(typeof v.name!=='string'||v.name.length===0) return null;
+    if(!isPlainObject(v.arguments)) return null;
+    return v;
+  }
+  function parse(text){
+    const {span,sawOpen}=extractSpan(text);
+    if(span===null) return {status: sawOpen?'invalid_json':'no_json', call:null,
+      why: sawOpen?'an opening bracket exists but no balanced span extracts':'no opening { or [ anywhere in the output'};
+    let v;
+    try{ v=JSON.parse(span); }catch(e){ return {status:'invalid_json',call:null,why:'balanced span found, but JSON.parse rejects it'}; }
+    const call=validateShape(v);
+    if(!call) return {status:'invalid_shape',call:null,why:'valid JSON, but not exactly {"name", "arguments"} (or a one-element array of it)'};
+    return {status:'ok',call,why:'first balanced span parses and has exactly the contracted shape'};
+  }
+  const input=document.getElementById('pp-input');
+  const st=document.getElementById('pp-status'), why=document.getElementById('pp-why'), ex=document.getElementById('pp-extracted');
+  const COLOR={ok:'#2e7d43',no_json:'#b0393b',invalid_json:'#b0393b',invalid_shape:'#9a6b1a'};
+  function run(){
+    const r=parse(input.value);
+    st.textContent=r.status; st.style.color=COLOR[r.status];
+    why.textContent=r.why;
+    ex.textContent=r.call?JSON.stringify(r.call,null,2):'null';
+  }
+  input.addEventListener('input',run);
+  const PRESETS=[
+    "Sure, I can help with that. Could you please provide me with the start and end times for each meeting in a format that I can understand, such as a list of lists?",
+    "{\"content_type\": \"application/x-www-form-urlencoded\", \"interval\": \"1d\", \"symbol\": \"LTCBTC\"}",
+    "{\n  \"name\": \"bacterial_growth\",\n  \"arguments\": {\n    \"doubling_time\": 25.0 / 60.0,\n    \"growth_rate\": 0.2,\n    \"initial_population\": 4000,\n    \"time\": 11.0 * 60.0\n  }\n}",
+    "[{\"arguments\":{\"intervals\":[[9,10],[9.5,10.5],[10,11]]},\"name\":\"can_attend_all_meetings\"}]",
+    "[{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}},{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Lyon\"}}]"
+  ];
+  PRESETS.forEach((p,i)=>{ document.getElementById('pp-preset-'+i).addEventListener('click',()=>{ input.value=p; run(); }); });
+  input.value=PRESETS[0]; run();
+})();
+
+/* ---------- 08 results explorer (published numbers) ---------- */
+(function(){
+  // values and (numerator/denominator) from the published comparison reports
+  const METRICS=[
+    {key:'valid_json_rate', label:'valid json'},
+    {key:'function_name_accuracy', label:'function name'},
+    {key:'argument_exact_match', label:'argument exact'},
+    {key:'argument_f1', label:'argument f1'},
+    {key:'full_call_exact_match', label:'full-call exact'}
+  ];
+  const DATA={
+    en:{
+      base:{valid_json_rate:[.9160,'916/1000'],function_name_accuracy:[.9110,'911/1000'],argument_exact_match:[.7070,'707/1000'],argument_f1:[.7569,'3858/5097'],full_call_exact_match:[.7050,'705/1000']},
+      v1:{valid_json_rate:[1.0,'1000/1000'],function_name_accuracy:[.9960,'996/1000'],argument_exact_match:[.8760,'876/1000'],argument_f1:[.9291,'5122/5513'],full_call_exact_match:[.8740,'874/1000']},
+      v2:{valid_json_rate:[.9970,'997/1000'],function_name_accuracy:[.9930,'993/1000'],argument_exact_match:[.8730,'873/1000'],argument_f1:[.9211,'5112/5550'],full_call_exact_match:[.8700,'870/1000']}
+    },
+    fr:{
+      base:{valid_json_rate:[.9044,'795/879'],function_name_accuracy:[.8976,'789/879'],argument_exact_match:[.6655,'585/879'],argument_f1:[.7091,'3000/4231'],full_call_exact_match:[.6633,'583/879']},
+      v1:{full_call_exact_match:[.8510,'published for full-call only']},
+      v2:{valid_json_rate:[.9954,'875/879'],function_name_accuracy:[.9898,'870/879'],argument_exact_match:[.8760,'770/879'],argument_f1:[.9208,'4288/4657'],full_call_exact_match:[.8726,'767/879']}
+    }
+  };
+  const MODELS=[['base','base','#a87a35'],['v1','v1 · en-only training','#3e6fb0'],['v2','v2 · en+fr training','#9e3450']];
+  const COLORS={base:'#a87a35',v1:'#3e6fb0',v2:'#9e3450'};
+  let cur='full_call_exact_match';
+  const bar=document.getElementById('rx-metrics');
+  bar.innerHTML = METRICS.map(m=>'<button data-m="'+m.key+'" class="'+(m.key===cur?'on':'')+'">'+m.label+'</button>').join('');
+  const svg=document.getElementById('rxSvg'), readout=document.getElementById('rx-readout');
+  function draw(){
+    const W=900,H=330,T=24,B=40,L=60,R=20;
+    const groups=[['en','english · n=1,000'],['fr','french · n=879']];
+    const y0=v=>T+(1-v)*(H-T-B);
+    let h='';
+    [0,.25,.5,.75,1].forEach(g=>{ h+='<line x1="'+L+'" y1="'+y0(g)+'" x2="'+(W-R)+'" y2="'+y0(g)+'" stroke="#eae4d9"/>'+
+      '<text x="'+(L-8)+'" y="'+(y0(g)+4)+'" text-anchor="end" fill="#6f6759" font-family="IBM Plex Mono" font-size="10">'+g.toFixed(2)+'</text>'; });
+    const gw=(W-L-R)/2;
+    let notes=[];
+    groups.forEach((grp,gi)=>{
+      const gx=L+gi*gw;
+      h+='<text x="'+(gx+gw/2)+'" y="'+(H-14)+'" text-anchor="middle" fill="#6e675c" font-family="IBM Plex Mono" font-size="11">'+grp[1]+'</text>';
+      const present=MODELS.filter(m=>DATA[grp[0]][m[0]] && DATA[grp[0]][m[0]][cur]);
+      const bw=54, gap=26, total=present.length*bw+(present.length-1)*gap, x0=gx+(gw-total)/2;
+      present.forEach((m,mi)=>{
+        const d=DATA[grp[0]][m[0]][cur];
+        const x=x0+mi*(bw+gap), y=y0(d[0]);
+        h+='<rect x="'+x+'" y="'+y+'" width="'+bw+'" height="'+(y0(0)-y)+'" fill="'+COLORS[m[0]]+'" stroke="none"/>'+
+           '<text x="'+(x+bw/2)+'" y="'+(y-8)+'" text-anchor="middle" fill="#1c1712" font-family="IBM Plex Mono" font-size="12" font-weight="600">'+d[0].toFixed(4)+'</text>'+
+           '<text x="'+(x+bw/2)+'" y="'+(y0(0)+14)+'" text-anchor="middle" fill="#6e675c" font-family="IBM Plex Mono" font-size="10">'+m[0]+'</text>';
+        notes.push(m[0]+' '+grp[0]+': <b>'+d[0].toFixed(4)+'</b> ('+d[1]+')');
+      });
+    });
+    h+='<line x1="'+(L+gw)+'" y1="'+T+'" x2="'+(L+gw)+'" y2="'+(H-B)+'" stroke="#d9d1c2" stroke-dasharray="2,5"/>';
+    svg.innerHTML=h;
+    readout.innerHTML=notes.map(n=>'<span>'+n+'</span>').join('');
+  }
+  bar.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+    cur=b.dataset.m;
+    bar.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+    draw();
+  }));
+  draw();
+})();
+
+/* ---------- 10 transition matrix (computed from published generations) ---------- */
+(function(){
+  const ORDER=['exact','args_mismatch','name_mismatch','invalid_shape','invalid_json','no_json'];
+  const LBL={exact:'exact',args_mismatch:'args mismatch',name_mismatch:'name mismatch',invalid_shape:'invalid_shape',invalid_json:'invalid_json',no_json:'no_json'};
+  const EN={'exact|exact':676,'args_mismatch|exact':131,'args_mismatch|args_mismatch':74,'invalid_shape|exact':48,'exact|args_mismatch':28,'invalid_shape|args_mismatch':16,'invalid_json|exact':8,'no_json|exact':8,'name_mismatch|exact':3,'invalid_json|args_mismatch':3,'name_mismatch|name_mismatch':2,'args_mismatch|name_mismatch':1,'no_json|args_mismatch':1,'exact|name_mismatch':1};
+  const FR={'exact|exact':558,'args_mismatch|exact':146,'args_mismatch|args_mismatch':58,'invalid_shape|exact':30,'exact|args_mismatch':23,'no_json|exact':20,'invalid_shape|args_mismatch':12,'invalid_json|exact':10,'no_json|args_mismatch':4,'invalid_json|args_mismatch':4,'name_mismatch|exact':3,'name_mismatch|args_mismatch':2,'exact|name_mismatch':2,'args_mismatch|invalid_json':2,'invalid_json|invalid_json':2,'name_mismatch|name_mismatch':1,'invalid_shape|name_mismatch':1,'no_json|name_mismatch':1};
+  const NOTES={
+    en:'v1 adapter vs base, reference run, n=1,000. Of the base’s 84 parse failures, the adapter converts 64 to exact calls. The 29 regressions (base exact, adapter not) are real and counted.',
+    fr:'v2 adapter vs base, french slice, n=879. The base’s 84 parse failures shrink to 4; note the two cells where the adapter itself emits invalid JSON.'
+  };
+  const holder=document.getElementById('mx-table'), note=document.getElementById('mx-note');
+  const bEn=document.getElementById('mx-en'), bFr=document.getElementById('mx-fr');
+  function render(which){
+    const M=which==='en'?EN:FR;
+    const n=which==='en'?1000:879;
+    let usedRows=ORDER.filter(r=>ORDER.some(c=>M[r+'|'+c])), usedCols=ORDER.filter(c=>ORDER.some(r=>M[r+'|'+c]));
+    let h='<table class="spec-table"><tr><th>base ↓ / adapter →</th>'+usedCols.map(c=>'<th>'+LBL[c]+'</th>').join('')+'</tr>';
+    usedRows.forEach(r=>{
+      h+='<tr><td><b>'+LBL[r]+'</b></td>';
+      usedCols.forEach(c=>{
+        const v=M[r+'|'+c]||0;
+        const good=c==='exact', diag=r===c;
+        const col=v===0?'var(--ink-faint)':(good?'#1f6234':(diag?'var(--ink)':'var(--amber)'));
+        const bg=v>0?('rgba(46,125,67,'+(good?Math.min(.13,v/n*1.0):0)+')'):'transparent';
+        h+='<td style="color:'+col+';background:'+bg+'">'+(v||'·')+'</td>';
+      });
+      h+='</tr>';
+    });
+    h+='</table>';
+    holder.innerHTML=h;
+    note.innerHTML='<span>'+NOTES[which]+'</span>';
+    bEn.classList.toggle('on',which==='en'); bFr.classList.toggle('on',which==='fr');
+  }
+  bEn.addEventListener('click',()=>render('en')); bFr.addEventListener('click',()=>render('fr'));
+  render('en');
+})();
+
+/* ---------- 10 sample browser (verbatim generations) ---------- */
+(function(){
+  const S=[{"id":"13429","lang":"en","query":"Provide the candlestick chart data for 'LTCBTC' for the last month with a 1-day interval.","tools":[{"description":"Fetch candlestick chart data for a specified cryptocurrency trading pair from Binance.","name":"binance_charts","parameters":{"content_type":{"default":"application/x-www-form-urlencoded","description":"Type of content for the query. Defaults to 'application/x-www-form-urlencoded'.","type":"str, optional"},"interval":{"default":"1m","description":"Time interval for each candle. Defaults to '1m'. Valid intervals are:","type":"str, optional"},"lastprice":{"default":"57500","description":"The specified last price for the chart. Defaults to 57500.","type":"int, optional"},"limit":{"default":"16","description":"Number of candles to include in the chart. Defaults to 16. Maximum is 1000.","type":"int, optional"},"symbol":{"default":"BTCUSDT","description":"Symbol for the trading pair. Example: 'BTCUSDT'","type":"str"}}}],"gold":{"arguments":{"interval":"1d","limit":30,"symbol":"LTCBTC"},"name":"binance_charts"},"base":{"status":"invalid_shape","raw":"{\"content_type\": \"application/x-www-form-urlencoded\", \"interval\": \"1d\", \"symbol\": \"LTCBTC\"}","verdict":"invalid_shape"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"interval\":\"1d\",\"limit\":30,\"symbol\":\"LTCBTC\"},\"name\":\"binance_charts\"}]","verdict":"exact"}},{"id":"32753","lang":"en","query":"Check availability for the Luxe Hotel in Los Angeles for a stay from 2023-06-01 to 2023-06-05.","tools":[{"description":"Retrieves information about a Pokémon's move using the PokéAPI.","name":"get_pokemon_move_info","parameters":{"move_name":{"default":"run","description":"The name of the move to check. Defaults to \"run\".","type":"str, optional"},"pokemon_name":{"default":"run","description":"The name of the Pokémon.","type":"str"}}},{"description":"Calculates the total cost of an order based on the items, quantities, and prices.","name":"calculate_order_total","parameters":{"items":{"description":"A list of item names.","type":"List[str]"},"prices":{"description":"A list of corresponding prices for each item.","type":"List[float]"},"quantities":{"description":"A list of corresponding quantities for each item.","type":"List[int]"}}},{"description":"Checks the availability of a hotel for a given date range.","name":"is_hotel_available","parameters":{"checkin":{"description":"The check-in date in the format \"YYYY-MM-DD\".","type":"str"},"checkout":{"description":"The check-out date in the format \"YYYY-MM-DD\".","type":"str"},"city":{"description":"The city where the hotel is located.","type":"str"},"hotel":{"description":"The name of the hotel.","type":"str"}}}],"gold":{"arguments":{"checkin":"2023-06-01","checkout":"2023-06-05","city":"Los Angeles","hotel":"Luxe Hotel"},"name":"is_hotel_available"},"base":{"status":"invalid_shape","raw":"{\n  \"checkin\": \"2023-06-01\",\n  \"checkout\": \"2023-06-05\",\n  \"city\": \"Los Angeles\",\n  \"hotel\": \"Luxe Hotel\"\n}","verdict":"invalid_shape"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"checkin\":\"2023-06-01\",\"checkout\":\"2023-06-05\",\"city\":\"Los Angeles\",\"hotel\":\"Luxe Hotel\"},\"name\":\"is_hotel_available\"}]","verdict":"exact"}},{"id":"37141","lang":"en","query":"Can a person attend all of these meetings: 9:00am-10:00am, 9:30am-10:30am, 10:00am-11:00am?","tools":[{"description":"Determines if a person can attend all meetings given a list of meeting time intervals.","name":"can_attend_all_meetings","parameters":{"intervals":{"description":"A list of meeting time intervals, where each interval is represented as [start_time, end_time].","type":"List[List[int]]"}}}],"gold":{"arguments":{"intervals":[[9,10],[9.5,10.5],[10,11]]},"name":"can_attend_all_meetings"},"base":{"status":"no_json","raw":"Sure, I can help with that. Could you please provide me with the start and end times for each meeting in a format that I can understand, such as a list of lists?","verdict":"no_json"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"intervals\":[[9,10],[9.5,10.5],[10,11]]},\"name\":\"can_attend_all_meetings\"}]","verdict":"exact"}},{"id":"57336","lang":"en","query":"What was the exchange rate of IDR to USD on '2022-01-01'?","tools":[{"description":"Fetches and previews metadata for a given URL using the Unfurl API.","name":"unfurl","parameters":{"url":{"default":"youtube.com","description":"The URL to be unfurled.","type":"str"}}},{"description":"Checks the exchange rate of IDR to another currency on a given date.","name":"t2g_kurs_check","parameters":{"date":{"default":"","description":"The date for which to check the exchange rate, in the format 'YYYY-MM-DD'.","type":"str"},"valuta":{"default":"","description":"The currency to which IDR exchange rate is checked.","type":"str"}}}],"gold":{"arguments":{"date":"2022-01-01","valuta":"USD"},"name":"t2g_kurs_check"},"base":{"status":"no_json","raw":"<t2g_kurs_check, date=\"2022-01-01\", valuta=\"USD\">","verdict":"no_json"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"date\":\"2022-01-01\",\"valuta\":\"USD\"},\"name\":\"t2g_kurs_check\"}]","verdict":"exact"}},{"id":"35204","lang":"en","query":"What is the population of bacteria after 11 hours, given an initial population of 4000, a growth rate of 0.2 per hour, and a doubling time of 25 minutes?","tools":[{"description":"Calculates the bacterial population after a given time based on the initial population and growth rate.","name":"bacterial_growth","parameters":{"doubling_time":{"description":"The doubling time of the bacteria in minutes. Defaults to 20.","type":"float, optional"},"growth_rate":{"default":20,"description":"The growth rate per unit time.","type":"float"},"initial_population":{"default":20,"description":"The initial bacterial population.","type":"int"},"time":{"description":"The time elapsed.","type":"float"}}}],"gold":{"arguments":{"doubling_time":25,"growth_rate":0.2,"initial_population":4000,"time":11},"name":"bacterial_growth"},"base":{"status":"invalid_json","raw":"{\n  \"name\": \"bacterial_growth\",\n  \"arguments\": {\n    \"doubling_time\": 25.0 / 60.0,\n    \"growth_rate\": 0.2,\n    \"initial_population\": 4000,\n    \"time\": 11.0 * 60.0\n  }\n}","verdict":"invalid_json"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"doubling_time\":25,\"growth_rate\":0.2,\"initial_population\":4000,\"time\":11},\"name\":\"bacterial_growth\"}]","verdict":"exact"}},{"id":"44415","lang":"en","query":"What is the profit from a $25,000 investment at a 6% annual return rate over 15 years?","tools":[{"description":"Calculates the profit from an investment based on the initial amount, annual return rate, and time.","name":"investment_profit","parameters":{"amount":{"description":"The initial investment amount.","type":"float"},"rate":{"description":"The annual return rate expressed as a decimal.","type":"float"},"years":{"description":"The number of years the investment is held.","type":"int"}}}],"gold":{"arguments":{"amount":25000,"rate":0.06,"years":15},"name":"investment_profit"},"base":{"status":"ok","raw":"{\"name\": \"investment_profit\", \"arguments\": {\"amount\": 25000.0, \"rate\": 0.06, \"years\": 15}}","verdict":"args_mismatch"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"amount\":25000,\"rate\":0.06,\"years\":15},\"name\":\"investment_profit\"}]","verdict":"exact"}},{"id":"55975","lang":"en","query":"Perform static analysis on a building with ID 'B001' for floors 1, 2, and 3.","tools":[{"description":"Performs structural analysis on a building based on its ID, floor numbers, and analysis mode.","name":"structural_analysis","parameters":{"analysis_mode":{"description":"The mode of analysis, either \"static\" or \"dynamic\". Defaults to \"static\".","type":"str, optional"},"building_id":{"default":"static","description":"The unique identifier of the building.","type":"str"},"floor_numbers":{"default":"static","description":"The list of floor numbers to be analyzed.","type":"List[int]"}}},{"description":"Reserves a hotel room with the specified details.","name":"reserve_hotel_room","parameters":{"checkin_date":{"description":"The check-in date in the format 'YYYY-MM-DD'.","type":"str"},"checkout_date":{"description":"The check-out date in the format 'YYYY-MM-DD'.","type":"str"},"guest_id":{"description":"The unique identifier for the guest.","type":"str"},"nightly_rate":{"description":"The nightly rate for the room.","type":"float"},"promo_code":{"description":"A promotional code for a discount. Defaults to None.","type":"str, optional"},"room_type":{"description":"The type of room to reserve.","type":"str"}}},{"description":"Retrieves the latitude and longitude coordinates of a given city using the Maps.co Geocoding API.","name":"geocode_city","parameters":{"city":{"description":"The name of the city.","type":"str"}}}],"gold":{"arguments":{"analysis_mode":"static","building_id":"B001","floor_numbers":[1,2,3]},"name":"structural_analysis"},"base":{"status":"ok","raw":"{\"name\": \"structural_analysis\", \"arguments\": {\"analysis_mode\": \"static\", \"building_id\": \"B001\", \"floor_numbers\": \"[1, 2, 3]\"}}","verdict":"args_mismatch"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"analysis_mode\":\"static\",\"building_id\":\"B001\",\"floor_numbers\":[1,2,3]},\"name\":\"structural_analysis\"}]","verdict":"exact"}},{"id":"6091","lang":"en","query":"Get the constructor standings for the Formula 1 season 2020.","tools":[{"description":"Fetches the entry list for a given golf tournament using the specified RapidAPI key.","name":"entry_list","parameters":{"tournament_id":{"default":"219","description":"The ID of the tournament for which to fetch the entry list.","type":"int"}}},{"description":"Fetches upcoming or previous sports events from the Spectation Sports Events API.","name":"events","parameters":{"enclosuretype":{"default":"","description":"The type of enclosure for the events. Available options include 'ring' and 'cage'. Defaults to None.","type":"str, optional"},"page":{"default":"1","description":"The page number of results to retrieve. Defaults to 1.","type":"int, optional"},"type":{"default":"previous","description":"The type of enclosure for the events. Available options include 'ring' and 'cage'. Defaults to None.","type":"str, optional"}}},{"description":"Fetches the constructor standings for a given Formula 1 season.","name":"constructor_standings","parameters":{"season_id":{"default":"2020","description":"The ID of the Formula 1 season for which to get the constructor standings.","type":"int"}}}],"gold":{"arguments":{"season_id":2020},"name":"constructor_standings"},"base":{"status":"ok","raw":"{\"name\": \"constructor_standings\", \"arguments\": {\"season_id\": 2020}}","verdict":"exact"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"season_id\":2020},\"name\":\"constructor_standings\"}]","verdict":"exact"}},{"id":"28506","lang":"en","query":"What is the BMI of a person who weighs 85 kg and is 1.8 meters tall?","tools":[{"description":"Calculates the optimal distribution of macronutrients (carbohydrates, proteins, and fats) based on dietary preferences, body composition goals, and activity level.","name":"macronutrient_distribution","parameters":{"activity_level":{"default":"sedentary","description":"The activity level of the individual, which can be 'sedentary', 'moderately_active', or 'very_active'.","type":"str"},"body_composition_goal":{"default":"maintenance","description":"The body composition goal, which can be 'weight_loss', 'maintenance', or 'muscle_gain'.","type":"str"},"dietary_preferences":{"default":"vegan","description":"Represents the individual's dietary choices or restrictions, such as 'vegetarian', 'vegan', 'pescatarian', or 'gluten-free'.","type":"str"}}},{"description":"Calculates the Body Mass Index (BMI) using given weight and height, optionally specifying the measurement system.","name":"bmi","parameters":{"height":{"default":"184","description":"Height of the individual.","type":"int"},"system":{"default":"metric","description":"Measurement system, either 'metric' (kg/m^2) or 'imperial' (lbs/in^2). Defaults to 'metric'.","type":"str, optional"},"weight":{"default":"86","description":"Weight of the individual.","type":"int"}}}],"gold":{"arguments":{"height":180,"system":"metric","weight":85},"name":"bmi"},"base":{"status":"ok","raw":"{\"name\":\"bmi\",\"arguments\":{\"height\":180,\"system\":\"metric\",\"weight\":85}}","verdict":"exact"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"height\":180,\"weight\":85},\"name\":\"bmi\"}]","verdict":"args_mismatch"}},{"id":"32776","lang":"en","query":"Could you get the STOCHRSI for Gold with a monthly interval, using TRIMA for smoothing, and considering the 'close' series type?","tools":[{"description":"Fetches the Stochastic Relative Strength Index (STOCHRSI) for a given financial instrument using the Twelve Data API.","name":"stochrsi","parameters":{"fast_d_period":{"default":3,"description":"The period for the fast D moving average. Defaults to 3.","type":"int"},"fast_dma_type":{"default":"SMA","description":"The type of moving average used for smoothing. Supported values are `SMA`, `EMA`, `WMA`, `DEMA`, `TEMA`, `TRIMA`, `KAMA`, `MAMA`, `T3MA`. Defaults to `SMA`.","type":"str"},"fast_k_period":{"default":3,"description":"The period for the fast K moving average. Defaults to 3.","type":"int"},"format":{"default":"json","description":"The output format of the API response. Supported values are `json` and `csv`. Defaults to `json`.","type":"str"},"interval":{"default":"1min","description":"The interval between two consecutive points in the time series. Supported values include `1min`, `5min`, `15min`, `30min`, `45min`, `1h`, `2h`, `4h`, `1day`, `1week`, `1month`.","type":"str"},"outputsize":{"default":30,"description":"The number of data points to return. Defaults to 30.","type":"int"},"series_type":{"default":"close","description":"The type of series data. Supported values are `open`, `high`, `low`, `close`. Defaults to `close`.","type":"str"},"symbol":{"default":"AAPL","description":"The instrument symbol, which can be an equity, index, ETF, forex, or cryptocurrency (e.g., `AAPL`, `EUR/USD`, `ETH/BTC`).","type":"str"},"time_period":{"default":14,"description":"The period for the RSI calculation. Defaults to 14.","type":"int"}}}],"gold":{"arguments":{"fast_dma_type":"TRIMA","interval":"1month","series_type":"close","symbol":"GOLD"},"name":"stochrsi"},"base":{"status":"ok","raw":"{\"name\": \"stochrsi\", \"arguments\": {\"interval\": \"1month\", \"fast_dma_type\": \"TRIMA\", \"series_type\": \"close\", \"symbol\": \"gold\", \"time_period\": 14}}","verdict":"args_mismatch"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"fast_dma_type\":\"TRIMA\",\"interval\":\"1month\",\"series_type\":\"close\",\"symbol\":\"XAU/XAG\"},\"name\":\"stochrsi\"}]","verdict":"args_mismatch"}},{"id":"fr","lang":"fr","query":"Fournir les données du graphique en chandeliers pour 'LTCBTC' pour le dernier mois avec un intervalle de 1 jour.","tools":[{"name":"binance_charts","description":"Fetch candlestick chart data for a specified cryptocurrency trading pair from Binance.","parameters":{"symbol":{"description":"Symbol for the trading pair. Example: 'BTCUSDT'","type":"str","default":"BTCUSDT"},"content_type":{"description":"Type of content for the query. Defaults to 'application/x-www-form-urlencoded'.","type":"str, optional","default":"application/x-www-form-urlencoded"},"limit":{"description":"Number of candles to include in the chart. Defaults to 16. Maximum is 1000.","type":"int, optional","default":"16"},"interval":{"description":"Time interval for each candle. Defaults to '1m'. Valid intervals are:","type":"str, optional","default":"1m"},"lastprice":{"description":"The specified last price for the chart. Defaults to 57500.","type":"int, optional","default":"57500"}}}],"gold":{"arguments":{"interval":"1d","limit":30,"symbol":"LTCBTC"},"name":"binance_charts"},"base":{"status":"invalid_shape","raw":"{\"content_type\": \"application/x-www-form-urlencoded\", \"interval\": \"1d\", \"symbol\": \"LTCBTC\"}","verdict":"invalid_shape"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"interval\":\"1d\",\"limit\":30,\"symbol\":\"LTCBTC\"},\"name\":\"binance_charts\"}]","verdict":"exact"}},{"id":"fr","lang":"fr","query":"Obtenir les jours fériés pour l'État de SP en 2022","tools":[{"name":"count_of_days","description":"Fetches the count of days in the current Hebrew year from a given date string or today's date.","parameters":{"datestring":{"description":"The date for which the number of days in the current Hebrew year is to be determined.","type":"str","default":"2021-03-30"}}},{"name":"get_calendar_components","description":"Fetches the calendar components to build the Hebrew month calendar for a given month and year.","parameters":{"month":{"description":"The Hebrew month number.","type":"int","default":"7"},"year":{"description":"The year for the Hebrew calendar.","type":"int","default":"2021"}}},{"name":"feriados_dos_estados","description":"Retrieves the holidays for a given Brazilian state and year.","parameters":{"estado":{"description":"Abbreviation of the Brazilian state in uppercase letters.","type":"str","default":"MG"},"ano":{"description":"Year for which to retrieve the holidays.","type":"str","default":"2023"}}}],"gold":{"arguments":{"ano":"2022","estado":"SP"},"name":"feriados_dos_estados"},"base":{"status":"no_json","raw":"I'm sorry for the inconvenience, but I'm currently unable to provide the information you're looking for. My capabilities are limited to answering questions based on the available tools, and I don't have the ability to perform tasks that require external data retrieval.","verdict":"no_json"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"ano\":\"2022\",\"estado\":\"SP\"},\"name\":\"feriados_dos_estados\"}]","verdict":"exact"}},{"id":"fr","lang":"fr","query":"Quel est le nombre de bactéries après 11 heures, compte tenu d'une population initiale de 4000, un taux de croissance de 0.2 par heure et un temps de doublement de 25 minutes ?","tools":[{"name":"bacterial_growth","description":"Calculates the bacterial population after a given time based on the initial population and growth rate.","parameters":{"initial_population":{"description":"The initial bacterial population.","type":"int","default":20},"growth_rate":{"description":"The growth rate per unit time.","type":"float","default":20},"time":{"description":"The time elapsed.","type":"float"},"doubling_time":{"description":"The doubling time of the bacteria in minutes. Defaults to 20.","type":"float, optional"}}}],"gold":{"arguments":{"doubling_time":25,"growth_rate":0.2,"initial_population":4000,"time":11},"name":"bacterial_growth"},"base":{"status":"ok","raw":"{\"name\": \"bacterial_growth\", \"arguments\": {\"doubling_time\": 25.0, \"growth_rate\": 0.2, \"initial_population\": 4000, \"time\": 660.0}}","verdict":"args_mismatch"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"doubling_time\":25,\"growth_rate\":0.2,\"initial_population\":4000,\"time\":11},\"name\":\"bacterial_growth\"}]","verdict":"exact"}},{"id":"fr","lang":"fr","query":"Obtenir le classement des constructeurs pour la saison de Formule 1 2020.","tools":[{"name":"entry_list","description":"Fetches the entry list for a given golf tournament using the specified RapidAPI key.","parameters":{"tournament_id":{"description":"The ID of the tournament for which to fetch the entry list.","type":"int","default":"219"}}},{"name":"events","description":"Fetches upcoming or previous sports events from the Spectation Sports Events API.","parameters":{"enclosuretype":{"description":"The type of enclosure for the events. Available options include 'ring' and 'cage'. Defaults to None.","type":"str, optional","default":""},"type":{"description":"The type of enclosure for the events. Available options include 'ring' and 'cage'. Defaults to None.","type":"str, optional","default":"previous"},"page":{"description":"The page number of results to retrieve. Defaults to 1.","type":"int, optional","default":"1"}}},{"name":"constructor_standings","description":"Fetches the constructor standings for a given Formula 1 season.","parameters":{"season_id":{"description":"The ID of the Formula 1 season for which to get the constructor standings.","type":"int","default":"2020"}}}],"gold":{"arguments":{"season_id":2020},"name":"constructor_standings"},"base":{"status":"ok","raw":"{\"name\":\"constructor_standings\",\"arguments\":{\"season_id\":2020}}","verdict":"exact"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"season_id\":2020},\"name\":\"constructor_standings\"}]","verdict":"exact"}},{"id":"fr","lang":"fr","query":"Pouvez-vous obtenir le STOCHRSI pour l'Or avec un intervalle mensuel, en utilisant TRIMA pour le lissage, et en considérant le type de série 'close' ?","tools":[{"name":"stochrsi","description":"Fetches the Stochastic Relative Strength Index (STOCHRSI) for a given financial instrument using the Twelve Data API.","parameters":{"symbol":{"description":"The instrument symbol, which can be an equity, index, ETF, forex, or cryptocurrency (e.g., `AAPL`, `EUR/USD`, `ETH/BTC`).","type":"str","default":"AAPL"},"interval":{"description":"The interval between two consecutive points in the time series. Supported values include `1min`, `5min`, `15min`, `30min`, `45min`, `1h`, `2h`, `4h`, `1day`, `1week`, `1month`.","type":"str","default":"1min"},"fast_dma_type":{"description":"The type of moving average used for smoothing. Supported values are `SMA`, `EMA`, `WMA`, `DEMA`, `TEMA`, `TRIMA`, `KAMA`, `MAMA`, `T3MA`. Defaults to `SMA`.","type":"str","default":"SMA"},"series_type":{"description":"The type of series data. Supported values are `open`, `high`, `low`, `close`. Defaults to `close`.","type":"str","default":"close"},"fast_d_period":{"description":"The period for the fast D moving average. Defaults to 3.","type":"int","default":3},"outputsize":{"description":"The number of data points to return. Defaults to 30.","type":"int","default":30},"fast_k_period":{"description":"The period for the fast K moving average. Defaults to 3.","type":"int","default":3},"format":{"description":"The output format of the API response. Supported values are `json` and `csv`. Defaults to `json`.","type":"str","default":"json"},"time_period":{"description":"The period for the RSI calculation. Defaults to 14.","type":"int","default":14}}}],"gold":{"arguments":{"fast_dma_type":"TRIMA","interval":"1month","series_type":"close","symbol":"GOLD"},"name":"stochrsi"},"base":{"status":"ok","raw":"{\"name\": \"stochrsi\", \"arguments\": {\"interval\": \"1month\", \"fast_dma_type\": \"TRIMA\", \"series_type\": \"close\", \"symbol\": \"OAX\", \"time_period\": 14}}","verdict":"args_mismatch"},"adapter":{"status":"ok","raw":"[{\"arguments\":{\"fast_dma_type\":\"TRIMA\",\"interval\":\"1month\",\"series_type\":\"close\",\"symbol\":\"EUR/USD\"},\"name\":\"stochrsi\"}]","verdict":"args_mismatch"}}];
+  let i=0;
+  const body=document.getElementById('sb-body'), pos=document.getElementById('sb-pos'), tag=document.getElementById('sb-tag');
+  const VC={exact:'#2e7d43',args_mismatch:'#9a6b1a',name_mismatch:'#9a6b1a',invalid_shape:'#b0393b',invalid_json:'#b0393b',no_json:'#b0393b'};
+  const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  function chip(v){ return '<span style="font:500 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:'+VC[v]+';border:1px solid '+VC[v]+';padding:4px 7px">'+v.replace('_',' ')+'</span>'; }
+  function render(){
+    const s=S[i];
+    pos.textContent=i+1;
+    tag.textContent=(s.lang==='fr'?'french slice · run nemotron-8b-fr-full-4':'english · run nemotron-8b-full-3');
+    body.innerHTML=
+      '<div class="panel" style="margin-top:0"><div class="panel-h">query ('+s.lang+') · example '+esc(s.id)+'</div>'+
+      '<p style="margin:0;font:400 15px/1.55 var(--serif);color:var(--paper)">'+esc(s.query)+'</p>'+
+      '<details style="margin-top:10px"><summary style="cursor:pointer;font:500 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint)">tools offered ('+s.tools.length+') + gold call</summary>'+
+      '<pre class="code" style="margin-bottom:0" data-file="tools">'+esc(JSON.stringify(s.tools,null,1))+'</pre>'+
+      '<pre class="code" style="margin-bottom:0" data-file="gold call">'+esc(JSON.stringify(s.gold,null,1))+'</pre></details></div>'+
+      '<div class="grid-2">'+
+      ['base','adapter'].map(k=>{
+        const g=s[k];
+        return '<div class="panel" style="border-color:'+(g.verdict==='exact'?'var(--line-2)':VC[g.verdict])+'">'+
+          '<div class="panel-h" style="display:flex;justify-content:space-between;align-items:center"><span>'+k+' output (verbatim)</span>'+chip(g.verdict)+'</div>'+
+          '<pre style="margin:0;white-space:pre-wrap;word-break:break-word;font:400 12px/1.55 var(--mono);color:var(--ink)">'+esc(g.raw)+'</pre></div>';
+      }).join('')+'</div>';
+  }
+  document.getElementById('sb-prev').addEventListener('click',()=>{ i=(i-1+S.length)%S.length; render(); });
+  document.getElementById('sb-next').addEventListener('click',()=>{ i=(i+1)%S.length; render(); });
+  render();
+})();
+
+/* ---------- 14 quiz ---------- */
+const QUIZ=[
+ {q:"The adapter's valid-JSON rate is 1.000. What does that number claim?",
+  opts:["The adapter always calls the right tool","All 1,000 held-out outputs parsed into exactly one correctly shaped call","The adapter is production ready","The base model cannot emit JSON"],a:1,
+  exp:"<b>Parseable, not correct.</b> valid_json_rate only counts shape. Arguments were exactly right in 876 of 1,000; the other metrics measure that."},
+ {q:"Why does the parser never repair model output?",
+  opts:["Repair is too slow at n=1,000","JSON repair is impossible in Python","Repair moves unmeasurable work from the model to the harness, and by different amounts for base and adapter","The xlam license forbids it"],a:2,
+  exp:"<b>The measurement would change.</b> A repairing parser answers 'can this model plus my heuristics emit a call', and the 0.916 vs 1.000 validity signal would partly vanish."},
+ {q:"What does the comparison gate do when the two evaluation reports disagree on one digest?",
+  opts:["Writes the report with a warning","Recomputes the weaker side","Refuses to write any comparison report and names the mismatched field","Averages the two runs"],a:2,
+  exp:"<b>Refusal is the feature.</b> A metrics table from mismatched prompts looks identical to a valid one; the gate converts an invisible failure into one you cannot miss."},
+ {q:"How large is the v1 adapter relative to the base model?",
+  opts:["About 10% of the parameters","41.9M parameters, 0.52% of 8.03B","It duplicates the base at 4-bit","168M parameters"],a:1,
+  exp:"<b>0.52%.</b> 448 tensors, 41,943,040 parameters, 168 MB on disk, attached to all 7 linear projections of each of 32 blocks."},
+ {q:"Why is B (the up-projection of each LoRA pair) initialized to zero?",
+  opts:["It trains faster","So the untrained adapter is exactly a no-op, making the measured delta attributable to training alone","To save memory","Kaiming init fails on thin matrices"],a:1,
+  exp:"<b>Attribution.</b> BA = 0 at step 0, so the fine-tuned model starts byte-equivalent to the base and every point of improvement comes from training."},
+ {q:"What fraction of xlam's 60,000 rows does the reference run drop as multi-call answers?",
+  opts:["About 5%","About 25%","52.6%","None; they are rewritten to single calls"],a:2,
+  exp:"<b>52.6%, by declared policy.</b> 31,539 rows answer with two or more calls. 'These rows are not bad data. They are out of scope.'"},
+ {q:"In the constrained French translation, what must stay byte-identical to the English source?",
+  opts:["The query and the tools","Tool schemas and gold answers","Only the function name","Nothing; French rows are authored fresh"],a:1,
+  exp:"<b>Schemas and golds.</b> Only the query is translated, protected spans must survive verbatim, and each pair inherits its source's split, so the query language is the only moving variable."},
+ {q:"What happened to the base model's accuracy on French input, before any fine-tuning?",
+  opts:["Identical to English","4.2 points lower on full-call exact match","20 points lower","It refused to answer in French"],a:1,
+  exp:"<b>-4.2 points</b> (0.705 en vs 0.663 fr), concentrated in argument construction. Invisible until measured; closed to +0.3 by the bilingual adapter."},
+ {q:"Why is training loss computed only on completion tokens?",
+  opts:["Prompt tokens overflow memory","To match the inference-time job: the model must emit the call, not reproduce the schemas","Because the tokenizer requires it","To speed up training 2x"],a:1,
+  exp:"<b>Objective parity.</b> Gradient on prompt tokens teaches the model to imitate its own input. The prompt/target boundary is proven per example; if it cannot be proven, training fails rather than switching objectives."},
+ {q:"Someone reruns the pipeline and gets full-call 0.869 instead of 0.874. What do the docs say to expect?",
+  opts:["A bug; the pipeline is bit-deterministic end to end","Metrics within noise: evaluation is deterministic, but GPU training is not claimed bit-reproducible","They used the wrong parser","The dataset changed under them"],a:1,
+  exp:"<b>Within noise is the contract.</b> Determinism covers preparation, formatting, and evaluation; training across driver stacks may differ slightly, and the docs say so."}
+];
+(function(){
+  const c=document.getElementById('quiz-container');
+  QUIZ.forEach((item,i)=>{
+    const box=document.createElement('div');
+    box.className='quiz-q';
+    box.innerHTML='<div class="qn">Q'+String(i+1).padStart(2,'0')+'</div>'+
+      '<div class="qt">'+item.q+'</div>'+
+      '<div class="quiz-opts">'+item.opts.map((o,j)=>'<button class="quiz-opt" data-q="'+i+'" data-o="'+j+'"><b style="color:var(--acid);margin-right:8px;font-family:var(--mono);font-size:12px">'+String.fromCharCode(65+j)+'</b>'+o+'</button>').join('')+'</div>'+
+      '<div class="quiz-exp" id="exp-'+i+'">'+item.exp+'</div>';
+    c.appendChild(box);
+  });
+  c.querySelectorAll('.quiz-opt').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const q=+btn.dataset.q,o=+btn.dataset.o,correct=QUIZ[q].a;
+      const opts=c.querySelectorAll('.quiz-opt[data-q="'+q+'"]');
+      opts.forEach(b=>{b.classList.remove('right','wrong');b.disabled=true;});
+      opts[correct].classList.add('right');
+      if(o!==correct)opts[o].classList.add('wrong');
+      document.getElementById('exp-'+q).classList.add('show');
+    });
+  });
+})();
+</script>
+</body>
+</html>

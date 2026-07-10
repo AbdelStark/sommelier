@@ -14,9 +14,10 @@
 [![Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-LoRA%20adapter%20(en)-FFD21E?style=for-the-badge)](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora)
 [![Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-LoRA%20adapter%20(en%2Bfr)-FFD21E?style=for-the-badge)](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-fr-en-lora)
 [![Dataset](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-dataset-FFD21E?style=for-the-badge)](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits)
+[![Space](https://img.shields.io/badge/%F0%9F%A4%97%20Space-interactive%20tour-FFD21E?style=for-the-badge)](https://huggingface.co/spaces/abdelstark/sommelier)
 [![Compute](https://img.shields.io/badge/compute-Modal-7C3AED?style=for-the-badge)](https://modal.com)
 
-**[Documentation](https://abdelstark.github.io/sommelier/)** · **[Quickstart](https://abdelstark.github.io/sommelier/getting-started/quickstart/)** · **[The reference run](https://abdelstark.github.io/sommelier/results/reference-run/)** · **[The French run](https://abdelstark.github.io/sommelier/results/french-run/)**
+**[Documentation](https://abdelstark.github.io/sommelier/)** · **[Interactive tour](https://huggingface.co/spaces/abdelstark/sommelier)** · **[Quickstart](https://abdelstark.github.io/sommelier/getting-started/quickstart/)** · **[The reference run](https://abdelstark.github.io/sommelier/results/reference-run/)** · **[The French run](https://abdelstark.github.io/sommelier/results/french-run/)**
 
 </div>
 
