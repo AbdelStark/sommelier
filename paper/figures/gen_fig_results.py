@@ -8,6 +8,7 @@ Sources:
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Patch
 
 plt.rcParams.update({
     "font.family": "serif",
@@ -32,7 +33,8 @@ BASE_COLOR = "#B0BEC5"   # neutral gray, recedes
 V1_COLOR = "#0072B2"     # Okabe-Ito blue (v1 adapter, English-only training)
 V2_COLOR = "#D55E00"     # Okabe-Ito vermillion (v2 adapter, mixed en+fr training)
 
-METRICS = ["Valid JSON", "Func. name\naccuracy", "Arg. exact\nmatch", "Argument\nF1", "Full-call\nexact match"]
+METRICS = ["Valid JSON", "Func. name\naccuracy", "Arg. exact\nmatch",
+           "Argument\nF1", "Full-call\nexact match"]
 
 # EN slice of the v1 reference run nemotron-8b-full-3 (n=1000)
 EN_BASE = [0.9160, 0.9110, 0.7070, 0.7569, 0.7050]
@@ -65,8 +67,6 @@ fig, axes = plt.subplots(1, 2, figsize=(6.6, 2.7), sharey=True)
 panel(axes[0], EN_BASE, EN_ADPT, V1_COLOR, "(a) English, n=1,000")
 panel(axes[1], FR_BASE, FR_ADPT, V2_COLOR, "(b) French, n=879")
 axes[0].set_ylabel("Score")
-
-from matplotlib.patches import Patch
 
 handles = [
     Patch(color=BASE_COLOR, label="Base model"),
