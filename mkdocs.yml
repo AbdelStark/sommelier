@@ -7,9 +7,11 @@ repo_url: https://github.com/AbdelStark/sommelier
 repo_name: AbdelStark/sommelier
 edit_uri: edit/main/docs/
 
-# Raw working notes stay in the repo but out of the published site.
+# Raw working notes and the Remotion video projects stay in the repo but
+# out of the published site.
 exclude_docs: |
   blogposts/sommelier_experiment_braindump.md
+  videos/
 
 validation:
   omitted_files: warn
