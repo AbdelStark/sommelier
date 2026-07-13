@@ -1,0 +1,24 @@
+{
+  "name": "sommelier-parle-francais",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vidéo promotionnelle du run français de Sommelier : la souveraineté se mesure",
+  "scripts": {
+    "dev": "remotion studio",
+    "render": "remotion render SommelierFrancais out/sommelier_parle_francais.mp4",
+    "still": "remotion still SommelierFrancais"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.0",
+    "@remotion/google-fonts": "^4.0.0",
+    "@remotion/transitions": "^4.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.6.0"
+  }
+}
