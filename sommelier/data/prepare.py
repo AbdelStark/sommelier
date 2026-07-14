@@ -64,10 +64,10 @@ def build_fixture_prepared_examples(config: SommelierConfig) -> FixturePreparedE
                     query = f"Fixture {split} request {index + 1}: what is the weather in Paris?"
                     example_id = root_example_id
                 else:
-                    query = (
-                        f"Fixture {split} demande {index + 1}: "
-                        "quel temps fait-il a Paris?"
-                    )
+                    if source.language == "he":
+                        query = f"בקשת בדיקה {index + 1} לקבוצת {split}: מה מזג האוויר בפריז?"
+                    else:
+                        query = f"Fixture {split} demande {index + 1}: quel temps fait-il a Paris?"
                     example_id = f"{root_example_id}-{source.language}"
                 prepared[split].append(
                     PreparedExample(
@@ -87,9 +87,7 @@ def build_fixture_prepared_examples(config: SommelierConfig) -> FixturePreparedE
                                 },
                             }
                         ],
-                        gold_calls=[
-                            {"name": "lookup_weather", "arguments": {"city": "Paris"}}
-                        ],
+                        gold_calls=[{"name": "lookup_weather", "arguments": {"city": "Paris"}}],
                         split=split,
                         query_sha256=query_digest(query),
                         source_revision=source.dataset_revision,
@@ -181,6 +179,7 @@ def prepare_dataset(
     out_dir: Path,
     context: RunContext,
     command: list[str],
+    source_inputs: list[ArtifactRef] | None = None,
 ) -> list[ArtifactRef]:
     configured = {source.language for source in config.datasets}
     provided = set(rows_by_language)
@@ -217,6 +216,22 @@ def prepare_dataset(
             max_query_chars=config.data.max_query_chars,
             language=source.language,
         )
+    paired_splits: tuple[SplitName, ...] = ("train", "validation", "test")
+    missing_coverage = [
+        f"{source.language}:{split}"
+        for source in config.datasets
+        if source.source_id_column is not None
+        for split in paired_splits
+        if not examples_for_split(results[source.language], split)
+    ]
+    if missing_coverage:
+        raise UserInputError(
+            "paired dataset has no surviving rows for " + ", ".join(missing_coverage),
+            hint=(
+                "Verify the published paired cohort covers every configured root split "
+                "before training or evaluation."
+            ),
+        )
     assert_multilingual_disjointness(results, root_language=root_language)
     outputs = _write_split_outputs(results, config, out_dir=out_dir, context=context)
     record_stage_success(
@@ -224,7 +239,7 @@ def prepare_dataset(
         stage="data",
         command=command,
         seed=config.project.seed,
-        inputs=[context.config_ref],
+        inputs=[context.config_ref, *(source_inputs or [])],
         outputs=outputs,
     )
     return outputs
@@ -239,6 +254,7 @@ def prepare_dataset_from_file(
     command: list[str],
     use_gpu: bool = False,
     paired_input_paths: dict[str, Path] | None = None,
+    source_inputs: list[ArtifactRef] | None = None,
 ) -> list[ArtifactRef]:
     """Loads the root rows from ``input_path`` and each paired source's rows
     from an explicit override or the :func:`paired_input_path` convention.
@@ -274,8 +290,7 @@ def prepare_dataset_from_file(
         source_path = overrides.get(source.language, paired_input_path(input_path, source.language))
         if not source_path.exists():
             raise UserInputError(
-                f"raw rows file for paired language {source.language!r} not found: "
-                f"{source_path}",
+                f"raw rows file for paired language {source.language!r} not found: {source_path}",
                 hint="Pass --paired-input "
                 f"{source.language}=<path> or place the file next to --input "
                 f"as {paired_input_path(input_path, source.language).name}.",
@@ -290,6 +305,7 @@ def prepare_dataset_from_file(
         out_dir=out_dir,
         context=context,
         command=command,
+        source_inputs=source_inputs,
     )
 
 

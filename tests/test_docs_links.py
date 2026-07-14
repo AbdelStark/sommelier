@@ -14,7 +14,11 @@ def markdown_files() -> list[Path]:
     files = [REPO_ROOT / "README.md", REPO_ROOT / "CHANGELOG.md"]
     files.extend((REPO_ROOT / "docs").rglob("*.md"))
     files.extend((REPO_ROOT / "licenses").rglob("*.md"))
-    return [path for path in files if path.exists()]
+    return [
+        path
+        for path in files
+        if path.exists() and "node_modules" not in path.relative_to(REPO_ROOT).parts
+    ]
 
 
 def test_relative_documentation_links_resolve() -> None:
@@ -57,9 +61,7 @@ def test_reproduction_guide_covers_required_topics() -> None:
 
 
 def test_release_checklist_links_implemented_commands() -> None:
-    checklist = (REPO_ROOT / "docs" / "release" / "v1.0-checklist.md").read_text(
-        encoding="utf-8"
-    )
+    checklist = (REPO_ROOT / "docs" / "release" / "v1.0-checklist.md").read_text(encoding="utf-8")
     for command in (
         "uv run pytest",
         "sommelier pipeline run",
@@ -88,3 +90,25 @@ def test_readme_labels_serving_as_illustrative() -> None:
     assert "autoscaling" in readme
     assert "multi-tenant" in readme
     assert "/v1/chat/completions" in readme
+
+
+def test_public_v1_v2_claims_preserve_evidence_boundaries() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    paper = (REPO_ROOT / "paper" / "main.tex").read_text(encoding="utf-8")
+    blog = (REPO_ROOT / "docs" / "blogposts" / "sommelier_blog_post.md").read_text(encoding="utf-8")
+
+    assert "do not support independent row-by-row" in readme
+    assert "published v1/v2 repositories omit raw generations" in paper
+    assert "not checksummed run evidence" in paper
+    assert "descriptive rather than an exact paired estimate" in paper
+    assert "private billing console" in blog
+    assert "does not include the retained raw generations" in blog
+
+    combined = "\n".join((readme, paper, blog))
+    for unsupported in (
+        "Everything needed to verify or reproduce this row-for-row is public",
+        "raw generations are published",
+        "sixteen more dollars, spent",
+        "every number above traces back to a checksummed artifact",
+    ):
+        assert unsupported not in combined

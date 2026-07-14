@@ -47,6 +47,17 @@ def test_scanner_flags_sensitive_key_in_json(tmp_path: Path) -> None:
     assert findings[0]["kind"] == "sensitive_key"
 
 
+def test_scanner_flags_token_shaped_json_key(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({FAKE_TOKEN: "metadata"}), encoding="utf-8")
+
+    findings = scan_artifact_file(manifest, base_dir=tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0]["kind"] == "secret_value"
+    assert findings[0]["location"] == f"{FAKE_TOKEN}::<key>"
+
+
 def test_scanner_flags_jsonl_line_numbers(tmp_path: Path) -> None:
     log = tmp_path / "data.jsonl"
     log.write_text(
@@ -59,9 +70,46 @@ def test_scanner_flags_jsonl_line_numbers(tmp_path: Path) -> None:
     assert findings[0]["file"] == "data.jsonl:2"
 
 
-def test_scanner_flags_sensitive_env_value(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("filename", "contents", "expected_file"),
+    (
+        (
+            "manifest.json",
+            f'{{"note":"{FAKE_TOKEN}","note":"clean"}}\n',
+            "manifest.json",
+        ),
+        (
+            "events.jsonl",
+            f'{{"note":"clean"}}\n{{"note":"{FAKE_TOKEN}","note":"clean"}}\n',
+            "events.jsonl:2",
+        ),
+    ),
+)
+def test_scanner_rejects_duplicate_json_keys_without_losing_shadowed_secrets(
+    tmp_path: Path,
+    filename: str,
+    contents: str,
+    expected_file: str,
 ) -> None:
+    artifact = tmp_path / filename
+    artifact.write_text(contents, encoding="utf-8")
+
+    findings = scan_artifact_file(artifact, base_dir=tmp_path)
+
+    assert any(
+        finding["kind"] == "duplicate_key" and finding["file"] == expected_file
+        for finding in findings
+    )
+    assert any(
+        finding["kind"] == "secret_value" and finding["file"] == expected_file
+        for finding in findings
+    )
+    assert all(FAKE_TOKEN not in finding["detail"] for finding in findings)
+    with pytest.raises(SecurityPolicyError):
+        assert_artifacts_publishable(tmp_path)
+
+
+def test_scanner_flags_sensitive_env_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOMMELIER_TEST_TOKEN", "super-secret-value-123")
     report = tmp_path / "report.md"
     report.write_text("cost: super-secret-value-123\n", encoding="utf-8")

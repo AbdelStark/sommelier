@@ -156,11 +156,26 @@ def test_bilingual_config_loads(tmp_path: Path) -> None:
 def test_unknown_field_rejected(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        (EXAMPLES_DIR / "config.smoke.yaml").read_text()
-        + "\nunexpected_field: true\n",
+        (EXAMPLES_DIR / "config.smoke.yaml").read_text() + "\nunexpected_field: true\n",
         encoding="utf-8",
     )
     with pytest.raises(ConfigError):
+        load_config(config_path)
+
+
+def test_duplicate_yaml_key_is_rejected_before_validation(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        (EXAMPLES_DIR / "config.smoke.yaml")
+        .read_text(encoding="utf-8")
+        .replace(
+            "  seed: 42",
+            "  seed: 1\n  seed: 2",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="duplicate key.*seed"):
         load_config(config_path)
 
 
@@ -170,6 +185,74 @@ def test_absolute_artifact_root_rejected(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     with pytest.raises(ConfigError):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize("artifact_root", ["../outside", "nested/../../outside", "."])
+def test_artifact_root_cannot_escape_or_alias_config_directory(
+    tmp_path: Path,
+    artifact_root: str,
+) -> None:
+    raw = yaml.safe_load((EXAMPLES_DIR / "config.smoke.yaml").read_text())
+    raw["project"]["artifact_root"] = artifact_root
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="artifact_root"):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [
+        ("train", "learning_rate"),
+        ("train", "warmup_ratio"),
+        ("train", "lora_dropout"),
+        ("eval", "temperature"),
+    ],
+)
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_float_config_values_are_rejected(
+    tmp_path: Path,
+    section: str,
+    field: str,
+    value: float,
+) -> None:
+    raw = yaml.safe_load((EXAMPLES_DIR / "config.smoke.yaml").read_text())
+    raw[section][field] = value
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=field):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["data_timeout_seconds", "train_timeout_seconds", "eval_timeout_seconds"],
+)
+@pytest.mark.parametrize("value", [0, -1])
+def test_remote_planning_estimates_must_be_positive(
+    tmp_path: Path,
+    field: str,
+    value: int,
+) -> None:
+    raw = yaml.safe_load((EXAMPLES_DIR / "config.smoke.yaml").read_text())
+    raw["remote"][field] = value
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=field):
+        load_config(config_path)
+
+
+def test_eval_slices_cannot_be_empty(tmp_path: Path) -> None:
+    raw = yaml.safe_load((EXAMPLES_DIR / "config.smoke.yaml").read_text())
+    raw["eval"]["slices"] = []
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="eval.slices"):
         load_config(config_path)
 
 

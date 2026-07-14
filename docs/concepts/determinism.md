@@ -39,20 +39,22 @@ The values are never coerced. Coercion would change the experiment without chang
 
 ## The comparison gate
 
-Each evaluation report carries the identity of the experiment that produced it. `compare_evaluations` (in `sommelier/evaluation/report.py`, run by `sommelier report compare`) checks six fields for exact equality between the base and adapter reports:
+Each evaluation report carries the identity of the experiment that produced it. `compare_evaluations` (in `sommelier/evaluation/report.py`, run by `sommelier report compare`) checks these fields for exact equality between the base and adapter reports:
 
 | Field | What it pins |
 |-------|--------------|
+| `model_identity` | Base model and tokenizer ids and revisions |
 | `config_sha256` | SHA-256 of the run's `config.resolved.yaml`: model, revisions, prompt policy, decoding, everything |
 | `split` | The evaluated split, always `test` |
 | `test_split_sha256` | SHA-256 of the bytes of `formatted/test.jsonl`: prompts, targets, and metadata together |
 | `prompt_set_sha256` | SHA-256 over the newline-joined, ordered per-example `prompt_sha256` values |
+| `pair_set_sha256` | SHA-256 over ordered root/translation ids and both prompt digests for each matched language cohort |
 | `parser_version` | `sommelier.parser.v1`; a different parser would score generations differently |
 | `decoding` | The exact decoding dict every generation ran with |
 
-`test_split_sha256` and `prompt_set_sha256` overlap on purpose. The first changes if anything in the split file changes, including the gold targets used for scoring. The second isolates the prompt surface: exactly which prompts, in which order, the models saw. Both must match.
+`test_split_sha256`, `prompt_set_sha256`, and `pair_set_sha256` overlap on purpose. The first changes if anything in the split file changes, including the gold targets used for scoring. The second isolates the prompt surface: exactly which prompts, in which order, the models saw. The third pins the exact root-to-translation join used for the primary language-gap estimate. All applicable digests must match.
 
-The gate checks more than the six fields. The two reports must have `model_kind` `base` and `adapter` respectively, their metric name sets must be identical, and the gate recomputes the digest of the resolved config in the run directory it is writing into and rejects reports whose `config_sha256` does not match it. That last check means you cannot point `report compare` at evaluation reports smuggled in from a different run's config.
+The gate also requires `model_kind` `base` and `adapter` respectively, identical slice and paired-slice sets, identical metric names, and a resolved config in the destination run whose digest matches both reports. That last check means you cannot point `report compare` at evaluation reports smuggled in from a different run's config.
 
 Only when everything matches does the stage write `comparison_report.json` and its Markdown rendering, with the shared identity fields embedded in the report itself.
 

@@ -115,11 +115,14 @@ nav:
   - Results:
       - The reference run: results/reference-run.md
       - The French run: results/french-run.md
+      - Hebrew v3 (pending): results/hebrew-v3.md
   - Project:
       - Security model: project/security.md
       - Licensing: project/licensing.md
       - Testing: project/testing.md
       - Release checklist: release/v1.0-checklist.md
+      - Hebrew dataset card template: release/hebrew-v3-dataset-card.md
+      - Hebrew adapter card template: release/hebrew-v3-adapter-card-template.md
       - Changelog: project/changelog.md
       - How it was built: blogposts/sommelier_blog_post.md
       - Le run français, raconté: blogposts/sommelier_v2_run_francais.md

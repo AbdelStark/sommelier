@@ -124,7 +124,7 @@ export const S9CTA: React.FC = () => {
             opacity: footIn,
           }}
         >
-          Licence MIT · chaque chiffre remonte à un artefact vérifiable
+          Licence MIT · métriques publiques, rapports vérifiables
         </div>
       </div>
     </Stage>

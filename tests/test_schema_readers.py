@@ -17,6 +17,19 @@ def test_read_json_with_supported_schema(tmp_path: Path) -> None:
     assert payload["stage"] == "data"
 
 
+def test_read_json_with_experiment_report_schema(tmp_path: Path) -> None:
+    path = tmp_path / "experiment_report.json"
+    path.write_text(
+        json.dumps({"schema_version": "sommelier.experiment_report.v1"}),
+        encoding="utf-8",
+    )
+    payload = read_json_with_schema(
+        path,
+        expected_schema="sommelier.experiment_report.v1",
+    )
+    assert payload["schema_version"] == "sommelier.experiment_report.v1"
+
+
 def test_read_json_rejects_missing_schema(tmp_path: Path) -> None:
     path = tmp_path / "record.json"
     path.write_text(json.dumps({"stage": "data"}), encoding="utf-8")

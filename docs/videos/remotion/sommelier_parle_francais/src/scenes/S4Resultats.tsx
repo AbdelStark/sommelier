@@ -60,7 +60,7 @@ const LigneEcart: React.FC<{
               color: colors.green,
             }}
           >
-            ÉCART REFERMÉ
+            TRANCHES +0,3 PT
           </span>
         ) : null}
         <span

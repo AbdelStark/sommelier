@@ -13,17 +13,19 @@ built with [Remotion](https://remotion.dev). 1920x1080, 30 fps, ~1,756 frames
 | 3 | The proof, part 1 | Sommelier: fine-tune a small open model into a reliable JSON tool caller, with a live tool-call demo |
 | 4 | The proof, part 2 | Base vs. adapter benchmarks from the reference run (n=1,000, greedy, conservative parser), with per-metric delta badges |
 | 5 | The economics | One L40S, 3 hours, ~$8 |
-| 6 | The thesis | The weights are yours. Nobody can reprice it. Nobody can deprecate it. Sovereign AI in practice, French gap closed |
+| 6 | The thesis | The weights are yours. Nobody can reprice it. Nobody can deprecate it. Sovereign AI in practice, marginal French/English slices nearly aligned |
 | 7 | CTA | Open code, weights, data, evidence. Repo and Space links |
 
 ## Fact policy
 
-Every claim on screen is verified:
+Every claim on screen has an explicit source and evidence class:
 
-- Benchmark numbers come from the repository README and
-  `docs/results/reference-run.md` (run `nemotron-8b-full-3`); cost and
-  runtime from `docs/blogposts/sommelier_blog_post.md`. See
-  `src/data/facts.ts` for per-number source notes.
+- Benchmark metrics and runtime come from the repository README and
+  `docs/results/reference-run.md` (run `nemotron-8b-full-3`). The public
+  reports expose aggregate counts and checksums, but not raw generations. The
+  ~$8 cost is a maintainer billing-console observation documented in
+  `docs/blogposts/sommelier_blog_post.md`, not a public checksummed artifact.
+  See `src/data/facts.ts` for per-number source notes.
 - The opening headlines were adversarially fact-checked against primary
   sources (Anthropic announcement, OpenAI deprecation page and Verified
   Organization docs, Anthropic model-deprecations page, Llama 4

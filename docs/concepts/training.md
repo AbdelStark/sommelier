@@ -24,6 +24,11 @@ The base model loads in 4-bit NF4 quantization with double quantization enabled 
 
 Two implementation choices in [`qlora.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/training/qlora.py) are worth knowing. Gradient checkpointing is enabled explicitly rather than left to library defaults, because an 8B model at batch size 8 without checkpointing exceeded a 44 GiB GPU in the first full run. And logging runs every step (`logging_steps=1`) with input-token counting on, so the metrics file records the whole loss curve, not a sampled sketch. The full field list is in the [configuration reference](../reference/configuration.md).
 
+Training and validation use the same configured per-device batch size. The
+trainer sets `per_device_eval_batch_size` explicitly instead of inheriting the
+Transformers default, so a resource-fit preflight and the production epoch
+evaluation exercise the same batch shape.
+
 ## Completion-only loss
 
 Each formatted example renders as `prompt_text` followed by `target_text` (the canonical JSON of the gold tool call) plus whatever closing tokens the chat template adds (see [Data policy](data.md) and [the format stage](pipeline.md)). Training computes loss only on the tokens after the proven prompt boundary. Every prompt token gets the label `-100` (`IGNORE_INDEX` in [`collators.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/training/collators.py)), which the loss function skips; padding positions get attention 0 and the same ignore label.
@@ -50,9 +55,12 @@ Training never adapts hyperparameters to fit hardware. An auto-tuned run is not 
 | Failure | Error | What the hint names |
 |---|---|---|
 | GPU out of memory | `ResourceError` (SOM401, exit 4) | `train.per_device_batch_size`, `train.gradient_accumulation_steps`, `train.max_sequence_length`, `remote.gpu`, with their current values |
-| Time budget exceeded | `ResourceError` (SOM401, exit 4) | `remote.train_timeout_seconds`, with suggestions to raise it, reduce epochs, or shrink splits |
+| A training dependency reports a timeout | `ResourceError` (SOM401, exit 4) | The legacy-named `remote.train_timeout_seconds` planning estimate, the provider outer timeout, and possible workload reductions; Sommelier installs no training-stage watchdog |
 
-You change the config, and the next run is a different run with a different digest, which is exactly what it should be. Exit codes and error classes are cataloged in the [error reference](../reference/errors.md).
+If you change the config or provider allocation, the next run is a different
+run with a different digest, which is exactly what it should be. Changing the
+planning estimate alone neither creates nor extends a stage deadline. Exit
+codes and error classes are cataloged in the [error reference](../reference/errors.md).
 
 ## What training writes
 

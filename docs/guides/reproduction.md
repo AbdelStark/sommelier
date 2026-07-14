@@ -12,7 +12,10 @@ cd sommelier
 uv sync --extra dev
 ```
 
-The base install never pulls GPU, remote execution, or tracking packages; those live behind optional extras and remote images. [Installation](../getting-started/installation.md) has the details.
+The base install includes the lightweight Modal client used to launch remote work,
+but it does not install GPU training/inference libraries or tracking SDKs; those
+live in remote images or optional extras. [Installation](../getting-started/installation.md)
+has the details.
 
 ## 2. Local validation (no GPU, no accounts)
 
@@ -62,19 +65,61 @@ uv run modal run remote_pipeline.py \
   --config examples/config.smoke.yaml --mode smoke --max-rows 2500
 ```
 
-[`remote_pipeline.py`](https://github.com/AbdelStark/sommelier/blob/main/remote_pipeline.py) exports the pinned dataset revision to raw rows inside the container, audits every rendered train and validation sequence against the training token budget right after formatting (so a budget mistake costs seconds, not GPU hours), then chains all six stages and commits artifacts to the `sommelier-artifacts` volume after each stage. [Run the pipeline on Modal](remote-execution.md) explains the moving parts.
+[`remote_pipeline.py`](https://github.com/AbdelStark/sommelier/blob/main/remote_pipeline.py) exports the pinned dataset revision to raw rows inside the container, then chains all seven stages and commits artifacts to the `sommelier-artifacts` volume after each stage. The tokenization stage audits every rendered train and validation sequence against the training budget and persists exact per-language and matched-pair token counts, so a budget mistake costs seconds rather than GPU hours. [Run the pipeline on Modal](remote-execution.md) explains the moving parts.
 
 If you have your own GPU machine with the training stack installed, the same chain runs locally through the CLI: `uv run sommelier pipeline run --config examples/config.smoke.yaml --mode smoke --input <raw_rows.jsonl>`.
 
 ## 5. Full run
 
+`examples/config.full.yaml` is the runnable English-only v1/default full
+configuration. It pins the base model, tokenizer, and root dataset revisions,
+uses the 15,000/1,000/1,000 split scale, and contains no paired source. Its
+configured sequential planning estimate is 45,000 seconds (1,800 data +
+28,800 train + two 7,200-second evaluation arms), so the launch below satisfies
+the outer-timeout admission gate. These legacy-named stage values are not
+enforced watchdogs; only the Modal function's outer timeout is enforced:
+
 ```bash
-SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=28800 \
+SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=86400 \
 uv run modal run --detach remote_pipeline.py \
   --config examples/config.full.yaml --mode full --max-rows 60000
 ```
 
-Run it detached: the reference run took about 3.7 hours end to end on one L40S (10,996 s of training, about 29 minutes of evaluation). `examples/config.full.yaml` records the exact settings that produced the published result: 15,000/1,000/1,000 splits, batch 4 with gradient accumulation 4, a 4,096-token sequence budget, LoRA rank 16.
+The historical v1 run took about 3.7 hours end to end on one L40S (10,996 s
+of training, about 29 minutes of evaluation). A new launch writes a new run
+identity and evidence; the historical run's resolved config and checksummed
+split/report artifacts remain authoritative for the published numbers.
+
+The [French v2 result](../results/french-run.md) is a separate historical
+evidence record and does **not** currently have a strict reproduction path.
+Its published paired-dataset commit contains a v1 translation summary and no
+current `translation_publication.json`, so the full driver rejects that source.
+`config.full.yaml` intentionally excludes it. A new strict French full run
+requires a provenance-complete immutable republish and a separate config
+pinned to that commit; direct `--translation-run-id` staging remains
+smoke-only. No such migrated French revision is claimed here.
+
+The pending paired Hebrew contract and its publication sequence are in the
+[Hebrew v3 methodology](../results/hebrew-v3.md). Its provisional dataset
+revision must likewise be replaced by a provenance-complete immutable commit
+before that full command is runnable. Building that dataset is a separate paid
+CPU/provider step: it requires the named Modal secrets `openai-api-key` and
+`huggingface-read-token` and explicit `--runtime-backend openai_responses`; the
+dated model name alone never authorizes the call. The selected Flex contract
+uses a 900-second request timeout, zero SDK retries, and an explicit local
+public-list-price ceiling (`1.00` USD for smoke or `50.00` USD for full). Three
+row attempts remain the semantic/audit retry boundary. Exact Flex HTTP 429
+`resource_unavailable` responses instead retry the same row attempt as
+journaled provider-call attempts after fixed 1/2/4/8/16-second delays, without
+switching tier. The ceiling is not an invoice or provider account/project cap.
+The semantic-review machine template
+must be produced from the same clean Git SHA as the full translation under
+exactly Python 3.13.3, torch 2.11.0, transformers 5.13.1, accelerate 1.14.0,
+and sentencepiece 0.2.2. Reviewers edit a separate copy; the untouched
+template, reviewed copy, and finalized output must be three distinct files
+(including distinct inodes). The [remote guide](remote-execution.md) gives the
+producer command and the [CLI reference](../reference/cli.md#data-semantic-review-finalize)
+gives the finalization flags.
 
 When it finishes, pull the report down:
 
@@ -84,7 +129,12 @@ uv run modal volume get sommelier-artifacts artifacts/runs/<run_id>/report/ repo
 
 (Trailing slash matters: it tells Modal to download a directory.)
 
-The local CLI variant, for a machine that already has the GPU stack: `uv run sommelier pipeline run --config examples/config.full.yaml --mode full --input <raw_rows.jsonl>`.
+On a machine with the training stack installed, the English-only chain can run
+locally as
+`uv run sommelier pipeline run --config examples/config.full.yaml --mode full --input <raw_rows.jsonl>`.
+The local CLI enforces the same paired-source provenance boundary; supplying
+raw root rows does not turn the legacy French publication into current full
+evidence.
 
 ## 6. Reading the report
 

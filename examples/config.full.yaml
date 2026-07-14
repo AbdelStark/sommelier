@@ -7,28 +7,17 @@ project:
 
 model:
   base_model_id: nvidia/Llama-3.1-Nemotron-Nano-8B-v1
-  base_model_revision: main
-  tokenizer_revision: main
+  base_model_revision: 54641c1611fcff44fa4865626462445e0a153fc7
+  tokenizer_revision: 54641c1611fcff44fa4865626462445e0a153fc7
   allow_remote_code: false
 
 datasets:
   - language: en
     dataset_id: Salesforce/xlam-function-calling-60k
-    dataset_revision: main
+    dataset_revision: 26d14ebfe18b1f7b524bd39b404b50af5dc97866
     query_column: query
     tools_column: tools
     answers_column: answers
-  # The French source is produced by remote_translate.py (constrained
-  # translation of the exact rows this config selects) and staged into the
-  # run by remote_pipeline.py --translation-run-id; the id below is the
-  # dataset's publication name.
-  - language: fr
-    dataset_id: abdelstark/sommelier-xlam-single-call-splits-fr
-    dataset_revision: main
-    query_column: query
-    tools_column: tools
-    answers_column: answers
-    source_id_column: source_example_id
 
 data:
   n_train: 15000
@@ -60,7 +49,6 @@ train:
   lora_dropout: 0.05
   languages:
     - en
-    - fr
   target_modules:
     - q_proj
     - k_proj
@@ -74,7 +62,6 @@ eval:
   split: test
   slices:
     - en
-    - fr
   temperature: 0.0
   do_sample: false
   max_new_tokens: 512
@@ -83,9 +70,14 @@ eval:
 remote:
   enabled: true
   gpu: L40S
+  # Planning estimates used only for the outer-timeout admission floor; the
+  # current single-function pipeline has no per-stage watchdogs.
   data_timeout_seconds: 1800
   train_timeout_seconds: 28800
-  eval_timeout_seconds: 28800
+  # Both evaluation arms run sequentially. The aggregate planning estimate is
+  # 1,800 + 28,800 + 2 * 7,200 = 45,000 seconds, below Modal's 86,400-second
+  # outer limit.
+  eval_timeout_seconds: 7200
 
 report:
   retain_raw_generations: true

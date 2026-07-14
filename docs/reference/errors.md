@@ -20,7 +20,7 @@ Any exception that is not a `SommelierError` is caught at the CLI boundary and r
 | 0 | Nobody's | Nothing, it worked |
 | 2 | Your input: flags, config, missing or malformed artifacts | Fix the input and rerun |
 | 3 | Your environment: an optional dependency or external requirement is missing | Install the named extra or satisfy the requirement |
-| 4 | Resources or remote execution: out of memory, timeouts, evaluation aborts | Change the config fields named in the hint, or rent a larger GPU |
+| 4 | Resources or remote execution: out of memory, dependency/provider timeouts, evaluation aborts | Inspect the config and provider boundary named in the hint, reduce work, or rent a larger GPU |
 | 5 | Sommelier: a bug or a broken invariant | [File an issue](https://github.com/AbdelStark/sommelier/issues) |
 
 The split between 2 and 3 is deliberate: a wrong config field and a missing CUDA stack are different problems with different fixes, and a retry loop should treat them differently. Exit 5 means the pipeline detected a state that its own design says must be impossible; retrying will not help, and the maintainers want to know.
@@ -50,12 +50,12 @@ SommelierError                     SOM000   exit 5
 | `ArtifactNotFoundError` | SOM203 | 2 | A stage input that does not exist, typically a split the preceding stage never produced |
 | `ExternalDependencyError` | SOM003 | 3 | An optional extra is not installed (torch and friends for training, cudf for `--gpu`, uvicorn for serving, wandb for tracking), or a release gate other than the secret scan fails |
 | `RemoteExecutionError` | SOM004 | 4 | The classification for remote execution failures; in the current codebase it surfaces only through its subclass `ResourceError` |
-| `ResourceError` | SOM401 | 4 | Training out of GPU memory, or training past its time budget |
+| `ResourceError` | SOM401 | 4 | Training out of GPU memory, or a training dependency reporting a timeout |
 | `EvaluationError` | SOM005 | 4 | A non-deterministic decoding config, a generation count that does not match the test split, or a comparison gate rejection |
 | `InvariantViolation` | SOM005 | 5 | A prompt digest mismatch between formatting and evaluation, a broken prompt-target boundary, mixed decoding configs in one generations file, or a non-finite float in logs or metrics |
 | `SecurityPolicyError` | SOM006 | 5 | Secret material detected in a config, manifest, report, or the artifact tree |
 
-`ResourceError` deserves a note because it embodies a policy: Sommelier never retries with silently altered settings. An out-of-memory failure comes back with a hint naming `train.per_device_batch_size`, `train.gradient_accumulation_steps`, `train.max_sequence_length`, and `remote.gpu` with their current values; a timeout names `remote.train_timeout_seconds`. You change the config, the change lands in the resolved config digest, and the record stays honest.
+`ResourceError` deserves a note because it embodies a policy: Sommelier never retries with silently altered settings. An out-of-memory failure comes back with a hint naming `train.per_device_batch_size`, `train.gradient_accumulation_steps`, `train.max_sequence_length`, and `remote.gpu` with their current values. When a dependency reports a timeout, the hint quotes `remote.train_timeout_seconds` as planning context and directs you to inspect the provider's outer timeout. That legacy-named field does not install a training watchdog, so raising it alone cannot extend the provider deadline. Any config change lands in the resolved config digest, and the record stays honest.
 
 ## One code, two exit codes
 

@@ -3,11 +3,14 @@ from __future__ import annotations
 import hashlib
 import re
 import warnings
+from collections.abc import Hashable
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from yaml.constructor import ConstructorError
+from yaml.nodes import MappingNode
 
 from sommelier.artifacts import write_artifact_atomic
 from sommelier.errors import ConfigError, SecurityPolicyError
@@ -18,6 +21,38 @@ CONFIG_SCHEMA_VERSION = "sommelier.config.v2"
 V1_CONFIG_SCHEMA_VERSION = "sommelier.config.v1"
 
 LANGUAGE_PATTERN = re.compile(r"^[a-z]{2}$")
+
+
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects keys PyYAML would otherwise overwrite."""
+
+    def construct_mapping(self, node: MappingNode, deep: bool = False) -> dict[Any, Any]:
+        seen: set[Hashable] = set()
+        for key_node, _value_node in node.value:
+            # SafeConstructor removes merge keys before constructing a
+            # mapping. Represent them explicitly here so duplicate ``<<``
+            # entries cannot silently replace one another either.
+            key: object
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                key = "<<"
+            else:
+                key = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, Hashable):
+                raise ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found an unhashable key",
+                    key_node.start_mark,
+                )
+            if key in seen:
+                raise ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
 
 
 class ProjectConfig(BaseModel):
@@ -33,6 +68,10 @@ class ProjectConfig(BaseModel):
         path = Path(value)
         if path.is_absolute():
             raise ValueError("artifact_root must be relative to the config file directory")
+        if not path.parts or ".." in path.parts:
+            raise ValueError(
+                "artifact_root must be a non-empty descendant of the config file directory"
+            )
         return path
 
 
@@ -92,7 +131,7 @@ class FormattingConfig(BaseModel):
 
 
 class TrainConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     epochs: int = 2
     per_device_batch_size: int = 8
@@ -111,10 +150,10 @@ class TrainConfig(BaseModel):
 
 
 class EvalConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     split: Literal["test"] = "test"
-    slices: list[str] = Field(default_factory=lambda: ["en"])
+    slices: list[str] = Field(default_factory=lambda: ["en"], min_length=1)
     temperature: float = 0.0
     do_sample: bool = False
     max_new_tokens: int = 512
@@ -126,9 +165,9 @@ class RemoteConfig(BaseModel):
 
     enabled: bool = True
     gpu: str
-    data_timeout_seconds: int = 1800
-    train_timeout_seconds: int = 14400
-    eval_timeout_seconds: int = 7200
+    data_timeout_seconds: int = Field(default=1800, gt=0)
+    train_timeout_seconds: int = Field(default=14400, gt=0)
+    eval_timeout_seconds: int = Field(default=7200, gt=0)
 
 
 class ReportConfig(BaseModel):
@@ -224,6 +263,29 @@ class SommelierConfig(BaseModel):
         raise ValueError(f"no dataset source configured for language {language!r}")
 
 
+def resolve_config_artifact_root(
+    config: SommelierConfig,
+    *,
+    config_dir: Path,
+) -> Path:
+    """Resolves a configured artifact root without allowing symlink escape."""
+    resolved_config_dir = config_dir.resolve()
+    resolved_artifact_root = (resolved_config_dir / config.project.artifact_root).resolve()
+    try:
+        relative = resolved_artifact_root.relative_to(resolved_config_dir)
+    except ValueError as error:
+        raise ConfigError(
+            f"project.artifact_root escapes the config directory: {config.project.artifact_root}",
+            hint="Keep the configured artifact root inside the config directory.",
+        ) from error
+    if not relative.parts:
+        raise ConfigError(
+            "project.artifact_root resolves to the config directory itself",
+            hint="Use a non-empty artifact subdirectory without escaping symlinks.",
+        )
+    return resolved_artifact_root
+
+
 def upgrade_v1_document(raw: dict[str, Any]) -> dict[str, Any]:
     """Upgrades a sommelier.config.v1 mapping to the v2 shape in memory.
 
@@ -259,7 +321,7 @@ def load_config(path: Path) -> SommelierConfig:
 
     raw_text = path.read_text(encoding="utf-8")
     try:
-        raw = yaml.safe_load(raw_text)
+        raw = yaml.load(raw_text, Loader=_UniqueKeySafeLoader)
     except yaml.YAMLError as error:
         raise ConfigError(
             f"invalid YAML in {path}: {error}",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -13,7 +14,18 @@ from sommelier.errors import ArtifactNotFoundError, ExternalDependencyError, Use
 from sommelier.formatting.chat import build_formatted_splits_fixture
 from sommelier.run_context import RunContext, ensure_run_context
 from sommelier.training.metrics import TrainingResult
-from sommelier.training.qlora import build_default_trainer, train_adapter
+from sommelier.training.qlora import (
+    QLORA_DEVICE_MAP,
+    build_default_trainer,
+    configure_qlora_base_model,
+    qlora_kbit_preparation_kwargs,
+    qlora_lora_kwargs,
+    qlora_model_load_kwargs,
+    qlora_quantization_kwargs,
+    qlora_tokenizer_load_kwargs,
+    qlora_training_argument_kwargs,
+    train_adapter,
+)
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
 
@@ -33,9 +45,7 @@ class StubTrainer:
         self.validation_examples = validation_examples
         adapter_dir.mkdir(parents=True, exist_ok=True)
         (adapter_dir / "adapter_model.safetensors").write_bytes(b"stub-weights")
-        (adapter_dir / "adapter_config.json").write_text(
-            json.dumps({"r": 16}), encoding="utf-8"
-        )
+        (adapter_dir / "adapter_config.json").write_text(json.dumps({"r": 16}), encoding="utf-8")
         return TrainingResult(
             history=[{"step": 1, "epoch": 1.0, "loss": 1.5, "learning_rate": 2e-4}],
             peak_gpu_memory_mb=None,
@@ -116,6 +126,53 @@ def test_train_stage_saves_adapter_and_manifest(tmp_path: Path) -> None:
 
     on_disk = json.loads((context.run_dir / "train_manifest.json").read_text(encoding="utf-8"))
     assert on_disk["stage"] == "train"
+
+
+def test_production_qlora_setup_is_explicit_and_eval_matches_train_batch(tmp_path: Path) -> None:
+    config = load_config(EXAMPLES_DIR / "config.v3-he-full.yaml")
+    torch = SimpleNamespace(bfloat16="bfloat16")
+    quantization = object()
+
+    assert qlora_tokenizer_load_kwargs(config) == {
+        "revision": config.model.tokenizer_revision,
+        "trust_remote_code": False,
+    }
+    assert qlora_quantization_kwargs(torch) == {
+        "load_in_4bit": True,
+        "bnb_4bit_quant_type": "nf4",
+        "bnb_4bit_compute_dtype": "bfloat16",
+        "bnb_4bit_use_double_quant": True,
+    }
+    assert qlora_model_load_kwargs(config, quantization_config=quantization) == {
+        "revision": config.model.base_model_revision,
+        "trust_remote_code": False,
+        "quantization_config": quantization,
+        "device_map": QLORA_DEVICE_MAP,
+    }
+    assert qlora_kbit_preparation_kwargs() == {
+        "use_gradient_checkpointing": True,
+        "gradient_checkpointing_kwargs": {"use_reentrant": False},
+    }
+    assert qlora_lora_kwargs(config) == {
+        "r": 16,
+        "lora_alpha": 32,
+        "lora_dropout": 0.05,
+        "target_modules": config.train.target_modules,
+        "bias": "none",
+        "task_type": "CAUSAL_LM",
+    }
+    model = SimpleNamespace(config=SimpleNamespace(use_cache=True))
+    configure_qlora_base_model(model)
+    assert model.config.use_cache is False
+
+    arguments = qlora_training_argument_kwargs(config, output_dir=tmp_path / "trainer")
+    assert arguments["per_device_train_batch_size"] == 4
+    assert arguments["per_device_eval_batch_size"] == 4
+    assert arguments["gradient_accumulation_steps"] == 4
+    assert arguments["bf16"] is True
+    assert arguments["fp16"] is False
+    assert arguments["data_seed"] == config.project.seed
+    assert arguments["gradient_checkpointing_kwargs"] == {"use_reentrant": False}
 
 
 def test_train_stage_feeds_train_and_validation_splits(tmp_path: Path) -> None:

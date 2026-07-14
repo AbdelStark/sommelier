@@ -161,7 +161,7 @@ These stacks live in the remote Modal images, so the normal way to run the missi
 
 ## Where to go next
 
-- [Remote execution](../guides/remote-execution.md): run the real six-stage chain on a Modal GPU in smoke mode, capped at 100/20/20 examples. This is where accounts and money enter.
+- [Remote execution](../guides/remote-execution.md): run the real seven-stage chain on a Modal GPU in smoke mode, capped at 100/20/20 examples. This is where accounts and money enter.
 - [Reproduction](../guides/reproduction.md): the full reference run, from clean checkout to the comparison report, with costs stated up front.
 - [The pipeline](../concepts/pipeline.md) and [Artifacts](../concepts/artifacts.md): the map of what you just ran two stages of.
 - [CLI reference](../reference/cli.md): every command and flag.

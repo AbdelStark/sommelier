@@ -15,6 +15,7 @@ from sommelier.errors import (
     UserInputError,
 )
 from sommelier.evaluation.generate import (
+    AdapterRef,
     DecodingConfig,
     load_model_generator,
     run_generation,
@@ -32,13 +33,19 @@ class EchoTargetGenerator:
     def __init__(self) -> None:
         self.prompts: list[str] = []
         self.decodings: list[DecodingConfig] = []
+        self._responses_by_prompt: dict[str, str] = {}
 
     def generate(self, prompt_text: str, *, decoding: DecodingConfig) -> str:
         self.prompts.append(prompt_text)
         self.decodings.append(decoding)
-        if len(self.prompts) % 2 == 1:
-            return '{"arguments":{"city":"Paris"},"name":"lookup_weather"}'
-        return "I cannot help with that."
+        if prompt_text not in self._responses_by_prompt:
+            response = (
+                '{"arguments":{"city":"Paris"},"name":"lookup_weather"}'
+                if not self._responses_by_prompt
+                else "I cannot help with that."
+            )
+            self._responses_by_prompt[prompt_text] = response
+        return self._responses_by_prompt[prompt_text]
 
 
 def setup_run(tmp_path: Path) -> tuple[SommelierConfig, RunContext, Path]:
@@ -130,7 +137,9 @@ def test_prompts_come_from_stored_prompt_text(tmp_path: Path) -> None:
         json.loads(line)
         for line in (formatted_dir / "test.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    assert generator.prompts == [example["prompt_text"] for example in formatted]
+    measured_prompts = [str(example["prompt_text"]) for example in formatted]
+    assert generator.prompts == [measured_prompts[0], *measured_prompts]
+    assert generator.decodings[0] == generator.decodings[1]
 
     records = [
         json.loads(line)
@@ -155,11 +164,45 @@ def test_eval_manifest_recorded(tmp_path: Path) -> None:
         generator=EchoTargetGenerator(),
     )
 
-    manifest = json.loads((context.run_dir / "eval_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["stage"] == "eval"
+    manifest = json.loads((context.run_dir / "eval-base_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["stage"] == "eval-base"
     assert manifest["status"] == "succeeded"
     assert manifest["outputs"][0]["schema_version"] == "sommelier.generation.v2"
     assert manifest["details"]["eval_slices"] == ["en"]
+
+
+def test_base_and_adapter_eval_manifests_do_not_overwrite_each_other(
+    tmp_path: Path,
+) -> None:
+    config, context, formatted_dir = setup_run(tmp_path)
+    for model_kind in ("base", "adapter"):
+        run_generation(
+            config,
+            formatted_dir=formatted_dir,
+            out_dir=context.run_dir / "eval" / model_kind,
+            model_kind=model_kind,
+            context=context,
+            command=["test"],
+            adapter=(
+                AdapterRef(source="example/adapter", revision="a" * 40)
+                if model_kind == "adapter"
+                else None
+            ),
+            generator=EchoTargetGenerator(),
+        )
+
+    base_manifest = context.run_dir / "eval-base_manifest.json"
+    adapter_manifest = context.run_dir / "eval-adapter_manifest.json"
+    assert base_manifest.exists()
+    assert adapter_manifest.exists()
+    root = json.loads((context.run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert (
+        root["stages"]["eval-base"] == base_manifest.relative_to(context.artifact_root).as_posix()
+    )
+    assert (
+        root["stages"]["eval-adapter"]
+        == adapter_manifest.relative_to(context.artifact_root).as_posix()
+    )
 
 
 def test_decoding_validation_rejects_sampling(tmp_path: Path) -> None:

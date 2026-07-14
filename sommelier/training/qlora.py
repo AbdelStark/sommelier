@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Any, Final, Protocol
 
 from sommelier.artifacts import ArtifactRef, make_artifact_ref
 from sommelier.config import SommelierConfig
@@ -31,12 +31,110 @@ from sommelier.training.metrics import (
 )
 
 FORMATTED_SCHEMA: Final = FORMATTED_EXAMPLE_SCHEMA
+QLORA_DEVICE_MAP: Final = "auto"
+
+
+def qlora_tokenizer_load_kwargs(config: SommelierConfig) -> dict[str, object]:
+    """Returns the tokenizer revision/trust contract shared by both paths."""
+    return {
+        "revision": config.model.tokenizer_revision,
+        "trust_remote_code": config.model.allow_remote_code,
+    }
+
+
+def qlora_quantization_kwargs(torch_module: Any) -> dict[str, object]:
+    """Returns the production NF4 quantization contract.
+
+    Keeping this as plain keyword data lets the paid preflight exercise the
+    same model construction path without importing the optional GPU stack at
+    module import time.
+    """
+    return {
+        "load_in_4bit": True,
+        "bnb_4bit_quant_type": "nf4",
+        "bnb_4bit_compute_dtype": torch_module.bfloat16,
+        "bnb_4bit_use_double_quant": True,
+    }
+
+
+def qlora_model_load_kwargs(
+    config: SommelierConfig,
+    *,
+    quantization_config: object,
+) -> dict[str, object]:
+    """Returns the exact base-model loading contract shared by both paths."""
+    return {
+        "revision": config.model.base_model_revision,
+        "trust_remote_code": config.model.allow_remote_code,
+        "quantization_config": quantization_config,
+        "device_map": QLORA_DEVICE_MAP,
+    }
+
+
+def qlora_kbit_preparation_kwargs() -> dict[str, object]:
+    """Returns the explicit checkpointing contract used before LoRA wrapping."""
+    return {
+        "use_gradient_checkpointing": True,
+        "gradient_checkpointing_kwargs": {"use_reentrant": False},
+    }
+
+
+def qlora_lora_kwargs(config: SommelierConfig) -> dict[str, object]:
+    """Returns the adapter topology shared by production and preflight."""
+    return {
+        "r": config.train.lora_rank,
+        "lora_alpha": config.train.lora_alpha,
+        "lora_dropout": config.train.lora_dropout,
+        "target_modules": list(config.train.target_modules),
+        "bias": "none",
+        "task_type": "CAUSAL_LM",
+    }
+
+
+def configure_qlora_base_model(model: Any) -> None:
+    """Disables the KV cache before checkpointed QLoRA training."""
+    model.config.use_cache = False
+
+
+def qlora_training_argument_kwargs(
+    config: SommelierConfig,
+    *,
+    output_dir: Path,
+) -> dict[str, object]:
+    """Returns the shared production resource and optimization contract.
+
+    Diagnostic-only controls such as ``max_steps`` are layered on by the
+    preflight. Batch sizes, precision, seeds, checkpointing, and optimizer
+    shape remain identical to the real trainer.
+    """
+    return {
+        "output_dir": str(output_dir),
+        "num_train_epochs": config.train.epochs,
+        "per_device_train_batch_size": config.train.per_device_batch_size,
+        "per_device_eval_batch_size": config.train.per_device_batch_size,
+        "gradient_accumulation_steps": config.train.gradient_accumulation_steps,
+        "learning_rate": config.train.learning_rate,
+        "lr_scheduler_type": config.train.scheduler,
+        "warmup_ratio": config.train.warmup_ratio,
+        "bf16": True,
+        "fp16": False,
+        "gradient_checkpointing": True,
+        "gradient_checkpointing_kwargs": {"use_reentrant": False},
+        "save_strategy": "no",
+        "logging_steps": 1,
+        "report_to": [],
+        "seed": config.project.seed,
+        "data_seed": config.project.seed,
+        "include_num_input_tokens_seen": True,
+        "remove_unused_columns": False,
+        "dataloader_num_workers": 0,
+    }
 
 
 class AdapterTrainer(Protocol):
     """The training surface the stage depends on.
 
-    The default implementation wraps transformers/peft/trl; tests inject
+    The default implementation wraps transformers and peft directly; tests inject
     stubs so the stage contract is exercised without GPU dependencies.
     ``train`` writes adapter files into ``adapter_dir`` and returns the
     raw log history plus the peak GPU memory measurement when available.
@@ -104,9 +202,7 @@ def map_resource_failure(
     Unrecognized failures return None and propagate unchanged.
     """
     lowered = str(error).lower()
-    is_oom = (
-        type(error).__name__ == "OutOfMemoryError" or "out of memory" in lowered
-    )
+    is_oom = type(error).__name__ == "OutOfMemoryError" or "out of memory" in lowered
     if is_oom:
         return ResourceError(
             "training ran out of GPU memory",
@@ -124,11 +220,13 @@ def map_resource_failure(
     is_timeout = isinstance(error, TimeoutError) or "timed out" in lowered
     if is_timeout:
         return ResourceError(
-            "training exceeded its time budget",
+            "a training dependency reported a timeout",
             hint=(
                 f"remote.train_timeout_seconds={config.remote.train_timeout_seconds}. "
-                "Raise the timeout, reduce train.epochs, or shrink the split "
-                "sizes; Sommelier does not retry automatically."
+                "This legacy-named field is a planning estimate, not an enforced "
+                "training watchdog. Inspect the dependency error and the provider's "
+                "outer function timeout; reducing train.epochs or split sizes may "
+                "also help. Sommelier does not retry automatically."
             ),
         )
     return None
@@ -174,35 +272,27 @@ def build_default_trainer(config: SommelierConfig) -> AdapterTrainer:
                 torch.cuda.reset_peak_memory_stats()
             tokenizer = AutoTokenizer.from_pretrained(
                 config.model.base_model_id,
-                revision=config.model.tokenizer_revision,
-                trust_remote_code=config.model.allow_remote_code,
+                **qlora_tokenizer_load_kwargs(config),
             )
             if tokenizer.pad_token_id is None:
                 # Padding-only metadata; does not alter training
                 # hyperparameters.
                 tokenizer.pad_token = tokenizer.eos_token
 
-            quantization = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-            )
+            quantization = BitsAndBytesConfig(**qlora_quantization_kwargs(torch))
             model = AutoModelForCausalLM.from_pretrained(
                 config.model.base_model_id,
-                revision=config.model.base_model_revision,
-                trust_remote_code=config.model.allow_remote_code,
-                quantization_config=quantization,
-                device_map="auto",
+                **qlora_model_load_kwargs(
+                    config,
+                    quantization_config=quantization,
+                ),
             )
-            model = prepare_model_for_kbit_training(model)
-            lora = LoraConfig(
-                r=config.train.lora_rank,
-                lora_alpha=config.train.lora_alpha,
-                lora_dropout=config.train.lora_dropout,
-                target_modules=list(config.train.target_modules),
-                task_type="CAUSAL_LM",
+            configure_qlora_base_model(model)
+            model = prepare_model_for_kbit_training(
+                model,
+                **qlora_kbit_preparation_kwargs(),
             )
+            lora = LoraConfig(**qlora_lora_kwargs(config))
             model = get_peft_model(model, lora)
 
             collator = CompletionOnlyCollator(
@@ -214,37 +304,19 @@ def build_default_trainer(config: SommelierConfig) -> AdapterTrainer:
                 collated = collator(batch)
                 return {
                     "input_ids": torch.tensor(collated["input_ids"], dtype=torch.long),
-                    "attention_mask": torch.tensor(
-                        collated["attention_mask"], dtype=torch.long
-                    ),
+                    "attention_mask": torch.tensor(collated["attention_mask"], dtype=torch.long),
                     "labels": torch.tensor(collated["labels"], dtype=torch.long),
                 }
 
-            arguments = TrainingArguments(
-                output_dir=str(adapter_dir.parent / "trainer_state"),
-                num_train_epochs=config.train.epochs,
-                per_device_train_batch_size=config.train.per_device_batch_size,
-                gradient_accumulation_steps=config.train.gradient_accumulation_steps,
-                learning_rate=config.train.learning_rate,
-                lr_scheduler_type=config.train.scheduler,
-                warmup_ratio=config.train.warmup_ratio,
-                bf16=True,
-                # Explicit rather than relying on peft's kbit-preparation
-                # defaults: an 8B model at batch 8 without checkpointing
-                # exceeded a 44 GiB GPU in the first full run.
-                gradient_checkpointing=True,
-                gradient_checkpointing_kwargs={"use_reentrant": False},
-                eval_strategy="epoch",
-                save_strategy="no",
-                logging_steps=1,
-                report_to=[],
-                seed=config.project.seed,
-                include_num_input_tokens_seen=True,
-                # The completion-only collator consumes prompt_text and
-                # full_text; the Trainer's RemoveColumnsCollator wrapper
-                # would strip them before our collator runs.
-                remove_unused_columns=False,
+            training_kwargs = qlora_training_argument_kwargs(
+                config,
+                output_dir=adapter_dir.parent / "trainer_state",
             )
+            # The shared contract already sets remove_unused_columns=False:
+            # the collator consumes prompt_text/full_text, which Transformers'
+            # RemoveColumnsCollator would otherwise discard.
+            training_kwargs["eval_strategy"] = "epoch"
+            arguments = TrainingArguments(**training_kwargs)
             trainer = Trainer(
                 model=model,
                 args=arguments,
@@ -254,7 +326,7 @@ def build_default_trainer(config: SommelierConfig) -> AdapterTrainer:
             )
             trainer.train()
             adapter_dir.mkdir(parents=True, exist_ok=True)
-            model.save_pretrained(str(adapter_dir))
+            model.save_pretrained(str(adapter_dir), safe_serialization=True)
             tokenizer.save_pretrained(str(adapter_dir))
             return TrainingResult(
                 history=list(trainer.state.log_history),

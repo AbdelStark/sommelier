@@ -43,11 +43,91 @@ change; releases move them under a version heading with a date.
   data/train/eval/serving dependency images with GPU and timeout hooks.
 - Serving: optional, illustrative single-adapter endpoint with strict
   request/response schemas and parser-status responses.
-- Release gates: MIT `LICENSE`, `licenses/THIRD_PARTY.md`, and
-  `sommelier release preflight` writing `release_preflight.json`
-  (`sommelier.release_preflight.v1`).
+- Initial release gates: MIT `LICENSE`, `licenses/THIRD_PARTY.md`, and
+  `sommelier release preflight`. The original
+  `sommelier.release_preflight.v1` report is now historical and has no current
+  writer; the identity-bound v2 contract below supersedes it.
 - Docs: install quickstart, reproduction guide, serving limits, and this
   changelog with the v1.0 release checklist.
+
+### Added (Hebrew v3 experiment)
+
+- Hebrew paired-data production and publication contracts: constrained
+  query-only translation; exact root pairing; provider-independent structured
+  instruction-chat prompts; placeholder, script, bidi, and protected-span
+  audits; durable resume state; `sommelier.translation_summary.v2`; and the
+  digest-bound `sommelier.translation_publication_manifest.v1`.
+- An explicit OpenAI Responses producer for the dated GPT-5.5 snapshot in a
+  CPU-only Modal image. The v2 raw journal attributes every response, replay,
+  provider error, and availability retry to a source row and audited attempt;
+  public evidence is a content-free aggregate with exact returned model/tier,
+  usage, request/runtime identity, and a pinned-public-list-price calculation.
+  SDK retries remain disabled. Exact Flex availability failures use same-row,
+  journaled provider-call attempts at fixed 1/2/4/8/16-second delays with no
+  tier switch; they are distinct from the three semantic/audit row attempts.
+  A required operator-supplied USD ceiling (`1.00` smoke, `50.00` full) adds
+  conservative pre-batch admission and post-response stop guards without
+  claiming to be an invoice or provider-side account/project spend cap.
+- A preregistered 200-row semantic-review gate with a pinned independent
+  Hebrew-to-English back-translator, immutable machine template, separately
+  finalized reviewer decisions, zero-critical-error release criterion, and
+  exact template/review/publication digests
+  (`sommelier.translation_semantic_review_template.v1` and
+  `sommelier.translation_semantic_review.v1`).
+- `sommelier analyze tokenization` and the tokenizer-tax record/report schemas,
+  measuring exact query/prompt/target/full tokens, matched English-Hebrew
+  ratios, sequence-budget failures, and projected non-padding training tokens.
+- Matched-pair evaluation and deterministic paired-bootstrap intervals;
+  per-call inference telemetry; separate base/adapter evaluation manifests;
+  `sommelier.evaluation_report.v3`; `sommelier.comparison_report.v3`; and the
+  three-arm `sommelier report experiment` claim gate. The embedded
+  `sommelier.sovereign_tco_evidence.v1` keeps measured QLoRA runtime, memory,
+  storage, and inference hardware-time distinct from projections and from
+  unavailable currency billing.
+- Hebrew v3 remote execution gates: immutable published paired-source loading,
+  exact data-provenance traversal, clean source-revision binding, pinned v1
+  baseline identity, outer-timeout admission evidence, and a dedicated
+  diagnostic L40S QLoRA shape preflight using synthetic near-4096-token
+  English/Hebrew rows for one real optimizer step plus one evaluation forward.
+- `sommelier release publish-dataset` and `publish-adapter`. Both validate
+  exact allowlisted bundles by default; mutation requires `--execute`, exact
+  repository confirmation, and a fresh receipt. Optional repository creation
+  is public and `exist_ok=false`; execution durably reserves a pending receipt,
+  binds the commit to the observed parent revision, journals a returned commit
+  before verification, and records success only after immutable-revision
+  enumeration and SHA-256 round-trip verification. Adapter releases require
+  byte-exact reviewed NVIDIA/Llama agreements and `NOTICE` alongside evidence.
+- `sommelier release preflight --artifact-root <dir>` and the closed
+  `sommelier.release_preflight.v2` contract. It binds the normalized config;
+  model, tokenizer, and ordered dataset revisions plus their immutability
+  decisions; producer commit and cleanliness decision; dependency-lock digest;
+  and one coherent streamed scan/tree identity, excluding only the report
+  itself. Adapter publication revalidates those bindings against the unchanged
+  final curated bundle and requires immutable revisions plus a clean producer.
+  Without the flag, artifact-root resolution remains relative to the config
+  file for backward compatibility.
+
+Migration: regenerate multilingual data, formatted rows, generations,
+telemetry, evaluation reports, comparisons, and manifests with the current
+schemas. Historical v1/v2 reports and French v1 translation summaries remain
+readable evidence but cannot satisfy the Hebrew v3 full-publication or
+three-arm claim gates. Paid OpenAI launches must now pass an explicit positive
+`--openai-list-price-limit-usd`; install the `publish` extra only on a host that
+will execute a Hub publication.
+
+### Security
+
+- Atomic artifact writes now use a private random staging directory, exclusive
+  no-follow regular files, descriptor-bound copying, mutation checks, fsync,
+  and atomic replacement. Release preflight v2 likewise scans and hashes one
+  coherent descriptor-bound artifact snapshot and rejects symlinks and special
+  files instead of certifying bytes through path-only reads.
+- Dataset and adapter publication now validates private source snapshots and
+  submits a second read-only upload snapshot whose identity and digest are
+  checked before and after the Hub commit. Receipts must be outside every
+  source or snapshot path, including filesystem aliases; ambiguous parentless
+  repositories fail closed; JSON object keys and safetensors metadata receive
+  the same secret-shape checks as public text artifacts.
 
 ### Changed
 
@@ -100,6 +180,24 @@ change; releases move them under a version heading with a date.
 
 ### Fixed
 
+- Public v1/v2 prose, paper, and video sources now distinguish published
+  aggregate reports from non-published raw generations, maintainer-observed
+  billing from checksummed run evidence, and unequal marginal language slices
+  from an exact paired language effect. The rebuilt paper PDF carries the same
+  claim boundary.
+- Installation/reproduction docs now agree that the Modal client is a base
+  dependency, and package metadata declares the repository's MIT license with
+  the PEP 621 license expression.
+- Production QLoRA now sets its evaluation batch size explicitly and shares
+  its NF4/model/LoRA/checkpointing/seed contract with the Hebrew-v3 shape
+  preflight. The diagnostic additionally requires one visible L40S with a
+  CUDA-0-only `hf_device_map`, proves exact one-English/one-Hebrew source
+  pairs, and validates its terminal report, digest manifest, and on-disk tree
+  as one closed contract.
+- Source distributions now use an explicit OSS release allowlist and reject
+  generated dependencies, caches, local artifacts, checkpoints, site output,
+  and rendered video. Building from a working tree that contains those files
+  no longer packages them into the sdist; wheel contents are unchanged.
 - Remote images no longer run pip installs after mounting the package
   source, which Modal rejects at build time (`sommelier.remote.images`).
 - Evaluation no longer re-adds special tokens to rendered prompts, which

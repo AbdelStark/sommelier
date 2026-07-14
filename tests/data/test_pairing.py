@@ -7,6 +7,7 @@ from typing import Any, cast
 import pytest
 import yaml
 
+from sommelier.artifacts import make_artifact_ref
 from sommelier.config import SommelierConfig, load_config
 from sommelier.data.prepare import (
     build_fixture_prepared_examples,
@@ -107,9 +108,7 @@ def test_missing_source_example_is_dropped_and_counted() -> None:
     paired_rows = [_paired_row(0), _paired_row(999)]
     root_result = _root_result(root_rows)
     paired_result = _pair(root_result, root_rows, paired_rows)
-    total = (
-        len(paired_result.train) + len(paired_result.validation) + len(paired_result.test)
-    )
+    total = len(paired_result.train) + len(paired_result.validation) + len(paired_result.test)
     assert total + paired_result.drop_counts["missing_source_example"] == 2
 
 
@@ -238,6 +237,27 @@ def test_prepare_dataset_requires_rows_for_every_source(tmp_path: Path) -> None:
         )
 
 
+def test_prepare_dataset_requires_paired_coverage_in_every_split(tmp_path: Path) -> None:
+    config = _bilingual_config(tmp_path)
+    context = ensure_run_context(
+        config,
+        config_path=tmp_path / "config.yaml",
+        run_id="pairing-coverage",
+        project_root=tmp_path,
+    )
+    with pytest.raises(UserInputError, match="paired dataset has no surviving rows"):
+        prepare_dataset(
+            config,
+            rows_by_language={
+                "en": [_root_row(index) for index in range(10)],
+                "fr": [_paired_row(0)],
+            },
+            out_dir=tmp_path / "out",
+            context=context,
+            command=["test"],
+        )
+
+
 def test_prepare_dataset_from_file_uses_paired_path_convention(tmp_path: Path) -> None:
     config = _bilingual_config(tmp_path)
     context = ensure_run_context(
@@ -288,6 +308,72 @@ def test_prepare_dataset_from_file_uses_paired_path_convention(tmp_path: Path) -
     }
 
 
+def test_data_manifest_records_checksummed_raw_and_translation_inputs(tmp_path: Path) -> None:
+    config = _bilingual_config(tmp_path)
+    context = ensure_run_context(
+        config,
+        config_path=tmp_path / "config.yaml",
+        run_id="pairing-provenance",
+        project_root=tmp_path,
+    )
+    out_dir = context.run_dir / "data"
+    source_dir = out_dir / "source_inputs"
+    input_path = source_dir / "rows.en.jsonl"
+    paired_path = paired_input_path(input_path, "fr")
+    _write_rows(input_path, [_root_row(index) for index in range(10)])
+    _write_rows(paired_path, [_paired_row(index) for index in range(10)])
+    summary_path = source_dir / "translation_summary.fr.json"
+    summary_path.write_text("{}", encoding="utf-8")
+    publication_path = source_dir / "translation_publication.fr.json"
+    publication_path.write_text("{}", encoding="utf-8")
+    source_inputs = [
+        make_artifact_ref(
+            input_path,
+            artifact_root=context.artifact_root,
+            kind="raw_dataset",
+            schema_version="sommelier.raw_tool_call_row.v1",
+        ),
+        make_artifact_ref(
+            paired_path,
+            artifact_root=context.artifact_root,
+            kind="raw_paired_dataset",
+            schema_version="sommelier.raw_tool_call_row.v1",
+        ),
+        make_artifact_ref(
+            summary_path,
+            artifact_root=context.artifact_root,
+            kind="translation_summary",
+            schema_version="sommelier.translation_summary.v2",
+        ),
+        make_artifact_ref(
+            publication_path,
+            artifact_root=context.artifact_root,
+            kind="translation_publication_manifest",
+            schema_version="sommelier.translation_publication_manifest.v1",
+        ),
+    ]
+
+    prepare_dataset_from_file(
+        config,
+        input_path=input_path,
+        out_dir=out_dir,
+        context=context,
+        command=["test"],
+        source_inputs=source_inputs,
+    )
+
+    manifest = json.loads((context.run_dir / "data_manifest.json").read_text(encoding="utf-8"))
+    assert [item["kind"] for item in manifest["inputs"]] == [
+        "config",
+        "raw_dataset",
+        "raw_paired_dataset",
+        "translation_summary",
+        "translation_publication_manifest",
+    ]
+    for item in manifest["inputs"][1:]:
+        assert len(item["sha256"]) == 64
+
+
 def test_prepare_dataset_from_file_is_deterministic(tmp_path: Path) -> None:
     config = _bilingual_config(tmp_path)
     input_path = tmp_path / "rows.jsonl"
@@ -329,9 +415,7 @@ def test_byte_check_uses_the_exact_row_an_example_came_from() -> None:
     # second is clean but has a different query so both survive validation.
     # The byte check must reject the first row's example instead of blessing
     # it against the second row's clean payload.
-    mutated = _paired_row(
-        index, answers='[{"name":"lookup_weather","arguments":{"city":"Lyon"}}]'
-    )
+    mutated = _paired_row(index, answers='[{"name":"lookup_weather","arguments":{"city":"Lyon"}}]')
     decoy = _paired_row(index, query="Une autre question sur le temps a Paris?")
     decoy["source_id"] = mutated["source_id"]
     paired_result = _pair(root_result, root_rows, [mutated, decoy])

@@ -5,12 +5,13 @@ from typing import cast
 import pytest
 
 from sommelier.config import load_config, write_resolved_config
-from sommelier.errors import InvariantViolation
+from sommelier.errors import ConfigError, InvariantViolation
 from sommelier.manifests import (
     FailedStageManifest,
     artifact_root_for,
     build_stage_manifest,
     config_artifact_ref,
+    get_git_commit,
     initialize_run_manifest,
     run_dir_for,
     update_run_manifest,
@@ -18,6 +19,20 @@ from sommelier.manifests import (
 )
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
+
+
+def test_remote_git_commit_override_is_exact(monkeypatch: pytest.MonkeyPatch) -> None:
+    revision = "a" * 40
+    monkeypatch.setenv("SOMMELIER_GIT_COMMIT", revision)
+    assert get_git_commit() == revision
+
+
+def test_remote_git_commit_override_rejects_mutable_or_malformed_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOMMELIER_GIT_COMMIT", "main")
+    with pytest.raises(InvariantViolation, match="immutable hexadecimal"):
+        get_git_commit()
 
 
 def test_stage_manifest_round_trip(tmp_path: Path) -> None:
@@ -61,6 +76,30 @@ def test_stage_manifest_round_trip(tmp_path: Path) -> None:
     )
     assert root["stages"]["data"] == stage_ref["path"]
     assert root["config"]["sha256"] == config_ref["sha256"]
+
+
+def test_config_derived_artifact_root_rejects_symlink_escape(tmp_path: Path) -> None:
+    config_dir = tmp_path / "project"
+    config_dir.mkdir()
+    config_path = config_dir / "config.smoke.yaml"
+    config_path.write_text(
+        (EXAMPLES_DIR / "config.smoke.yaml")
+        .read_text(encoding="utf-8")
+        .replace(
+            "artifact_root: artifacts",
+            "artifact_root: escape/artifacts",
+        ),
+        encoding="utf-8",
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (config_dir / "escape").symlink_to(outside, target_is_directory=True)
+    config = load_config(config_path)
+
+    with pytest.raises(ConfigError, match="artifact_root.*escapes"):
+        artifact_root_for(config, config_dir=config_dir)
+    with pytest.raises(ConfigError, match="artifact_root.*escapes"):
+        run_dir_for(config, "run-id", config_dir=config_dir)
 
 
 def test_failed_manifest_redacts_secrets() -> None:

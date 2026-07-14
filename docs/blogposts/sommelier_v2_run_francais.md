@@ -1,6 +1,6 @@
-# Sommelier v2 : refermer l’écart français
+# Sommelier v2 : réduire l’écart français
 
-*Un petit modèle ouvert perdait quatre points dès qu’on lui parlait français. Sept heures de GPU plus tard, l’écart est refermé, et chaque chiffre remonte à un artefact vérifiable. Récit du run, de la méthode, et de l’enjeu de souveraineté qui va avec.*
+*Sur les tranches historiques complètes, un petit modèle ouvert affichait quatre points de moins en français. Sept heures de GPU plus tard, les valeurs marginales française et anglaise ne diffèrent plus que de 0,3 point. Les métriques et durées remontent aux rapports publics ; le coût reste une extrapolation explicitement étiquetée. Récit du run, de la méthode, et de l’enjeu de souveraineté qui va avec.*
 
 ---
 
@@ -20,7 +20,7 @@ Comme pour le v1, les chiffres avant l’histoire. La métrique la plus dure du 
 | Adaptateur v1, entraîné en anglais seul | 87,4 % | 85,1 % | -2,3 pts |
 | Adaptateur v2, entraîné en anglais et en français | 87,0 % | **87,3 %** | **+0,3 pt** |
 
-Trois constats, dans l’ordre. Le modèle de base paie environ quatre points de précision dès que la requête passe au français. Le fine-tuning en anglais seul transfère l’essentiel de ses gains au français sans avoir vu une seule ligne de français, et ramène l’écart à 2,3 points. L’ajout des données françaises ramène l’écart au niveau du bruit de mesure : sur les cinq métriques du pipeline, le français et l’anglais se tiennent maintenant à moins d’un tiers de point.
+Trois constats descriptifs, dans l’ordre. Sur les tranches complètes, le taux français du modèle de base est inférieur d’environ quatre points au taux anglais. Le fine-tuning en anglais seul transfère l’essentiel de ses gains à la tranche française sans avoir vu une seule ligne de français, et la différence marginale passe à 2,3 points. Avec les données françaises, les valeurs marginales des cinq métriques se tiennent à moins d’un tiers de point. Les cohortes comptent toutefois 879 lignes françaises et 1 000 anglaises : l’artefact v2 ne permet ni d’appeler cette différence du « bruit », ni d’en faire un effet causal apparié.
 
 Sur la tranche française seule, le gain brut entre le modèle de base et l’adaptateur v2 :
 
@@ -67,7 +67,7 @@ Il existe une quatrième dépendance, dont on parle moins : la langue. Un modèl
 
 La souveraineté, ramenée à la pratique, c’est ce levier. Les poids chez vous. Les transformations de données déclarées et comptées. L’évaluation rejouable depuis les empreintes. Et votre langue traitée comme un cas de premier ordre, pas comme un marché secondaire qu’on couvrira plus tard.
 
-Ce run montre à quoi ressemble le levier une fois actionné. L’écart français a été mesuré, attaqué avec 13 113 lignes d’entraînement traduites sous contrat, puis refermé à 0,3 point près. Le coût de l’opération tient sur une ligne : sept heures d’une L40S, pic mémoire à 26 369 MiB, entraînement de 5 h 42. Modal n’a pas exposé de données de facturation au run lui-même, le rapport enregistre donc le coût comme indisponible, mais au tarif observé du run v1 (environ huit dollars pour trois heures et demie de GPU, la somme des étapes du run de référence), on parle d’environ seize dollars.
+Ce run montre à quoi ressemble le levier une fois actionné. La différence marginale a été mesurée, attaquée avec 13 113 lignes d’entraînement traduites sous contrat, puis réduite à 0,3 point entre les tranches complètes ; l’estimation appariée reste volontairement non revendiquée. Le coût de l’opération tient sur une ligne : sept heures d’une L40S, pic mémoire à 26 369 MiB, entraînement de 5 h 42. Modal n’a pas exposé de données de facturation au run lui-même, le rapport enregistre donc le coût comme indisponible, mais au tarif observé du run v1 (environ huit dollars pour trois heures et demie de GPU, la somme des étapes du run de référence), on parle d’une extrapolation d’environ seize dollars.
 
 Pour la France en particulier, l’enjeu dépasse le confort linguistique. Les secteurs qui ont le plus à attendre des agents, l’administration, la santé, la banque, le droit, sont aussi ceux qui peuvent le moins externaliser leurs données et leurs dépendances. Un modèle de 8 milliards de paramètres, affiné sur vos schémas d’outils et vos requêtes en français, qui tourne sur un GPU loué à l’heure ou possédé en propre, est une réponse concrète à cette équation. Une réponse étroite, cantonnée à la tâche qui fait tenir les agents debout : l’appel d’outil.
 

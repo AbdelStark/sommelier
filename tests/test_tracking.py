@@ -189,7 +189,7 @@ def test_tracking_survives_later_stage_updates(tmp_path: Path) -> None:
 
     manifest = json.loads((context.run_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["tracking"]["run_url"] == "https://tracker.example/runs/fake-1"
-    assert "eval" in manifest["stages"]
+    assert "eval-base" in manifest["stages"]
 
 
 @pytest.mark.skipif(

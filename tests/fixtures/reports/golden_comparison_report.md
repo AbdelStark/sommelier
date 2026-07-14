@@ -16,50 +16,81 @@ The JSON report (`comparison_report.json`) is authoritative for automation; this
 
 - Split: test
 - Slices: `en`, `fr`
-- Examples evaluated: 20 across all slices
+- Examples evaluated: 40 across all slices
 - Test split digest: `tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt`
 
 ## Metrics, all slices
 
-| Metric | Base | Adapter | Delta |
-|--------|------|---------|-------|
-| valid_json_rate | 0.5000 (10/20) | 0.9500 (19/20) | +0.4500 |
-| function_name_accuracy | 0.4500 (9/20) | 0.9000 (18/20) | +0.4500 |
-| argument_exact_match | 0.2500 (5/20) | 0.7500 (15/20) | +0.5000 |
-| argument_f1 | 0.6000 (48/80) | 0.9000 (72/80) | +0.3000 |
-| full_call_exact_match | 0.2000 (4/20) | 0.7000 (14/20) | +0.5000 |
+| Metric | Base | Adapter | Adapter - base | 95% CI |
+|--------|------|---------|----------------|--------|
+| valid_json_rate | 0.5000 (10/20) | 0.9500 (19/20) | +0.4500 | [+0.3500, +0.5500] |
+| function_name_accuracy | 0.4500 (9/20) | 0.9000 (18/20) | +0.4500 | [+0.3500, +0.5500] |
+| argument_exact_match | 0.2500 (5/20) | 0.7500 (15/20) | +0.5000 | [+0.4000, +0.6000] |
+| argument_f1 | 0.6000 (48/80) | 0.9000 (72/80) | +0.3000 | [+0.2000, +0.4000] |
+| full_call_exact_match | 0.2000 (4/20) | 0.7000 (14/20) | +0.5000 | [+0.4000, +0.6000] |
+
+Adapter-gain intervals use `sommelier.paired_bootstrap.v1` (2000 paired resamples; seed 41; confidence 95%).
 
 ## Metrics, slice `en`
 
 - Examples: 20
 - Prompt set digest: `pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp`
 
-| Metric | Base | Adapter | Delta |
-|--------|------|---------|-------|
-| valid_json_rate | 0.5000 (10/20) | 0.9500 (19/20) | +0.4500 |
-| function_name_accuracy | 0.4500 (9/20) | 0.9000 (18/20) | +0.4500 |
-| argument_exact_match | 0.2500 (5/20) | 0.7500 (15/20) | +0.5000 |
-| argument_f1 | 0.6000 (48/80) | 0.9000 (72/80) | +0.3000 |
-| full_call_exact_match | 0.2000 (4/20) | 0.7000 (14/20) | +0.5000 |
+| Metric | Base | Adapter | Adapter - base | 95% CI |
+|--------|------|---------|----------------|--------|
+| valid_json_rate | 0.5000 (10/20) | 0.9500 (19/20) | +0.4500 | [+0.3500, +0.5500] |
+| function_name_accuracy | 0.4500 (9/20) | 0.9000 (18/20) | +0.4500 | [+0.3500, +0.5500] |
+| argument_exact_match | 0.2500 (5/20) | 0.7500 (15/20) | +0.5000 | [+0.4000, +0.6000] |
+| argument_f1 | 0.6000 (48/80) | 0.9000 (72/80) | +0.3000 | [+0.2000, +0.4000] |
+| full_call_exact_match | 0.2000 (4/20) | 0.7000 (14/20) | +0.5000 | [+0.4000, +0.6000] |
+
+Adapter-gain intervals use `sommelier.paired_bootstrap.v1` (2000 paired resamples; seed 41; confidence 95%).
 
 ## Metrics, slice `fr`
 
 - Examples: 20
 - Prompt set digest: `qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq`
 
-| Metric | Base | Adapter | Delta |
-|--------|------|---------|-------|
-| valid_json_rate | 0.5000 (10/20) | 0.9500 (19/20) | +0.4500 |
-| function_name_accuracy | 0.4500 (9/20) | 0.9000 (18/20) | +0.4500 |
-| argument_exact_match | 0.2500 (5/20) | 0.7500 (15/20) | +0.5000 |
-| argument_f1 | 0.6000 (48/80) | 0.9000 (72/80) | +0.3000 |
-| full_call_exact_match | 0.2000 (4/20) | 0.7000 (14/20) | +0.5000 |
+| Metric | Base | Adapter | Adapter - base | 95% CI |
+|--------|------|---------|----------------|--------|
+| valid_json_rate | 0.5000 (10/20) | 0.9500 (19/20) | +0.4500 | [+0.3500, +0.5500] |
+| function_name_accuracy | 0.4500 (9/20) | 0.9000 (18/20) | +0.4500 | [+0.3500, +0.5500] |
+| argument_exact_match | 0.2500 (5/20) | 0.7500 (15/20) | +0.5000 | [+0.4000, +0.6000] |
+| argument_f1 | 0.6000 (48/80) | 0.9000 (72/80) | +0.3000 | [+0.2000, +0.4000] |
+| full_call_exact_match | 0.2000 (4/20) | 0.7000 (14/20) | +0.5000 | [+0.4000, +0.6000] |
+
+Adapter-gain intervals use `sommelier.paired_bootstrap.v1` (2000 paired resamples; seed 41; confidence 95%).
 
 ## Language Gaps
 
+### Exact matched-pair gaps (primary)
+
+Each translated row is compared only with the exact root row named by `source_example_id`. Intervals resample those matched pairs; positive gaps mean the translated slice scores higher.
+
+#### `fr` minus `en`
+
+- Matched pairs: 18
+- Reference coverage: 18/20 (90.0%)
+- Pair-set digest: `rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr`
+
+| Metric | Base gap | Base 95% CI | Adapter gap | Adapter 95% CI |
+|--------|----------|-------------|-------------|----------------|
+| valid_json_rate | +0.0000 | [-0.1000, +0.1000] | +0.0000 | [-0.1000, +0.1000] |
+| function_name_accuracy | +0.0000 | [-0.1000, +0.1000] | +0.0000 | [-0.1000, +0.1000] |
+| argument_exact_match | +0.0000 | [-0.1000, +0.1000] | +0.0000 | [-0.1000, +0.1000] |
+| argument_f1 | +0.0000 | [-0.1000, +0.1000] | +0.0000 | [-0.1000, +0.1000] |
+| full_call_exact_match | +0.0000 | [-0.1000, +0.1000] | +0.0000 | [-0.1000, +0.1000] |
+
+Gap intervals use `sommelier.paired_bootstrap.v1` (2000 paired resamples; base seed 42; adapter seed 43).
+
+
+### Marginal full-slice gaps (descriptive)
+
+These values compare every surviving row in each complete slice. The cohorts can differ, so they are descriptive and are not the primary paired estimate. Cohort label: `marginal_full_slices`.
+
 Each slice against the `en` reference slice (positive means the slice scores higher):
 
-### `fr` minus `en`
+#### `fr` minus `en`
 
 | Metric | Base gap | Adapter gap |
 |--------|----------|-------------|

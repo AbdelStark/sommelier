@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 import yaml
 
+import sommelier.data.translate as translate_module
 from sommelier.config import SommelierConfig, load_config
 from sommelier.errors import UserInputError
 from sommelier.pipeline import (
@@ -46,6 +48,7 @@ class StageRecorder:
         return PipelineStages(
             prepare=self.stage("data"),
             format=self.stage("format"),
+            tokenization=self.stage("tokenization"),
             eval_base=self.stage("eval-base"),
             train=self.stage("train"),
             eval_adapter=self.stage("eval-adapter"),
@@ -85,11 +88,45 @@ def test_pipeline_chains_all_stages_in_order(tmp_path: Path) -> None:
     assert recorder.calls == [
         "data",
         "format",
+        "tokenization",
         "eval-base",
         "train",
         "eval-adapter",
         "compare",
     ]
+    manifest = json.loads(
+        (tmp_path / "artifacts" / "runs" / "full-1" / "manifest.json").read_text()
+    )
+    assert manifest["status"] == "succeeded"
+
+
+def test_pipeline_marks_root_manifest_failed_when_a_stage_raises(tmp_path: Path) -> None:
+    recorder = StageRecorder()
+    stages = recorder.stages()
+
+    def fail_format(
+        paths: PipelinePaths,
+        config: SommelierConfig,
+        context: RunContext,
+        command: list[str],
+    ) -> None:
+        raise RuntimeError("fixture stage failure")
+
+    stages.format = fail_format
+    with pytest.raises(RuntimeError, match="fixture stage failure"):
+        run_pipeline(
+            write_config(tmp_path),
+            mode="full",
+            input_path=input_file(tmp_path),
+            run_id="failed-1",
+            project_root=tmp_path,
+            stages=stages,
+        )
+
+    manifest = json.loads(
+        (tmp_path / "artifacts" / "runs" / "failed-1" / "manifest.json").read_text()
+    )
+    assert manifest["status"] == "failed"
 
 
 def test_pipeline_paths_follow_artifact_layout(tmp_path: Path) -> None:
@@ -108,6 +145,7 @@ def test_pipeline_paths_follow_artifact_layout(tmp_path: Path) -> None:
     run_dir = tmp_path / "artifacts" / "runs" / "layout-1"
     assert paths.data_dir == run_dir / "data"
     assert paths.formatted_dir == run_dir / "formatted"
+    assert paths.tokenization_dir == run_dir / "analysis" / "tokenization"
     assert paths.train_dir == run_dir / "train" / "adapter"
     assert paths.eval_base_dir == run_dir / "eval" / "base"
     assert paths.eval_adapter_dir == run_dir / "eval" / "adapter"
@@ -192,6 +230,72 @@ def test_missing_input_fails_before_any_stage(tmp_path: Path) -> None:
             write_config(tmp_path),
             mode="full",
             input_path=tmp_path / "missing.jsonl",
+            project_root=tmp_path,
+            stages=recorder.stages(),
+        )
+    assert recorder.calls == []
+
+
+def test_full_paired_trust_gate_runs_before_output_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = StageRecorder()
+
+    def reject(_config: SommelierConfig, _root_rows_path: Path) -> dict[str, dict[str, Path]]:
+        raise UserInputError("full paired-input trust gate rejected fixture")
+
+    monkeypatch.setattr(
+        translate_module,
+        "validate_full_paired_input_contract",
+        reject,
+    )
+    with pytest.raises(UserInputError, match="trust gate rejected"):
+        run_pipeline(
+            write_config(tmp_path),
+            mode="full",
+            input_path=input_file(tmp_path),
+            run_id="rejected-before-output",
+            project_root=tmp_path,
+            stages=recorder.stages(),
+        )
+    assert recorder.calls == []
+    assert not (tmp_path / "artifacts" / "runs" / "rejected-before-output").exists()
+
+
+def test_smoke_pipeline_is_exempt_from_full_publication_trust_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = StageRecorder()
+
+    def reject(_config: SommelierConfig, _root_rows_path: Path) -> dict[str, dict[str, Path]]:
+        raise AssertionError("smoke must not enter the full publication trust gate")
+
+    monkeypatch.setattr(
+        translate_module,
+        "validate_full_paired_input_contract",
+        reject,
+    )
+    run_id = run_pipeline(
+        write_config(tmp_path),
+        mode="smoke",
+        input_path=input_file(tmp_path),
+        run_id="trust-exempt",
+        project_root=tmp_path,
+        stages=recorder.stages(),
+    )
+    assert run_id == "smoke-trust-exempt"
+    assert recorder.calls
+
+
+def test_invalid_mode_fails_before_any_stage(tmp_path: Path) -> None:
+    recorder = StageRecorder()
+    with pytest.raises(UserInputError, match="unsupported pipeline mode"):
+        run_pipeline(
+            write_config(tmp_path),
+            mode="typo",  # type: ignore[arg-type]
+            input_path=input_file(tmp_path),
             project_root=tmp_path,
             stages=recorder.stages(),
         )

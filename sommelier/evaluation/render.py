@@ -28,27 +28,55 @@ def _evidence_class(run_id: str) -> str:
     return "smoke" if run_id.startswith("smoke-") else "full"
 
 
-def _metric_row(name: str, block: dict[str, Any]) -> str:
+def _format_interval(interval: dict[str, Any]) -> str:
+    return f"[{interval['lower']:+.4f}, {interval['upper']:+.4f}]"
+
+
+def _metric_row(
+    name: str,
+    block: dict[str, Any],
+    intervals: dict[str, Any] | None,
+) -> str:
     base = block["base"]["metrics"][name]
     adapter = block["adapter"]["metrics"][name]
     delta = block["deltas"][name]
+    interval_cell = f" | {_format_interval(intervals[name])}" if intervals is not None else ""
     return (
         f"| {name} | {base['value']:.4f} ({base['numerator']}/{base['denominator']}) "
         f"| {adapter['value']:.4f} ({adapter['numerator']}/{adapter['denominator']}) "
-        f"| {delta:+.4f} |"
+        f"| {delta:+.4f}{interval_cell} |"
     )
 
 
 def _metrics_table(block: dict[str, Any]) -> list[str]:
-    lines = [
-        "| Metric | Base | Adapter | Delta |",
-        "|--------|------|---------|-------|",
-    ]
-    lines.extend(_metric_row(name, block) for name in block["deltas"])
+    bootstrap = block.get("adapter_gain_ci95")
+    intervals = bootstrap.get("intervals") if bootstrap is not None else None
+    lines = (
+        [
+            "| Metric | Base | Adapter | Adapter - base | 95% CI |",
+            "|--------|------|---------|----------------|--------|",
+        ]
+        if intervals is not None
+        else [
+            "| Metric | Base | Adapter | Adapter - base |",
+            "|--------|------|---------|----------------|",
+        ]
+    )
+    lines.extend(_metric_row(name, block, intervals) for name in block["deltas"])
+    if bootstrap is not None:
+        lines.extend(
+            [
+                "",
+                "Adapter-gain intervals use "
+                f"`{bootstrap['method']}` ({bootstrap['resamples']} paired "
+                f"resamples; seed {bootstrap['seed']}; "
+                f"confidence {bootstrap['confidence_level']:.0%}).",
+            ]
+        )
     return lines
 
 
-def _language_gap_lines(comparison: dict[str, Any]) -> list[str]:
+def _marginal_language_gap_lines(comparison: dict[str, Any]) -> list[str]:
     gaps = comparison.get("language_gaps", {})
     reference = gaps.get("reference")
     base_gaps = gaps.get("base", {})
@@ -56,16 +84,21 @@ def _language_gap_lines(comparison: dict[str, Any]) -> list[str]:
         return []
     lines = [
         "",
-        "## Language Gaps",
+        "### Marginal full-slice gaps (descriptive)",
         "",
-        f"Each slice against the `{reference}` reference slice "
-        "(positive means the slice scores higher):",
+        "These values compare every surviving row in each complete slice. "
+        "The cohorts can differ, so they are descriptive and are not the "
+        "primary paired estimate. "
+        f"Cohort label: `{gaps.get('cohort', 'unspecified')}`.",
+        "",
+        f"Each slice against the `{reference}` reference slice (positive means "
+        "the slice scores higher):",
         "",
     ]
     for slice_language in sorted(base_gaps):
         lines.extend(
             [
-                f"### `{slice_language}` minus `{reference}`",
+                f"#### `{slice_language}` minus `{reference}`",
                 "",
                 "| Metric | Base gap | Adapter gap |",
                 "|--------|----------|-------------|",
@@ -75,6 +108,64 @@ def _language_gap_lines(comparison: dict[str, Any]) -> list[str]:
         for name, base_gap in base_gaps[slice_language].items():
             lines.append(f"| {name} | {base_gap:+.4f} | {adapter_gaps[name]:+.4f} |")
         lines.append("")
+    return lines
+
+
+def _paired_language_gap_lines(comparison: dict[str, Any]) -> list[str]:
+    paired = comparison.get("paired_language_gaps", {})
+    if not paired:
+        return []
+    lines = [
+        "",
+        "## Language Gaps",
+        "",
+        "### Exact matched-pair gaps (primary)",
+        "",
+        "Each translated row is compared only with the exact root row named by "
+        "`source_example_id`. Intervals resample those matched pairs; positive "
+        "gaps mean the translated slice scores higher.",
+        "",
+    ]
+    for target_language in sorted(paired):
+        block = paired[target_language]
+        base = block["base"]
+        adapter = block["adapter"]
+        reference = base["reference_language"]
+        coverage = block["coverage"]
+        base_intervals = base["gap_ci95"]["intervals"]
+        adapter_intervals = adapter["gap_ci95"]["intervals"]
+        lines.extend(
+            [
+                f"#### `{target_language}` minus `{reference}`",
+                "",
+                f"- Matched pairs: {block['pairs']}",
+                f"- Reference coverage: {coverage['paired']}/"
+                f"{coverage['reference_slice_examples']} "
+                f"({coverage['reference_fraction']:.1%})",
+                f"- Pair-set digest: `{block['pair_set_sha256']}`",
+                "",
+                "| Metric | Base gap | Base 95% CI | Adapter gap | Adapter 95% CI |",
+                "|--------|----------|-------------|-------------|----------------|",
+            ]
+        )
+        for name, base_gap in base["gaps"].items():
+            lines.append(
+                f"| {name} | {base_gap:+.4f} | "
+                f"{_format_interval(base_intervals[name])} | "
+                f"{adapter['gaps'][name]:+.4f} | "
+                f"{_format_interval(adapter_intervals[name])} |"
+            )
+        lines.extend(
+            [
+                "",
+                "Gap intervals use "
+                f"`{base['gap_ci95']['method']}` "
+                f"({base['gap_ci95']['resamples']} paired resamples; "
+                f"base seed {base['gap_ci95']['seed']}; "
+                f"adapter seed {adapter['gap_ci95']['seed']}).",
+                "",
+            ]
+        )
     return lines
 
 
@@ -96,9 +187,7 @@ def _runtime_lines(runtime: dict[str, Any]) -> list[str]:
         lines.append(f"- Observed cost: {cost} USD (source: {runtime.get('cost_source')})")
     stages = runtime.get("stages", {})
     for stage_name in sorted(stages):
-        lines.append(
-            f"- {stage_name}: {stages[stage_name]['elapsed_seconds']} s elapsed"
-        )
+        lines.append(f"- {stage_name}: {stages[stage_name]['elapsed_seconds']} s elapsed")
     return lines
 
 
@@ -110,8 +199,7 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
     """
     shared = comparison["shared"]
     run_id = str(comparison["run_id"])
-    metric_names = list(comparison["deltas"].keys())
-    denominator = comparison["base"]["metrics"][metric_names[0]]["denominator"]
+    denominator = sum(int(block["examples"]) for block in comparison["slices"].values())
     slices = comparison["slices"]
     adapter_source = comparison["adapter"].get("adapter_source")
 
@@ -162,7 +250,11 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
                 *_metrics_table(block),
             ]
         )
-    lines.extend(_language_gap_lines(comparison))
+    paired_gap_lines = _paired_language_gap_lines(comparison)
+    lines.extend(paired_gap_lines)
+    if not paired_gap_lines and comparison.get("language_gaps", {}).get("base"):
+        lines.extend(["", "## Language Gaps"])
+    lines.extend(_marginal_language_gap_lines(comparison))
     lines.extend(
         [
             "",
@@ -182,8 +274,7 @@ def render_comparison_markdown(comparison: dict[str, Any]) -> str:
             f"sommelier eval run --config config.resolved.yaml --model adapter "
             f"--adapter train/adapter --data formatted --out eval/adapter "
             f"--run-id {run_id}",
-            "sommelier report compare --base eval/base --adapter eval/adapter "
-            "--out report",
+            "sommelier report compare --base eval/base --adapter eval/adapter --out report",
             "```",
             "",
             "Generation artifacts per slice: "

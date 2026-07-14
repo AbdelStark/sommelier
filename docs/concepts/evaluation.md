@@ -47,7 +47,31 @@ The metrics are ordered diagnostics, not redundancy: a model can emit valid JSON
 
 Evaluation runs once per configured `eval.slices` language: the formatted test split is partitioned by each example's `language`, every slice is evaluated with the same model, prompt policy, parser, and decoding, and a configured slice with no rows is an error rather than an empty section. The evaluation report carries one metrics block per slice plus the overall block across all slices, each with its own prompt-set digest.
 
-The comparison report adds the measurement multilingual runs exist for: for every non-reference slice (the reference is the first configured slice, English in the v2 setup), it records the per-metric gap against the reference, once for the base model and once for the adapter. The base gap answers how much the model loses on French input before any training; the adapter gap answers how much of that loss the training closed. Because paired slices share byte-identical gold answers and tool schemas by construction, the gap isolates the query language as the only moving variable.
+The v3 evaluation report derives the reference language from the configured root dataset. For every non-reference slice it builds an exact matched cohort: each translated row is joined only to the root named by `source_example_id`. The report records the pair count, coverage against the complete root slice, a digest over both ordered prompt identities, per-metric gaps, and deterministic 95% paired-bootstrap intervals. The base gap answers how the untranslated model differs on the translated query; the adapter gap answers how that difference looks after training. Tools and gold answers are byte identical within a pair, but machine-translation quality and translation-survivorship selection remain limitations.
+
+The report also retains the older full-slice gap under the explicit cohort label `marginal_full_slices`. That comparison uses every surviving row in each language, so the root slice may contain examples with no translation. It is useful operationally but is descriptive, not the primary language-tax estimate. The Markdown rendering keeps matched-pair and marginal tables separate.
+
+Adapter gain is paired too: base and adapter outputs for the same example are resampled together, once per slice and once overall. The JSON records the method, seed, confidence level, resample count, and interval for every metric; the point estimate is still adapter minus base.
+
+## Bounded inference-efficiency evidence
+
+Each model arm writes `inference_telemetry.json` and binds it from its own
+`eval-base_manifest.json` or `eval-adapter_manifest.json`. The measurement is
+the sum of monotonic wall-clock intervals around individual end-to-end
+`TextGenerator.generate` calls, after one model instance has loaded. In the
+default Transformers path, each interval includes prompt tokenization, input
+device transfer, `model.generate`, and generated-token decoding. It does not
+use an explicit device-synchronization call. Exactly one call on the first
+prompt of the first configured slice warms up the same path; its output is
+discarded and its interval is not timed. English and then Hebrew examples run
+sequentially with concurrency one. Model load, parsing, and artifact I/O are
+explicitly excluded.
+
+The three-arm report can derive seconds per example and configured-GPU-seconds
+per `full_call_exact_match` success from that boundary. It only labels the arms
+cross-comparable when their configured GPU allocation, decoding, and telemetry
+contract are identical. These values are not batched serving throughput, a
+model-kernel-only timing, a latency service-level objective, or a cloud invoice.
 
 ## Everything is re-scorable
 

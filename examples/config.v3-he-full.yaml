@@ -1,0 +1,104 @@
+schema_version: sommelier.config.v2
+
+project:
+  name: sommelier-v3-he-full
+  artifact_root: artifacts
+  seed: 42
+
+model:
+  base_model_id: nvidia/Llama-3.1-Nemotron-Nano-8B-v1
+  base_model_revision: 54641c1611fcff44fa4865626462445e0a153fc7
+  tokenizer_revision: 54641c1611fcff44fa4865626462445e0a153fc7
+  allow_remote_code: false
+
+datasets:
+  - language: en
+    dataset_id: Salesforce/xlam-function-calling-60k
+    dataset_revision: 26d14ebfe18b1f7b524bd39b404b50af5dc97866
+    query_column: query
+    tools_column: tools
+    answers_column: answers
+  # PROVISIONAL: this publication name is reserved for the audited Hebrew
+  # translation. Before a full evidence run, publish the paired rows together
+  # with translation_summary.json, translation_semantic_review_template.json,
+  # translation_semantic_review.json, and translation_publication.json, then
+  # pin that exact dataset commit here.
+  - language: he
+    dataset_id: abdelstark/sommelier-xlam-single-call-splits-he
+    dataset_revision: main
+    query_column: query
+    tools_column: tools
+    answers_column: answers
+    source_id_column: source_example_id
+
+data:
+  n_train: 15000
+  n_validation: 1000
+  n_test: 1000
+  min_query_chars: 10
+  max_query_chars: 2000
+  dedupe_key: normalized_query
+
+formatting:
+  system_prompt: >
+    You are a tool-calling model. Select the correct tool and return only
+    the JSON tool call. Do not include explanations.
+  template_policy: tokenizer_chat_template
+  target_format: json_tool_call
+
+train:
+  epochs: 2
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 0.0002
+  scheduler: cosine
+  warmup_ratio: 0.03
+  max_sequence_length: 4096
+  quantization: nf4-4bit
+  compute_dtype: bfloat16
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  languages:
+    - en
+    - he
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+eval:
+  split: test
+  slices:
+    - en
+    - he
+  temperature: 0.0
+  do_sample: false
+  max_new_tokens: 512
+  parser_version: sommelier.parser.v1
+
+remote:
+  enabled: true
+  gpu: L40S
+  # Planning estimates used only for the outer-timeout admission floor; the
+  # current single-function pipeline has no per-stage watchdogs.
+  data_timeout_seconds: 1800
+  train_timeout_seconds: 43200
+  # Two evaluation arms run in the same Modal call. At 18,000s each, their
+  # 1,800s data + 43,200s train + 36,000s planning sum totals 81,000s,
+  # leaving 5,400s when SOMMELIER_TIMEOUT_SECONDS=86400 (Modal's 24-hour
+  # outer limit) for orchestration.
+  eval_timeout_seconds: 18000
+
+report:
+  retain_raw_generations: true
+  redact_fields: []
+
+tracking:
+  enabled: false
+  provider: wandb
+  project: sommelier

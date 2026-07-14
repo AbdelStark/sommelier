@@ -1,5 +1,6 @@
-// Every number here traces to a repository artifact. Do not edit without
-// re-checking the source.
+// Public metric and runtime values here trace to repository reports. The cost
+// is separately labeled as a maintainer billing-console observation. Do not
+// edit without re-checking the source and evidence class.
 //
 // Source: README.md "Reference result" + docs/results/reference-run.md
 // (run nemotron-8b-full-3, n=1,000 held-out prompts, greedy decoding,
@@ -28,7 +29,7 @@ export const COST = {
 // Source: README.md "Multilingual result" — v2 adapter en 0.870 vs fr 0.873
 // (+0.3 pts), fr test slice n=879, base model gap -4.2 pts.
 export const FRENCH = {
-  note: 'Bilingual, measured: the French–English gap closed to +0.3 pts (n=879).',
+  note: 'Bilingual: marginal French–English slices differ by +0.3 pts (fr n=879, en n=1,000; not paired).',
 };
 
 // Source: README.md serve example (verbatim tool call shape the adapter emits).

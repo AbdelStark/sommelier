@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import traceback
 from pathlib import Path
 
-from sommelier.config import load_config, write_resolved_config
+from sommelier.config import load_config, resolve_config_artifact_root, write_resolved_config
 from sommelier.data.prepare import (
     prepare_dataset_fixture,
     prepare_dataset_from_file,
@@ -73,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     translate_parser = data_subparsers.add_parser(
         "translate",
-        help="Translate root-source queries into a paired French dataset.",
+        help="Translate root-source queries into a paired language dataset.",
     )
     translate_parser.add_argument(
         "--input",
@@ -83,12 +84,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     translate_parser.add_argument("--out", required=True, type=Path)
     translate_parser.add_argument(
+        "--target-language",
+        choices=["fr", "he"],
+        default="fr",
+        help="ISO 639-1 target language (default: fr).",
+    )
+    translate_parser.add_argument(
         "--model-id",
         required=True,
-        help="Hugging Face id of the translator model (served with vllm).",
+        help=(
+            "Hugging Face id for the local translator path; the interface selects "
+            "vLLM chat or Transformers seq2seq."
+        ),
     )
     translate_parser.add_argument("--model-revision", default="main")
     translate_parser.add_argument("--max-new-tokens", type=int, default=1024)
+    translate_parser.add_argument(
+        "--output-decoder",
+        choices=["standard", "bytelevel_unicode"],
+        default="standard",
+        help=(
+            "Explicit model-output decoder; use bytelevel_unicode only for a declared "
+            "ByteLevel tokenizer defect."
+        ),
+    )
     translate_parser.add_argument(
         "--max-query-chars",
         type=int,
@@ -107,6 +126,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Translate only the first N selected rows (smoke runs).",
     )
     translate_parser.set_defaults(handler=cmd_data_translate)
+
+    semantic_create_parser = data_subparsers.add_parser(
+        "semantic-review-create",
+        help="Create the immutable 200-row Hebrew semantic-review template.",
+    )
+    semantic_create_parser.add_argument("--config", required=True, type=Path)
+    semantic_create_parser.add_argument("--root-input", required=True, type=Path)
+    semantic_create_parser.add_argument("--paired-input", required=True, type=Path)
+    semantic_create_parser.add_argument("--translation-summary", required=True, type=Path)
+    semantic_create_parser.add_argument("--out", required=True, type=Path)
+    semantic_create_parser.set_defaults(handler=cmd_data_semantic_review_create)
+
+    semantic_finalize_parser = data_subparsers.add_parser(
+        "semantic-review-finalize",
+        help="Finalize reviewer decisions and bind them into the publication manifest.",
+    )
+    semantic_finalize_parser.add_argument("--config", required=True, type=Path)
+    semantic_finalize_parser.add_argument("--root-input", required=True, type=Path)
+    semantic_finalize_parser.add_argument("--paired-input", required=True, type=Path)
+    semantic_finalize_parser.add_argument("--translation-summary", required=True, type=Path)
+    semantic_finalize_parser.add_argument("--template", required=True, type=Path)
+    semantic_finalize_parser.add_argument("--reviewed", required=True, type=Path)
+    semantic_finalize_parser.add_argument("--out", required=True, type=Path)
+    semantic_finalize_parser.add_argument("--reviewer-id", required=True)
+    semantic_finalize_parser.add_argument(
+        "--publication-manifest",
+        type=Path,
+        help="Output manifest path (default: translation_publication.json beside --out).",
+    )
+    semantic_finalize_parser.set_defaults(handler=cmd_data_semantic_review_finalize)
 
     validate_fixtures_parser = data_subparsers.add_parser(
         "validate-fixtures",
@@ -136,6 +185,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build without a tokenizer using the fixture template policy.",
     )
     build_parser_cmd.set_defaults(handler=cmd_format_build)
+
+    analyze_parser = subparsers.add_parser("analyze", help="Analysis commands.")
+    analyze_subparsers = analyze_parser.add_subparsers(dest="analyze_command", required=True)
+    tokenizer_parser = analyze_subparsers.add_parser(
+        "tokenization",
+        help="Measure per-language and paired tokenizer cost on formatted splits.",
+    )
+    tokenizer_parser.add_argument("--config", required=True, type=Path)
+    tokenizer_parser.add_argument("--data", required=True, type=Path)
+    tokenizer_parser.add_argument("--out", required=True, type=Path)
+    tokenizer_parser.add_argument("--run-id", type=str, default=None)
+    tokenizer_parser.set_defaults(handler=cmd_analyze_tokenization)
 
     eval_parser = subparsers.add_parser("eval", help="Evaluation commands.")
     eval_subparsers = eval_parser.add_subparsers(dest="eval_command", required=True)
@@ -187,6 +248,54 @@ def build_parser() -> argparse.ArgumentParser:
     report_compare_parser.add_argument("--out", required=True, type=Path)
     report_compare_parser.set_defaults(handler=cmd_report_compare)
 
+    report_experiment_parser = report_subparsers.add_parser(
+        "experiment",
+        help="Gate a base/v1-English/v3-English-Hebrew experiment.",
+    )
+    report_experiment_parser.add_argument(
+        "--base",
+        required=True,
+        type=Path,
+        help="Base-model evaluation directory.",
+    )
+    report_experiment_parser.add_argument(
+        "--v1-en",
+        required=True,
+        type=Path,
+        help="v1 English-adapter evaluation directory.",
+    )
+    report_experiment_parser.add_argument(
+        "--v3-en-he",
+        required=True,
+        type=Path,
+        help="v3 English-Hebrew adapter evaluation directory.",
+    )
+    report_experiment_parser.add_argument(
+        "--english-non-inferiority-margin",
+        required=True,
+        type=float,
+        help="Predeclared tolerated absolute English full-call regression.",
+    )
+    report_experiment_parser.add_argument(
+        "--seed",
+        required=True,
+        type=int,
+        help="Deterministic paired-bootstrap seed.",
+    )
+    report_experiment_parser.add_argument(
+        "--resamples",
+        required=True,
+        type=int,
+        help="Number of paired-bootstrap resamples.",
+    )
+    report_experiment_parser.add_argument(
+        "--out",
+        required=True,
+        type=Path,
+        help="Directory for experiment_report.json.",
+    )
+    report_experiment_parser.set_defaults(handler=cmd_report_experiment)
+
     pipeline_parser = subparsers.add_parser("pipeline", help="Pipeline commands.")
     pipeline_subparsers = pipeline_parser.add_subparsers(dest="pipeline_command", required=True)
 
@@ -226,7 +335,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the license and artifact release preflight.",
     )
     preflight_parser.add_argument("--config", required=True, type=Path)
+    preflight_parser.add_argument(
+        "--artifact-root",
+        type=Path,
+        default=None,
+        help=(
+            "Explicit artifact tree to scan; defaults to project.artifact_root "
+            "relative to the config file."
+        ),
+    )
     preflight_parser.set_defaults(handler=cmd_release_preflight)
+
+    publish_dataset_parser = release_subparsers.add_parser(
+        "publish-dataset",
+        help="Validate or explicitly publish the audited Hebrew dataset bundle.",
+    )
+    publish_dataset_parser.add_argument("--config", required=True, type=Path)
+    publish_dataset_parser.add_argument("--bundle", required=True, type=Path)
+    publish_dataset_parser.add_argument("--root-input", required=True, type=Path)
+    _add_publication_arguments(publish_dataset_parser)
+    publish_dataset_parser.set_defaults(handler=cmd_release_publish_dataset)
+
+    publish_adapter_parser = release_subparsers.add_parser(
+        "publish-adapter",
+        help="Validate or explicitly publish the evidence-bound Hebrew v3 adapter bundle.",
+    )
+    publish_adapter_parser.add_argument("--bundle", required=True, type=Path)
+    _add_publication_arguments(publish_adapter_parser)
+    publish_adapter_parser.set_defaults(handler=cmd_release_publish_adapter)
 
     serve_parser = subparsers.add_parser("serve", help="Optional serving commands.")
     serve_subparsers = serve_parser.add_subparsers(dest="serve_command", required=True)
@@ -242,6 +378,36 @@ def build_parser() -> argparse.ArgumentParser:
     serve_adapter_parser.set_defaults(handler=cmd_serve_adapter)
 
     return parser
+
+
+def _add_publication_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--repo-id", required=True, help="Exact Hugging Face namespace/name.")
+    parser.add_argument(
+        "--commit-message",
+        required=True,
+        help="One-line commit message recorded in the publication receipt.",
+    )
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Perform the Hub mutation; without this flag the command only validates.",
+    )
+    parser.add_argument(
+        "--create-repo",
+        action="store_true",
+        help="Create a new public repository with exist_ok=false before the first commit.",
+    )
+    parser.add_argument(
+        "--confirm-repo-id",
+        default=None,
+        help="Must exactly repeat --repo-id when --execute is used.",
+    )
+    parser.add_argument(
+        "--receipt",
+        type=Path,
+        default=None,
+        help="New local JSON receipt path; required with --execute and never overwritten.",
+    )
 
 
 def cmd_config_validate(args: argparse.Namespace) -> int:
@@ -300,15 +466,17 @@ def cmd_data_prepare(args: argparse.Namespace) -> int:
 
 
 def cmd_data_translate(args: argparse.Namespace) -> int:
+    from sommelier.artifacts import sha256_file
     from sommelier.data.load import load_raw_rows
     from sommelier.data.translate import (
-        PROGRESS_FILENAME,
         TranslatorInfo,
         load_vllm_translator,
+        progress_filename,
         select_example_ids,
         translate_rows,
         write_translation_outputs,
     )
+    from sommelier.manifests import get_git_commit
 
     rows = load_raw_rows(args.input.resolve())
     input_description = f"{args.input} ({len(rows)} rows)"
@@ -323,14 +491,18 @@ def cmd_data_translate(args: argparse.Namespace) -> int:
         model_id=args.model_id,
         model_revision=args.model_revision,
         max_new_tokens=args.max_new_tokens,
+        output_decoder=args.output_decoder,
+        implementation_revision=get_git_commit(),
     )
     model = load_vllm_translator(translator)
     out_dir = args.out.resolve()
     translated, stats = translate_rows(
         rows,
         model,
-        progress_path=out_dir / PROGRESS_FILENAME,
+        progress_path=out_dir / progress_filename(args.target_language),
         max_query_chars=args.max_query_chars,
+        target_language=args.target_language,
+        translator=translator,
     )
     rows_path, summary_path = write_translation_outputs(
         out_dir,
@@ -338,8 +510,109 @@ def cmd_data_translate(args: argparse.Namespace) -> int:
         stats,
         translator=translator,
         input_description=input_description,
+        target_language=args.target_language,
+        input_sha256=sha256_file(args.input.resolve()),
     )
     print(f"data translate ok: rows={rows_path} summary={summary_path}")
+    return 0
+
+
+def cmd_data_semantic_review_create(args: argparse.Namespace) -> int:
+    import json
+    import platform
+
+    import torch
+
+    from sommelier.data.load import load_raw_rows
+    from sommelier.data.semantic_review import (
+        capture_producer_provenance,
+        create_semantic_review_template,
+        load_transformers_backtranslator,
+        root_split_assignments,
+        validate_producer_provenance,
+    )
+    from sommelier.manifests import get_git_commit, get_git_worktree_clean
+
+    config = load_config(args.config.resolve())
+    root_path = args.root_input.resolve()
+    root_rows = load_raw_rows(root_path)
+    hardware = (
+        torch.cuda.get_device_name(0)
+        if torch.cuda.is_available()
+        else f"{platform.system()}-{platform.machine()}-cpu"
+    )
+    producer_provenance = capture_producer_provenance(
+        code_revision=get_git_commit(),
+        working_tree_clean=get_git_worktree_clean(),
+        execution_boundary="local",
+        provider="local",
+        hardware=hardware,
+    )
+    summary_path = args.translation_summary.resolve()
+    validate_producer_provenance(
+        producer_provenance,
+        translation_summary=json.loads(summary_path.read_text(encoding="utf-8")),
+    )
+    output = create_semantic_review_template(
+        root_rows_path=root_path,
+        paired_rows_path=args.paired_input.resolve(),
+        translation_summary_path=summary_path,
+        root_split_by_id=root_split_assignments(config, root_rows),
+        output_path=args.out.resolve(),
+        backtranslator=load_transformers_backtranslator(),
+        seed=config.project.seed,
+        producer_provenance=producer_provenance,
+    )
+    print(f"semantic review template ok: {output}")
+    return 0
+
+
+def cmd_data_semantic_review_finalize(args: argparse.Namespace) -> int:
+    from sommelier.data.load import load_raw_rows
+    from sommelier.data.semantic_review import (
+        SEMANTIC_REVIEW_FILENAME,
+        finalize_semantic_review,
+        root_split_assignments,
+    )
+    from sommelier.data.translate import (
+        PUBLICATION_MANIFEST_FILENAME,
+        write_translation_publication_manifest,
+    )
+
+    config = load_config(args.config.resolve())
+    root_path = args.root_input.resolve()
+    paired_path = args.paired_input.resolve()
+    summary_path = args.translation_summary.resolve()
+    template_path = args.template.resolve()
+    root_rows = load_raw_rows(root_path)
+    output_path = args.out.resolve()
+    if output_path.name != SEMANTIC_REVIEW_FILENAME:
+        raise UserInputError(f"final semantic review must be named {SEMANTIC_REVIEW_FILENAME!r}")
+    final = finalize_semantic_review(
+        args.reviewed.resolve(),
+        output_path,
+        template_path=template_path,
+        reviewer_id=args.reviewer_id,
+        root_rows_path=root_path,
+        paired_rows_path=paired_path,
+        translation_summary_path=summary_path,
+        root_split_by_id=root_split_assignments(config, root_rows),
+        expected_seed=config.project.seed,
+    )
+    publication_path = (
+        args.publication_manifest.resolve()
+        if args.publication_manifest is not None
+        else output_path.parent / PUBLICATION_MANIFEST_FILENAME
+    )
+    write_translation_publication_manifest(
+        publication_path,
+        translated_rows_path=paired_path,
+        summary_path=summary_path,
+        target_language="he",
+        semantic_review_path=final,
+        semantic_review_template_path=template_path,
+    )
+    print(f"semantic review final ok: review={final} publication={publication_path}")
     return 0
 
 
@@ -389,6 +662,41 @@ def cmd_format_build(args: argparse.Namespace) -> int:
             command=command,
         )
     print(f"format build ok: run_id={context.run_id} out={args.out}")
+    return 0
+
+
+def cmd_analyze_tokenization(args: argparse.Namespace) -> int:
+    from sommelier.analysis.tokenization import analyze_tokenizer_tax
+
+    config = load_config(args.config)
+    run_id = args.run_id or infer_run_id_from_path(args.data.resolve())
+    context = ensure_run_context(
+        config,
+        config_path=args.config,
+        run_id=run_id,
+        project_root=Path.cwd(),
+    )
+    command = [
+        "sommelier",
+        "analyze",
+        "tokenization",
+        "--config",
+        str(args.config),
+        "--data",
+        str(args.data),
+        "--out",
+        str(args.out),
+    ]
+    if run_id is not None:
+        command.extend(["--run-id", run_id])
+    analyze_tokenizer_tax(
+        config,
+        formatted_dir=args.data.resolve(),
+        out_dir=args.out.resolve(),
+        context=context,
+        command=command,
+    )
+    print(f"tokenization analysis ok: run_id={context.run_id} out={args.out}")
     return 0
 
 
@@ -522,6 +830,22 @@ def cmd_report_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_report_experiment(args: argparse.Namespace) -> int:
+    from sommelier.evaluation.experiment import write_experiment_report
+
+    write_experiment_report(
+        args.base.resolve(),
+        args.v1_en.resolve(),
+        args.v3_en_he.resolve(),
+        args.out.resolve(),
+        english_non_inferiority_margin=args.english_non_inferiority_margin,
+        seed=args.seed,
+        resamples=args.resamples,
+    )
+    print(f"report experiment ok: out={args.out}")
+    return 0
+
+
 def cmd_pipeline_run(args: argparse.Namespace) -> int:
     from sommelier.pipeline import run_pipeline
 
@@ -543,13 +867,51 @@ def cmd_release_preflight(args: argparse.Namespace) -> int:
 
     config = load_config(args.config)
     config_dir = args.config.resolve().parent
-    artifact_root = (config_dir / config.project.artifact_root).resolve()
+    artifact_root = (
+        args.artifact_root.absolute()
+        if args.artifact_root is not None
+        else resolve_config_artifact_root(config, config_dir=config_dir)
+    )
     run_release_preflight(
         config,
         project_root=Path.cwd(),
         artifact_root=artifact_root,
     )
     print(f"release preflight ok: {artifact_root / PREFLIGHT_FILENAME}")
+    return 0
+
+
+def cmd_release_publish_dataset(args: argparse.Namespace) -> int:
+    from sommelier.publication import publish_hebrew_dataset_bundle
+
+    result = publish_hebrew_dataset_bundle(
+        config_path=args.config.resolve(),
+        bundle_dir=args.bundle.resolve(),
+        root_rows_path=args.root_input.resolve(),
+        repo_id=args.repo_id,
+        commit_message=args.commit_message,
+        execute=args.execute,
+        create_repo=args.create_repo,
+        confirmed_repo_id=args.confirm_repo_id,
+        receipt_path=args.receipt.resolve() if args.receipt is not None else None,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_release_publish_adapter(args: argparse.Namespace) -> int:
+    from sommelier.publication import publish_hebrew_adapter_bundle
+
+    result = publish_hebrew_adapter_bundle(
+        bundle_dir=args.bundle.resolve(),
+        repo_id=args.repo_id,
+        commit_message=args.commit_message,
+        execute=args.execute,
+        create_repo=args.create_repo,
+        confirmed_repo_id=args.confirm_repo_id,
+        receipt_path=args.receipt.resolve() if args.receipt is not None else None,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
 

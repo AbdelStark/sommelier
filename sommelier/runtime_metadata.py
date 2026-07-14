@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Final, TypedDict, cast
+from typing import Any, Final, NotRequired, TypedDict, cast
 
 from sommelier.artifacts import write_artifact_atomic
 
@@ -10,6 +10,29 @@ RUNTIME_METADATA_SCHEMA: Final = "sommelier.runtime_metadata.v1"
 RUNTIME_METADATA_FILENAME: Final = "runtime_metadata.json"
 
 COST_UNAVAILABLE: Final = "unavailable"
+
+
+class SourceCodeProvenance(TypedDict):
+    git_commit: str
+    working_tree_clean: bool | None
+    boundary: str
+
+
+class HFHubDownloadPolicy(TypedDict):
+    disable_xet: bool
+    download_timeout_seconds: int
+    boundary: str
+
+
+class RemoteExecutionBoundary(TypedDict):
+    provider: str
+    function_timeout_seconds: int
+    gpu_allocation_label: str
+    configured_stage_planning_estimate_seconds: NotRequired[int]
+    outer_timeout_planning_headroom_seconds: NotRequired[int]
+    per_stage_watchdogs_enforced: NotRequired[bool]
+    hf_hub_download_policy: NotRequired[HFHubDownloadPolicy]
+    boundary: str
 
 
 class RuntimeMetadata(TypedDict):
@@ -21,11 +44,16 @@ class RuntimeMetadata(TypedDict):
     """
 
     schema_version: str
+    run_id: NotRequired[str]
+    config_sha256: NotRequired[str]
     stages: dict[str, dict[str, float]]
     hardware: dict[str, str]
     peak_gpu_memory_mb: int | None
     observed_cost_usd: float | None
     cost_source: str
+    packages: NotRequired[dict[str, str]]
+    source_code: NotRequired[SourceCodeProvenance]
+    remote_execution: NotRequired[RemoteExecutionBoundary]
 
 
 def _metadata_path(run_dir: Path) -> Path:
@@ -44,14 +72,21 @@ def load_runtime_metadata(run_dir: Path) -> RuntimeMetadata | None:
 
 def _write(run_dir: Path, metadata: RuntimeMetadata) -> None:
     def writer(temp_path: Path) -> None:
-        temp_path.write_text(
-            json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
-        )
+        temp_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
     write_artifact_atomic(_metadata_path(run_dir), writer)
 
 
-def initialize_runtime_metadata(run_dir: Path, *, gpu: str) -> RuntimeMetadata:
+def initialize_runtime_metadata(
+    run_dir: Path,
+    *,
+    gpu: str,
+    run_id: str | None = None,
+    config_sha256: str | None = None,
+    packages: dict[str, str] | None = None,
+    source_code: SourceCodeProvenance | None = None,
+    remote_execution: RemoteExecutionBoundary | None = None,
+) -> RuntimeMetadata:
     """Starts the run's metadata with hardware and explicit cost state."""
     metadata = RuntimeMetadata(
         schema_version=RUNTIME_METADATA_SCHEMA,
@@ -61,6 +96,17 @@ def initialize_runtime_metadata(run_dir: Path, *, gpu: str) -> RuntimeMetadata:
         observed_cost_usd=None,
         cost_source=COST_UNAVAILABLE,
     )
+    if (run_id is None) != (config_sha256 is None):
+        raise ValueError("run_id and config_sha256 must be supplied together")
+    if run_id is not None and config_sha256 is not None:
+        metadata["run_id"] = run_id
+        metadata["config_sha256"] = config_sha256
+    if packages is not None:
+        metadata["packages"] = dict(sorted(packages.items()))
+    if source_code is not None:
+        metadata["source_code"] = source_code.copy()
+    if remote_execution is not None:
+        metadata["remote_execution"] = remote_execution.copy()
     _write(run_dir, metadata)
     return metadata
 
