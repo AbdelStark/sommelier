@@ -15,6 +15,7 @@ import sommelier.data.openai_evidence as openai_evidence_module
 import sommelier.data.openai_translate as openai_translate_module
 import sommelier.data.split as split_module
 import sommelier.data.translate as translate_module
+from sommelier.data.translate import HEBREW_V3_TRANSLATION_LIST_PRICE_LIMIT_USD
 from sommelier.errors import UserInputError
 from sommelier.remote.images import OPENAI_TRANSLATION_RUNTIME_VERSIONS
 
@@ -43,7 +44,9 @@ def _openai_args(config_yaml: str, *, mode: str = "smoke") -> dict[str, Any]:
         "function_timeout_seconds": 3600,
         "openai_service_tier": "default",
         "openai_max_workers": 1,
-        "openai_list_price_limit_usd": "1000.00",
+        "openai_list_price_limit_usd": (
+            HEBREW_V3_TRANSLATION_LIST_PRICE_LIMIT_USD if mode == "full" else "1000.00"
+        ),
     }
 
 
@@ -277,7 +280,10 @@ def test_local_entrypoint_requires_explicit_instruction_chat_for_openai_transpor
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "config.yaml"
-    config_path.write_text("schema_version: test\n", encoding="utf-8")
+    config_path.write_text(
+        (EXAMPLES_DIR / "config.v3-he-smoke.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     reached: list[str] = []
 
     def fake_remote(*_args: object) -> str:
@@ -347,7 +353,10 @@ def test_local_entrypoint_dispatches_openai_without_gpu_allocation(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     config_path = tmp_path / "config.yaml"
-    config_path.write_text("schema_version: test\n", encoding="utf-8")
+    config_path.write_text(
+        (EXAMPLES_DIR / "config.v3-he-smoke.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     captured: list[object] = []
 
     def fake_remote(*args: object) -> str:
@@ -392,6 +401,57 @@ def test_local_entrypoint_dispatches_openai_without_gpu_allocation(
 
     assert captured[-5:] == [None, remote_translate.TIMEOUT_SECONDS, "flex", 4, "50.00"]
     assert capsys.readouterr().out.strip() == "openai-ok"
+
+
+def test_local_entrypoint_dispatches_only_the_exact_full_hebrew_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    captured: list[object] = []
+
+    def fake_remote(*args: object) -> str:
+        captured.extend(args)
+        return "full-openai-ok"
+
+    monkeypatch.setattr(
+        remote_translate.run_remote_openai_translation,
+        "remote",
+        fake_remote,
+    )
+    monkeypatch.setattr(
+        remote_translate,
+        "_local_source_identity",
+        lambda: ("a" * 40, True),
+    )
+
+    remote_translate.main.info.raw_f(
+        config=str(EXAMPLES_DIR / "config.v3-he-full.yaml"),
+        run_id="he-v3-full-dispatch",
+        mode="full",
+        max_rows=translate_module.HEBREW_V3_TRANSLATION_MAX_ROWS,
+        model_id=translate_module.HEBREW_V3_FORWARD_TRANSLATOR_MODEL_ID,
+        model_revision=translate_module.HEBREW_V3_FORWARD_TRANSLATOR_MODEL_REVISION,
+        max_new_tokens=translate_module.HEBREW_V3_FORWARD_TRANSLATOR_MAX_NEW_TOKENS,
+        translator_interface=translate_module.HEBREW_V3_FORWARD_TRANSLATOR_INTERFACE,
+        max_model_len=translate_module.HEBREW_V3_FORWARD_TRANSLATOR_MAX_MODEL_LEN,
+        trust_remote_code=translate_module.HEBREW_V3_FORWARD_TRANSLATOR_TRUST_REMOTE_CODE,
+        output_decoder=translate_module.HEBREW_V3_FORWARD_TRANSLATOR_OUTPUT_DECODER,
+        limit=0,
+        target_language="he",
+        runtime_backend="openai_responses",
+        openai_service_tier=translate_module.HEBREW_V3_TRANSLATION_PROVIDER_SERVICE_TIER,
+        openai_max_workers=translate_module.HEBREW_V3_TRANSLATION_PROVIDER_MAX_WORKERS,
+        openai_list_price_limit_usd=HEBREW_V3_TRANSLATION_LIST_PRICE_LIMIT_USD,
+    )
+
+    assert captured[-5:] == [
+        None,
+        remote_translate.TIMEOUT_SECONDS,
+        "flex",
+        8,
+        "50.00",
+    ]
+    assert capsys.readouterr().out.strip() == "full-openai-ok"
 
 
 def test_openai_smoke_body_uses_journal_factory_and_never_touches_model_caches(
@@ -583,3 +643,55 @@ def test_full_hebrew_openai_backend_passes_exact_preregistration_before_export(
         remote_translate.run_remote_openai_translation.get_raw_f()(**args)
 
     assert reached == ["export"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("openai_service_tier", "default", "provider_service_tier"),
+        ("openai_max_workers", 7, "provider_max_workers"),
+        ("openai_list_price_limit_usd", "1000.00", "list_price_limit_usd"),
+    ],
+)
+def test_full_hebrew_provider_selection_rejects_before_export_or_factory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    args = _openai_args(
+        (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8"),
+        mode="full",
+    )
+    args.update(
+        max_rows=60_000,
+        max_new_tokens=512,
+        openai_service_tier="flex",
+        openai_max_workers=8,
+    )
+    args[field] = value
+    reached: list[str] = []
+
+    def unexpected_export(*_args: object, **_kwargs: object) -> int:
+        reached.append("export")
+        raise AssertionError("provider drift must fail before dataset access")
+
+    def unexpected_factory(*_args: object, **_kwargs: object) -> object:
+        reached.append("factory")
+        raise AssertionError("provider drift must fail before provider construction")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    monkeypatch.setenv("HF_TOKEN", "test-only")
+    monkeypatch.setattr(remote_translate, "ARTIFACTS_ROOT", tmp_path)
+    monkeypatch.setattr(export_module, "export_raw_rows", unexpected_export)
+    monkeypatch.setattr(
+        remote_translate,
+        "_load_translation_model_for_backend",
+        unexpected_factory,
+    )
+
+    with pytest.raises(UserInputError, match=message):
+        remote_translate.run_remote_openai_translation.get_raw_f()(**args)
+
+    assert reached == []

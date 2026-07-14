@@ -68,6 +68,11 @@ This is paid resource-fit evidence only. A dirty checkout is recorded rather
 than hidden, but even a clean successful diagnostic is ineligible for dataset,
 accuracy, full-training, cost-saving, or release claims. Run it from the clean
 producer revision for the most useful comparison with the later full run.
+It complements rather than replaces the current-contract paired smoke below:
+the diagnostic uses the exact full rank/sequence/batch shape on synthetic rows
+without provider or dataset I/O, while the paired smoke exercises provider,
+data, and pipeline integration with deliberately reduced training/evaluation
+limits. Neither is full-run evidence.
 
 ### Pipeline and translation commands
 
@@ -81,7 +86,8 @@ SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=86400 \
 uv run modal run --detach remote_pipeline.py \
   --config examples/config.full.yaml --mode full --max-rows 60000
 
-# Hebrew paired smoke: explicit paid Responses/Flex producer on CPU
+# Current-contract Hebrew paired smoke: explicit paid Responses/Flex producer
+# on CPU, with the final 512-token translation limit and current v2 evidence.
 SOMMELIER_TIMEOUT_SECONDS=3600 \
 uv run modal run --detach remote_translate.py \
   --config examples/config.v3-he-smoke.yaml \
@@ -108,14 +114,27 @@ uv run modal run --detach remote_pipeline.py \
   --run-id he-v3-full
 ```
 
-Pass `--run-id <name>` to name the run; otherwise an id is generated, and smoke runs always get a `smoke-` prefix so a later full run cannot overwrite them. Run the full pipeline with `--detach` so a dropped local connection does not kill hour three of training; you pull the results off the volume afterwards. The default full config is English-only, so it has no translation artifact to stage or verify.
+The paired commands are the current-contract paid integration smoke. The
+translation producer uses the final 512-token/provider-evidence-v2 contract;
+the smoke pipeline intentionally uses smaller sequence, LoRA, batch, and
+evaluation limits than the full config. It therefore checks end-to-end wiring,
+not the exact full QLoRA resource shape. Conversely, the L40S diagnostic above
+checks that exact resource shape but is synthetic and not end-to-end. The
+already completed historical 140-row Flex smoke used a 256-token/v1 evidence
+contract and validates neither current check. Do not claim any of these ran
+without its artifact, and do not use their outputs in the full result table.
+
+Pass `--run-id <name>` to name the run; otherwise an id is generated. Explicit IDs must be one safe path component, and smoke runs always get a `smoke-` prefix so a later full run cannot overwrite them. For a full run, the remote worker resolves that ID once and rejects an existing directory in its mounted volume view before dataset export, paired-source staging, or model work. This check necessarily runs after Modal dispatch, so allocation startup is not a zero-cost remote existence probe. The shared pipeline then claims the absent directory with an atomic filesystem create before writing run evidence. These checks reject sequential reuse; they are not a distributed mutex across concurrent Modal containers, so launching the same full run ID concurrently is unsupported. Full attempts are non-resumable: choose a fresh run id after any success or failure. Run the full pipeline with `--detach` so a dropped local connection does not kill hour three of training; you pull the results off the volume afterwards. The default full config is English-only, so it has no translation artifact to stage or verify.
 
 For a paired **smoke** run, `--translation-run-id` names the completed
 `remote_translate.py` run staged next to the exported root rows. Translation
 and pipeline must use the same config, mode, and `--max-rows`; a diagnostic
 `--limit` prefix cannot feed the pipeline. The staging gate checks the selected
 root identities, row bytes, summary, and publication manifest before data
-preparation starts.
+preparation starts. The translation run ID must also be one safe path component;
+it is validated locally before Modal dispatch and again remotely before dataset
+export or artifact access. The mounted run itself must be a real directory, not
+a symlink or path alias.
 
 A **paired full** run rejects `--translation-run-id`. Publish the complete
 audited survivor set first, together with `translation_summary.json`,
@@ -140,12 +159,32 @@ SOMMELIER_GPU=A10G uv run modal run remote_semantic_review.py \
 ```
 
 This producer fails unless it runs from the same clean immutable Git SHA
-recorded by the full translation. Its evidence image is pinned to Python
+recorded by the full translation. The local entrypoint rejects a dirty,
+mutable, or unknown source identity before Modal dispatch, and the remote body
+rechecks the same boundary before artifact access. Its evidence image is pinned to Python
 3.13.3, torch 2.11.0, transformers 5.13.1, tokenizers 0.22.2, accelerate
 1.14.0, huggingface-hub 1.22.0, sentencepiece 0.2.2, and sacremoses 0.1.1;
 the local `semantic-review-create` path enforces those same versions and
 records its local hardware. The remote artifact also records the explicitly
-dispatched GPU and timeout rather than reading a container default. Keep
+dispatched GPU and timeout rather than reading a container default. The run ID
+must be one safe 1-128 character path component. The producer then exclusively
+creates and volume-commits an empty, invalid reservation at the final template
+path before loading the config, rows, or backtranslation model. Any existing
+template file or symlink is refused, and the containing translation run must
+itself be a real non-symlink directory. A later failure leaves an empty or
+partial terminal
+reservation only when cleanup cannot prove it still owns an empty inode. A
+caught config/data/model exception removes and volume-commits its exact
+still-empty reservation, so the semantic job can safely retry against the same
+completed translation. A replaced or nonempty marker is preserved and requires
+a new full translation run ID. A hard process/container crash leaves an empty
+marker: confirm no producer is active, download and verify the file is exactly
+zero bytes, then explicitly remove only that path with `modal volume rm` before
+retrying the semantic job. Never remove a nonempty marker or rerun after review
+has started. This closes the mounted-filesystem check/write race but does not
+claim provider-wide locking across separately launched Modal containers, so do
+not launch the same ID concurrently. The pure local builder may still replace
+disposable test fixtures and does not weaken this remote boundary. Keep
 `translation_semantic_review_template.json` untouched, review a distinct copy,
 and write `translation_semantic_review.json` to a third distinct file. The
 finalizer rejects path aliases and hard links as well as identical path names.

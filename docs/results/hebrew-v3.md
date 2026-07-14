@@ -231,6 +231,18 @@ disables stored response retrieval for this workflow; it is not a claim of Zero
 Data Retention. The source query and bounded selected-tool projection leave the
 Modal boundary and are processed by OpenAI.
 
+Before dataset export or provider construction, a full Hebrew launch validates
+the complete v3 project, base/tokenizer, English root, split, formatting,
+QLoRA, evaluation, remote, reporting, and tracking contract. The Hebrew dataset
+revision is the sole pre-publication exception: the committed `main` placeholder
+is accepted until the audited rows are published. The run directory also locks
+an exact config and run identity. A matching progress-only attempt can resume;
+once accepted `rows.he.jsonl`, `translation_summary.json`, or the publication
+manifest exists, that run ID cannot be launched again or overwritten. The
+identity reservation is not a distributed mutex: launching the same incomplete
+run ID concurrently is unsupported. Operators must wait for an invocation to
+exit before starting its identity-matched resume.
+
 The 140-row smoke cost scales naively to **$43.4310535714** (about **$43.43**)
 for 17,000 rows before retries. Adding 15% gives **$49.9457116**, so the required
 `50.00` USD full-run ceiling is a local pre-request
@@ -257,6 +269,38 @@ uv run modal volume get sommelier-artifacts \
 cp artifacts/translation/he-v3-translate-full/translation_semantic_review_template.json \
   artifacts/translation/he-v3-translate-full/translation_semantic_review_reviewed.json
 ```
+
+The remote producer accepts only a 1-128 character safe run-id component, then
+exclusively creates and volume-commits an empty, deliberately invalid file at
+the final template path before loading the config, rows, or backtranslation
+model. Any existing file or symlink is refused. Failure handling is
+deliberately conditional: a caught config/data/model exception removes and
+volume-commits only the exact reservation inode if it is still empty; the same
+completed translation run can then retry the semantic job without repeating
+17,000 provider translations. If the path was replaced or gained any bytes, it
+is preserved and the producer remains fail-closed; use a new full translation
+run ID rather than deleting possible evidence. A hard process/container crash
+cannot run cleanup and therefore leaves an inspectable empty reservation. Only
+after confirming that no producer is active, download it and verify it is
+exactly zero bytes. Explicit recovery may then remove only that file before
+retrying the semantic job:
+
+```bash
+RECOVERY_COPY="$(mktemp)"
+uv run modal volume get --force sommelier-artifacts \
+  translation/<full-id>/translation_semantic_review_template.json \
+  "$RECOVERY_COPY"
+test ! -s "$RECOVERY_COPY"
+rm "$RECOVERY_COPY"
+uv run modal volume rm sommelier-artifacts \
+  translation/<full-id>/translation_semantic_review_template.json
+```
+
+Exclusive creation closes the mounted-filesystem
+check/write race; it is not a claim of provider-wide locking across separately
+launched Modal containers, so do not launch the same ID concurrently. The pure
+local template builder may still replace disposable test fixtures, but it is
+not the remote release-evidence boundary.
 
 Fill only the `review` fields in the copied file. Keep the machine template
 untouched, then finalize all 200 judgments and regenerate the publication
@@ -293,21 +337,24 @@ for name in rows.he.jsonl translation_summary.json \
   cp "artifacts/translation/he-v3-translate-full/$name" "$DATASET_BUNDLE/$name"
 done
 
-# No Hub import or mutation: validate the complete local contract first.
+# No Hub import or mutation: validate the complete local contract and the
+# intended first-publication plan. This assumes the destination is absent.
 uv run sommelier release publish-dataset \
   --config examples/config.v3-he-full.yaml \
   --bundle "$DATASET_BUNDLE" \
   --root-input artifacts/translation/he-v3-translate-full/rows.en.jsonl \
   --repo-id abdelstark/sommelier-xlam-single-call-splits-he \
-  --commit-message "Publish audited Hebrew v3 paired rows"
+  --commit-message "Publish audited Hebrew v3 paired rows" \
+  --create-repo
 ```
 
 Review that JSON plan, install the isolated publication dependency, and make
 the first public commit only from the authenticated release host. If the
 reserved repository is still absent, the first execution uses `--create-repo`;
-omit that flag only when the dedicated repository already has an immutable
-HEAD. A pre-existing empty repository is not eligible for an unguarded
-parentless commit:
+the reviewed validation-only plan above must include it too. Omit the flag from
+both passes only when the dedicated repository already has an immutable HEAD.
+A pre-existing empty repository is not eligible for an unguarded parentless
+commit:
 
 ```bash
 uv sync --extra publish
@@ -338,6 +385,20 @@ Replace the provisional Hebrew revision in the config with the exact immutable
 `repository.commit_sha` from the verified receipt. Full evidence runs consume
 and verify the published rows and all four provenance files; diagnostic
 `--translation-run-id` staging is smoke-only.
+
+There are two complementary paid pre-full checks, and neither is full evidence.
+The current-contract paired smoke in the
+[remote execution guide](../guides/remote-execution.md#pipeline-and-translation-commands)
+runs the 512-token, provider-evidence-v2 translation path and then the reduced
+smoke pipeline, so it checks provider/data/pipeline integration. Its training
+and evaluation config deliberately uses smaller limits and is not the full v3
+resource shape. The completed historical 140-row Flex smoke used a 256-token,
+v1 evidence contract and does not count as this current-contract smoke. The
+L40S check below does the opposite: it exercises the exact full QLoRA resource
+shape with synthetic rows, but does not call the provider, consume the
+published dataset, or run end-to-end accuracy. Do not describe either check as
+run until its own artifact exists, and do not combine them into a release
+claim.
 
 Before the two full training/evaluation allocations, exercise the exact v3
 memory shape once from the clean producer revision:
@@ -384,7 +445,9 @@ uv run modal run --detach remote_pipeline.py \
   --run-id he-v3-full
 ```
 
-Run the bounded smoke configurations first. Smoke output proves wiring only and must not fill the result table.
+Run the current-contract paired smoke before these full allocations. Its output
+proves bounded integration wiring only and must not fill the result table; the
+full-shape diagnostic independently proves bounded resource fit only.
 
 After both full evaluation arms exist, build the claim-gated experiment artifact:
 
@@ -407,6 +470,114 @@ uv run sommelier report experiment \
   --seed 42 --resamples 2000 \
   --out artifacts/experiments/he-v3
 ```
+
+### Adapter publication handoff
+
+Publication order is evidence-bearing. Stay on the exact clean training SHA
+recorded by `artifacts/runs/he-v3-full/train_manifest.json` while finalizing the
+experiment, assembling and certifying the adapter, and publishing it. Do this
+**before** editing tracked result tables, README claims, or paper text. If the
+main checkout has already moved or become dirty, use a separate clean worktree
+at that SHA; do not rewrite the run manifests to match a newer commit.
+
+Confirm the checkout, then assemble the exact allowlisted bundle under the
+ignored `artifacts/` tree. The run manifest and resolved config come from the
+run root; PEFT files come from `train/adapter`; the experiment report comes
+from the finalizer output above. Training metrics are evidence in the run tree,
+but are not an allowed adapter-bundle file.
+
+```bash
+V3_RUN=artifacts/runs/he-v3-full
+EXPERIMENT=artifacts/experiments/he-v3/experiment_report.json
+ADAPTER_BUNDLE=artifacts/publication/hebrew-adapter
+TRAINING_SHA="$(jq -er '.git_commit' "$V3_RUN/train_manifest.json")"
+
+test "$(git rev-parse HEAD)" = "$TRAINING_SHA"
+test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+test ! -e "$ADAPTER_BUNDLE"
+mkdir -p "$ADAPTER_BUNDLE/adapter"
+
+cp docs/release/hebrew-v3-adapter-card-template.md "$ADAPTER_BUNDLE/README.md"
+cp licenses/THIRD_PARTY.md "$ADAPTER_BUNDLE/THIRD_PARTY.md"
+cp licenses/LICENSE-NVIDIA-OPEN-MODEL.txt \
+  licenses/LICENSE-LLAMA-3.1.txt licenses/NOTICE "$ADAPTER_BUNDLE/"
+cp "$V3_RUN/config.resolved.yaml" \
+  "$V3_RUN/manifest.json" \
+  "$V3_RUN/train_manifest.json" \
+  "$ADAPTER_BUNDLE/"
+cp "$EXPERIMENT" "$ADAPTER_BUNDLE/experiment_report.json"
+cp "$V3_RUN/train/adapter/README.md" \
+  "$V3_RUN/train/adapter/adapter_config.json" \
+  "$V3_RUN/train/adapter/adapter_model.safetensors" \
+  "$ADAPTER_BUNDLE/adapter/"
+
+for name in added_tokens.json chat_template.jinja special_tokens_map.json \
+  tokenizer.json tokenizer.model tokenizer_config.json; do
+  if test -f "$V3_RUN/train/adapter/$name"; then
+    cp "$V3_RUN/train/adapter/$name" "$ADAPTER_BUNDLE/adapter/$name"
+  fi
+done
+```
+
+Fill the copied model card only from the bundle. These commands derive every
+required identity and expose the claim decisions; retain only claims whose
+gates passed, then remove every `REPLACE_FROM_VERIFIED_BUNDLE` marker.
+
+```bash
+uv run python -c \
+  'from pathlib import Path; from sommelier.evaluation.generate import adapter_tree_sha256; print(adapter_tree_sha256(Path("artifacts/publication/hebrew-adapter/adapter")))'
+shasum -a 256 "$ADAPTER_BUNDLE/experiment_report.json"
+jq -er '.git_commit' "$ADAPTER_BUNDLE/train_manifest.json"
+uv run python -c \
+  'from pathlib import Path; from sommelier.config import load_config; print(load_config(Path("artifacts/publication/hebrew-adapter/config.resolved.yaml")).dataset_for("he").dataset_revision)'
+jq '{all_claims_passed, approved_claims, claims}' \
+  "$ADAPTER_BUNDLE/experiment_report.json"
+```
+
+Run preflight last: it writes `release_preflight.json` and certifies the final
+tree while excluding only that self-referential report. A passing preflight is
+the end of bundle mutation.
+
+```bash
+SOMMELIER_ACK_BASE_MODEL_LICENSE="nvidia/Llama-3.1-Nemotron-Nano-8B-v1" \
+uv run sommelier release preflight \
+  --config "$ADAPTER_BUNDLE/config.resolved.yaml" \
+  --artifact-root "$ADAPTER_BUNDLE"
+```
+
+For a destination that does not yet exist, include `--create-repo` in both the
+validation-only plan and the executed command so the reviewed plan matches the
+mutation. Omit it from both commands only when the dedicated repository already
+has an immutable HEAD; a pre-existing empty repository is not an eligible
+parentless target.
+
+```bash
+ADAPTER_REPO=abdelstark/Llama-3.1-Nemotron-Nano-8B-xlam-tool-calling-he-en-lora
+
+# Validation only: no Hub import or mutation.
+uv run sommelier release publish-adapter \
+  --bundle "$ADAPTER_BUNDLE" \
+  --repo-id "$ADAPTER_REPO" \
+  --commit-message "Publish claim-gated Hebrew v3 QLoRA adapter" \
+  --create-repo
+
+# Deliberate first publication after reviewing the JSON plan.
+uv sync --extra publish
+test ! -e artifacts/publication/hebrew-adapter-receipt.json
+uv run --extra publish sommelier release publish-adapter \
+  --bundle "$ADAPTER_BUNDLE" \
+  --repo-id "$ADAPTER_REPO" \
+  --commit-message "Publish claim-gated Hebrew v3 QLoRA adapter" \
+  --execute --create-repo \
+  --confirm-repo-id "$ADAPTER_REPO" \
+  --receipt artifacts/publication/hebrew-adapter-receipt.json
+```
+
+Require receipt status `verified`, record its immutable
+`repository.commit_sha`, and only then edit tracked result tables, README
+claims, paper text, or release links. A failed attempt deliberately owns its
+fresh receipt path; inspect that journal and the Hub before choosing a new path
+or retrying.
 
 ## Result placeholders
 

@@ -26,24 +26,31 @@ validation, dedupe, and seeded split selection the pipeline uses (CPU,
 seconds), translates exactly the selected rows with the selected pinned
 runtime, audits every output against its protected spans, and writes
 rows.<language>.jsonl plus translation_summary.json to the artifacts volume under
-artifacts/translation/<run_id>/. Progress is checkpointed per row, so
-re-running with the same run id resumes instead of restarting.
+artifacts/translation/<run_id>/. Progress is checkpointed per row. A full
+Hebrew run ID resumes only while terminal outputs are absent and its config,
+selection, translator, provider, source revision, and resource identity still
+match; accepted rows and their summary make the run ID permanently one-shot.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform
 import re
+import tempfile
 import time
+from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Final, Literal, cast
 
 import modal
 
+from sommelier.config import SommelierConfig
 from sommelier.data.openai_evidence import (
     OPENAI_PROVIDER_JOURNAL_FILENAME,
     build_openai_provider_evidence,
@@ -81,6 +88,7 @@ TranslationRuntimeBackend = Literal[
     "transformers_seq2seq",
     "openai_responses",
 ]
+TranslationInterface = Literal["instruction_chat", "translategemma", "madlad_seq2seq"]
 OpenAIServiceTier = Literal["default", "flex"]
 VLLM_RUNTIME_BACKEND: Final[TranslationRuntimeBackend] = "vllm_chat"
 SEQ2SEQ_RUNTIME_BACKEND: Final[TranslationRuntimeBackend] = "transformers_seq2seq"
@@ -96,6 +104,24 @@ VLLM_TRANSLATION_MAX_ATTEMPTS: Final = 3
 SEQ2SEQ_TRANSLATION_MAX_ATTEMPTS: Final = 1
 OPENAI_TRANSLATION_MAX_ATTEMPTS: Final = 3
 OPENAI_TRANSLATION_CHUNK_SIZE: Final = 32
+TRANSLATION_RUN_ID_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+TRANSLATION_RUN_IDENTITY_SCHEMA: Final = "sommelier.translation_run_identity.v1"
+TRANSLATION_RUN_IDENTITY_FILENAME: Final = "translation_run_identity.json"
+
+
+@dataclass(frozen=True)
+class _ValidatedTranslationLaunch:
+    config: SommelierConfig
+    resolved_target: str
+    resolved_interface: TranslationInterface
+    max_attempts: int
+    resolved_chunk_size: int
+    resolved_openai_service_tier: OpenAIServiceTier
+    resolved_openai_max_workers: int
+    resolved_openai_list_price_limit: Decimal | None
+    resolved_allocation_gpu: str | None
+    resolved_function_timeout: int
+
 
 artifacts_volume = modal.Volume.from_name("sommelier-artifacts", create_if_missing=True)
 hf_cache_volume = modal.Volume.from_name("sommelier-hf-cache", create_if_missing=True)
@@ -109,6 +135,137 @@ openai_image = openai_translation_image()
 # Compatibility alias retained for callers that inspect the historical module
 # surface. Runtime dispatch below always selects an explicit image.
 image = vllm_image
+
+
+def _validate_translation_run_id(run_id: str) -> str:
+    """Reject path traversal before a run ID is joined to the artifact root."""
+    if TRANSLATION_RUN_ID_PATTERN.fullmatch(run_id) is None:
+        from sommelier.errors import UserInputError
+
+        raise UserInputError(
+            f"invalid translation run id: {run_id!r}",
+            hint=(
+                "Use 1-128 ASCII letters, digits, dots, underscores, or hyphens; "
+                "the first character must be alphanumeric."
+            ),
+        )
+    return run_id
+
+
+def _write_exclusive_text(path: Path, text: str) -> None:
+    """Create one durable identity file without replacing an existing inode."""
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _admit_full_hebrew_translation_run(
+    work: Path,
+    *,
+    run_id: str,
+    target_language: str,
+    config_yaml: str,
+    identity: dict[str, object],
+) -> None:
+    """Reserve or resume one full run without touching finalized evidence.
+
+    A terminal rows/summary/publication file is an immutable one-shot boundary.
+    Before that boundary, the same run ID may resume only when both its exact
+    submitted config bytes and complete run-level identity match.
+    """
+    from sommelier.data.translate import (
+        PUBLICATION_MANIFEST_FILENAME,
+        SUMMARY_FILENAME,
+        rows_filename,
+    )
+    from sommelier.errors import UserInputError
+    from sommelier.redaction import loads_unique_json
+
+    if work.is_symlink() or (work.exists() and not work.is_dir()):
+        raise UserInputError(f"translation run path is not a regular directory: {work}")
+
+    final_paths = (
+        work / rows_filename(target_language),
+        work / SUMMARY_FILENAME,
+        work / PUBLICATION_MANIFEST_FILENAME,
+    )
+    finalized = [path.name for path in final_paths if path.exists() or path.is_symlink()]
+    if finalized:
+        raise UserInputError(
+            f"full translation run id {run_id!r} already has finalized output: "
+            + ", ".join(finalized),
+            hint=(
+                "Keep accepted rows and summary evidence immutable. Use a new --run-id; "
+                "only a progress-only run with matching identity may resume."
+            ),
+        )
+
+    work.mkdir(parents=True, exist_ok=True)
+    identity_path = work / TRANSLATION_RUN_IDENTITY_FILENAME
+    encoded_identity = json.dumps(identity, indent=2, sort_keys=True) + "\n"
+    if identity_path.exists() or identity_path.is_symlink():
+        if identity_path.is_symlink() or not identity_path.is_file():
+            raise UserInputError("translation run identity is not a regular file")
+        try:
+            observed_identity = loads_unique_json(identity_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise UserInputError("translation run identity is missing or invalid") from error
+        if observed_identity != identity:
+            raise UserInputError(
+                f"incomplete translation run id {run_id!r} has a different identity",
+                hint=(
+                    "Resume with the exact same config, source SHA, selection, translator, "
+                    "provider, and resource arguments, or use a new --run-id."
+                ),
+            )
+    else:
+        existing = sorted(path.name for path in work.iterdir())
+        if existing:
+            raise UserInputError(
+                f"incomplete translation run id {run_id!r} has no run identity",
+                hint=(
+                    "The existing artifacts cannot be proven resumable under this launch. "
+                    "Preserve them and use a new --run-id."
+                ),
+            )
+        try:
+            _write_exclusive_text(identity_path, encoded_identity)
+        except FileExistsError as error:
+            raise UserInputError("translation run identity reservation raced") from error
+
+    config_path = work / "config.yaml"
+    if config_path.exists() or config_path.is_symlink():
+        if config_path.is_symlink() or not config_path.is_file():
+            raise UserInputError("translation run config is not a regular file")
+        try:
+            observed_config = config_path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise UserInputError("translation run config cannot be read") from error
+        if observed_config != config_yaml:
+            raise UserInputError(
+                f"incomplete translation run id {run_id!r} has different config bytes",
+                hint="Use the exact original config or choose a new --run-id.",
+            )
+    else:
+        try:
+            _write_exclusive_text(config_path, config_yaml)
+        except FileExistsError:
+            observed_config = config_path.read_text(encoding="utf-8")
+            if observed_config != config_yaml:
+                raise UserInputError(
+                    f"incomplete translation run id {run_id!r} has different config bytes"
+                )
+
+    # Close the small reservation/finalization race before any model/provider
+    # construction. A concurrent completion is terminal for this invocation.
+    finalized = [path.name for path in final_paths if path.exists() or path.is_symlink()]
+    if finalized:
+        raise UserInputError(
+            f"full translation run id {run_id!r} became finalized during admission: "
+            + ", ".join(finalized),
+            hint="Keep the existing evidence immutable and use a new --run-id.",
+        )
 
 
 def _runtime_versions(
@@ -260,7 +417,54 @@ def _local_source_identity() -> tuple[str, bool | None]:
     return get_git_commit(), get_git_worktree_clean()
 
 
-def _run_remote_translation(
+def _validated_translation_config(
+    config_yaml: str,
+    *,
+    mode: str,
+    target_language: str,
+) -> tuple[SommelierConfig, str]:
+    """Parse and validate the translation config without durable or remote I/O."""
+    from sommelier.config import load_config
+    from sommelier.errors import UserInputError
+    from sommelier.pipeline import apply_smoke_overrides
+
+    with tempfile.TemporaryDirectory(prefix="sommelier-translation-config-") as temporary:
+        incoming_config_path = Path(temporary) / "config.yaml"
+        incoming_config_path.write_text(config_yaml, encoding="utf-8")
+        config = load_config(incoming_config_path)
+    if mode not in {"smoke", "full"}:
+        raise UserInputError(
+            f"unsupported translation mode: {mode!r}",
+            hint="Choose --mode smoke or --mode full.",
+        )
+    if mode == "smoke":
+        config = apply_smoke_overrides(config)
+    paired_languages = [
+        item.language for item in config.datasets if item.source_id_column is not None
+    ]
+    resolved_target = target_language
+    if not resolved_target:
+        if len(paired_languages) != 1:
+            raise UserInputError(
+                "translation target is ambiguous",
+                hint="Pass --target-language for one configured paired dataset source.",
+            )
+        resolved_target = paired_languages[0]
+    if resolved_target not in paired_languages:
+        raise UserInputError(
+            f"target language {resolved_target!r} is not a paired source in the config",
+            hint="Add the target under datasets with source_id_column set.",
+        )
+    if mode == "full" and resolved_target == "he":
+        from sommelier.evaluation.data_provenance import (
+            validate_hebrew_v3_translation_config,
+        )
+
+        validate_hebrew_v3_translation_config(config)
+    return config, resolved_target
+
+
+def _validate_translation_launch_contract(
     config_yaml: str,
     run_id: str,
     mode: str,
@@ -276,49 +480,26 @@ def _run_remote_translation(
     target_language: str,
     code_revision: str,
     source_tree_clean: bool | None,
-    allocation_gpu: str | None = None,
-    function_timeout_seconds: int | None = None,
+    allocation_gpu: str | None,
+    function_timeout_seconds: int | None,
     *,
     runtime_backend: TranslationRuntimeBackend,
     openai_service_tier: str = "default",
     openai_max_workers: int = 1,
     openai_list_price_limit_usd: str = "",
-) -> str:
-    if runtime_backend != OPENAI_RUNTIME_BACKEND:
-        os.environ.setdefault("HF_HOME", "/hf-cache")
-        # Xet's chunked downloader stalled on a multi-GB shard during the first
-        # smoke. The regular HTTP path is resumable through the same HF cache and
-        # has a deliberately long per-request timeout for large model weights.
-        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-        os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "600")
-        if runtime_backend == VLLM_RUNTIME_BACKEND:
-            os.environ.setdefault("VLLM_CACHE_ROOT", "/vllm-cache")
-
-    from sommelier.artifacts import sha256_file
-    from sommelier.config import load_config
-    from sommelier.data.export import export_raw_rows
-    from sommelier.data.load import load_raw_rows
-    from sommelier.data.split import all_examples, prepare_split_result
+) -> _ValidatedTranslationLaunch:
+    """Validate one launch without allocating Modal or touching durable artifacts."""
     from sommelier.data.translate import (
         DEFAULT_CHUNK_SIZE,
-        TranslatorInfo,
-        progress_filename,
-        translate_rows,
-        translation_selection_contract_sha256,
         translator_interface_for_model,
         validate_hebrew_v3_translation_request,
-        write_translation_outputs,
     )
-    from sommelier.pipeline import apply_smoke_overrides
+    from sommelier.errors import UserInputError
 
-    resolved_interface = translator_interface_for_model(
-        model_id,
-        translator_interface,
-    )
+    _validate_translation_run_id(run_id)
+    resolved_interface = translator_interface_for_model(model_id, translator_interface)
     if runtime_backend == OPENAI_RUNTIME_BACKEND:
         if resolved_interface != "instruction_chat":
-            from sommelier.errors import UserInputError
-
             raise UserInputError(
                 "OpenAI Responses transport requires the instruction_chat interface",
                 hint="Keep provider transport and the translation prompt contract orthogonal.",
@@ -332,13 +513,12 @@ def _run_remote_translation(
         max_attempts = VLLM_TRANSLATION_MAX_ATTEMPTS
         required_backend = VLLM_RUNTIME_BACKEND
     if runtime_backend != required_backend:
-        from sommelier.errors import UserInputError
-
         raise UserInputError(
             f"translator interface {resolved_interface!r} requires runtime backend "
             f"{required_backend!r}, not {runtime_backend!r}",
             hint="Dispatch the request through the backend-specific Modal function.",
         )
+
     resolved_chunk_size = (
         OPENAI_TRANSLATION_CHUNK_SIZE
         if runtime_backend == OPENAI_RUNTIME_BACKEND
@@ -348,82 +528,28 @@ def _run_remote_translation(
     resolved_openai_max_workers = _validated_openai_max_workers(openai_max_workers)
     resolved_openai_list_price_limit = None
     if runtime_backend == OPENAI_RUNTIME_BACKEND:
-        from sommelier.errors import UserInputError
-
         if allocation_gpu is not None:
             raise UserInputError(
                 "OpenAI Responses translation is CPU-only and cannot request a GPU"
-            )
-        if not os.environ.get(OPENAI_API_KEY_ENV):
-            raise UserInputError(
-                "OpenAI Responses translation is missing its API credential",
-                hint=(
-                    f"Inject {OPENAI_API_KEY_ENV} through the named Modal secret "
-                    f"{OPENAI_SECRET_NAME!r}; never pass it as a function argument."
-                ),
-            )
-        if not os.environ.get(HF_TOKEN_ENV):
-            raise UserInputError(
-                "OpenAI Responses translation is missing its gated-dataset credential",
-                hint=(
-                    f"Inject {HF_TOKEN_ENV} through the named Modal secret "
-                    f"{HF_READ_SECRET_NAME!r}; never pass it as a function argument."
-                ),
             )
         _validate_openai_model_snapshot(model_id, model_revision)
         resolved_openai_list_price_limit = validated_openai_list_price_limit_usd(
             openai_list_price_limit_usd
         )
     elif openai_service_tier != OPENAI_DEFAULT_SERVICE_TIER:
-        from sommelier.errors import UserInputError
-
         raise UserInputError("OpenAI service tier is only valid for the openai_responses backend")
     elif openai_max_workers != 1:
-        from sommelier.errors import UserInputError
-
         raise UserInputError("OpenAI max workers is only valid for the openai_responses backend")
     elif openai_list_price_limit_usd:
-        from sommelier.errors import UserInputError
-
         raise UserInputError(
             "OpenAI list-price limit is only valid for the openai_responses backend"
         )
 
-    work = ARTIFACTS_ROOT / "translation" / run_id
-    work.mkdir(parents=True, exist_ok=True)
-    config_path = work / "config.yaml"
-    config_path.write_text(config_yaml, encoding="utf-8")
-    config = load_config(config_path)
-    if mode not in {"smoke", "full"}:
-        from sommelier.errors import UserInputError
-
-        raise UserInputError(
-            f"unsupported translation mode: {mode!r}",
-            hint="Choose --mode smoke or --mode full.",
-        )
-    if mode == "smoke":
-        config = apply_smoke_overrides(config)
-    source = config.root_dataset
-    paired_languages = [
-        item.language for item in config.datasets if item.source_id_column is not None
-    ]
-    resolved_target = target_language
-    if not resolved_target:
-        if len(paired_languages) != 1:
-            from sommelier.errors import UserInputError
-
-            raise UserInputError(
-                "translation target is ambiguous",
-                hint="Pass --target-language for one configured paired dataset source.",
-            )
-        resolved_target = paired_languages[0]
-    if resolved_target not in paired_languages:
-        from sommelier.errors import UserInputError
-
-        raise UserInputError(
-            f"target language {resolved_target!r} is not a paired source in the config",
-            hint="Add the target under datasets with source_id_column set.",
-        )
+    config, resolved_target = _validated_translation_config(
+        config_yaml,
+        mode=mode,
+        target_language=target_language,
+    )
     resolved_allocation_gpu = (
         None if runtime_backend == OPENAI_RUNTIME_BACKEND else allocation_gpu or GPU
     )
@@ -460,16 +586,20 @@ def _run_remote_translation(
             resolved_openai_max_workers if runtime_backend == OPENAI_RUNTIME_BACKEND else None
         ),
         chunk_size=resolved_chunk_size,
+        openai_list_price_limit_usd=(
+            openai_list_price_limit_usd if runtime_backend == OPENAI_RUNTIME_BACKEND else None
+        ),
     )
     if mode == "full":
-        from sommelier.errors import UserInputError
-
         if limit:
             raise UserInputError(
                 "full translation runs cannot use --limit",
                 hint="Use --limit only for smoke quality checks.",
             )
-        if code_revision == "unknown" or source_tree_clean is not True:
+        if (
+            re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", code_revision) is None
+            or source_tree_clean is not True
+        ):
             raise UserInputError(
                 "full translation evidence requires a clean, immutable local Git revision",
                 hint="Commit the v3 implementation and launch again from a clean worktree.",
@@ -482,6 +612,210 @@ def _run_remote_translation(
                 "full translation evidence requires an immutable translator revision",
                 hint="Pass --model-revision with the exact Hugging Face commit SHA.",
             )
+
+    return _ValidatedTranslationLaunch(
+        config=config,
+        resolved_target=resolved_target,
+        resolved_interface=resolved_interface,
+        max_attempts=max_attempts,
+        resolved_chunk_size=resolved_chunk_size,
+        resolved_openai_service_tier=resolved_openai_service_tier,
+        resolved_openai_max_workers=resolved_openai_max_workers,
+        resolved_openai_list_price_limit=resolved_openai_list_price_limit,
+        resolved_allocation_gpu=resolved_allocation_gpu,
+        resolved_function_timeout=resolved_function_timeout,
+    )
+
+
+def _run_remote_translation(
+    config_yaml: str,
+    run_id: str,
+    mode: str,
+    max_rows: int,
+    model_id: str,
+    model_revision: str,
+    max_new_tokens: int,
+    translator_interface: str,
+    max_model_len: int,
+    trust_remote_code: bool,
+    output_decoder: str,
+    limit: int,
+    target_language: str,
+    code_revision: str,
+    source_tree_clean: bool | None,
+    allocation_gpu: str | None = None,
+    function_timeout_seconds: int | None = None,
+    *,
+    runtime_backend: TranslationRuntimeBackend,
+    openai_service_tier: str = "default",
+    openai_max_workers: int = 1,
+    openai_list_price_limit_usd: str = "",
+) -> str:
+    launch = _validate_translation_launch_contract(
+        config_yaml,
+        run_id,
+        mode,
+        max_rows,
+        model_id,
+        model_revision,
+        max_new_tokens,
+        translator_interface,
+        max_model_len,
+        trust_remote_code,
+        output_decoder,
+        limit,
+        target_language,
+        code_revision,
+        source_tree_clean,
+        allocation_gpu,
+        function_timeout_seconds,
+        runtime_backend=runtime_backend,
+        openai_service_tier=openai_service_tier,
+        openai_max_workers=openai_max_workers,
+        openai_list_price_limit_usd=openai_list_price_limit_usd,
+    )
+    if runtime_backend != OPENAI_RUNTIME_BACKEND:
+        os.environ.setdefault("HF_HOME", "/hf-cache")
+        # Xet's chunked downloader stalled on a multi-GB shard during the first
+        # smoke. The regular HTTP path is resumable through the same HF cache and
+        # has a deliberately long per-request timeout for large model weights.
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+        os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "600")
+        if runtime_backend == VLLM_RUNTIME_BACKEND:
+            os.environ.setdefault("VLLM_CACHE_ROOT", "/vllm-cache")
+
+    from sommelier.artifacts import sha256_file
+    from sommelier.data.export import export_raw_rows
+    from sommelier.data.load import load_raw_rows
+    from sommelier.data.split import all_examples, prepare_split_result
+    from sommelier.data.translate import (
+        TranslatorInfo,
+        progress_filename,
+        translate_rows,
+        translation_selection_contract_sha256,
+        translator_request_sha256,
+        write_translation_outputs,
+    )
+
+    config = launch.config
+    resolved_target = launch.resolved_target
+    resolved_interface = launch.resolved_interface
+    max_attempts = launch.max_attempts
+    resolved_chunk_size = launch.resolved_chunk_size
+    resolved_openai_service_tier = launch.resolved_openai_service_tier
+    resolved_openai_max_workers = launch.resolved_openai_max_workers
+    resolved_openai_list_price_limit = launch.resolved_openai_list_price_limit
+    resolved_allocation_gpu = launch.resolved_allocation_gpu
+    resolved_function_timeout = launch.resolved_function_timeout
+    if runtime_backend == OPENAI_RUNTIME_BACKEND:
+        from sommelier.errors import UserInputError
+
+        if not os.environ.get(OPENAI_API_KEY_ENV):
+            raise UserInputError(
+                "OpenAI Responses translation is missing its API credential",
+                hint=(
+                    f"Inject {OPENAI_API_KEY_ENV} through the named Modal secret "
+                    f"{OPENAI_SECRET_NAME!r}; never pass it as a function argument."
+                ),
+            )
+        if not os.environ.get(HF_TOKEN_ENV):
+            raise UserInputError(
+                "OpenAI Responses translation is missing its gated-dataset credential",
+                hint=(
+                    f"Inject {HF_TOKEN_ENV} through the named Modal secret "
+                    f"{HF_READ_SECRET_NAME!r}; never pass it as a function argument."
+                ),
+            )
+    source = config.root_dataset
+
+    resolved_model_len = max_model_len or (
+        2048 if resolved_interface in {"translategemma", "madlad_seq2seq"} else 8192
+    )
+    translator = TranslatorInfo(
+        model_id=model_id,
+        model_revision=model_revision,
+        max_new_tokens=max_new_tokens,
+        interface=resolved_interface,
+        max_model_len=resolved_model_len,
+        trust_remote_code=trust_remote_code,
+        output_decoder=output_decoder,  # type: ignore[arg-type]
+        implementation_revision=code_revision,
+        runtime_backend=runtime_backend,
+        provider_service_tier=(
+            resolved_openai_service_tier if runtime_backend == OPENAI_RUNTIME_BACKEND else None
+        ),
+        provider_sdk_version=(
+            dict(OPENAI_TRANSLATION_RUNTIME_VERSIONS)["openai"]
+            if runtime_backend == OPENAI_RUNTIME_BACKEND
+            else None
+        ),
+        provider_timeout_seconds=(
+            OPENAI_RESPONSES_TIMEOUT_SECONDS if runtime_backend == OPENAI_RUNTIME_BACKEND else None
+        ),
+    )
+    work = ARTIFACTS_ROOT / "translation" / run_id
+    if mode == "full" and resolved_target == "he":
+        runtime_identity: dict[str, object] = {
+            "backend": runtime_backend,
+            "translation_chunk_size": resolved_chunk_size,
+            "allocation_gpu": resolved_allocation_gpu,
+            "function_timeout_seconds": resolved_function_timeout,
+        }
+        if runtime_backend == OPENAI_RUNTIME_BACKEND:
+            runtime_identity.update(
+                {
+                    "provider_service_tier": resolved_openai_service_tier,
+                    "provider_sdk_version": dict(OPENAI_TRANSLATION_RUNTIME_VERSIONS)["openai"],
+                    "provider_timeout_seconds": OPENAI_RESPONSES_TIMEOUT_SECONDS,
+                    "provider_max_workers": resolved_openai_max_workers,
+                    "openai_list_price_limit_usd": (
+                        format(resolved_openai_list_price_limit, "f")
+                        if resolved_openai_list_price_limit is not None
+                        else None
+                    ),
+                }
+            )
+        run_identity: dict[str, object] = {
+            "schema_version": TRANSLATION_RUN_IDENTITY_SCHEMA,
+            "run_id": run_id,
+            "config_sha256": hashlib.sha256(config_yaml.encode("utf-8")).hexdigest(),
+            "selection": {
+                "contract_sha256": translation_selection_contract_sha256(
+                    config,
+                    mode="full",
+                    max_rows=max_rows,
+                    limit=limit,
+                ),
+                "mode": mode,
+                "max_rows": max_rows,
+                "limit": limit,
+                "seed": config.project.seed,
+            },
+            "translator": {
+                "model_id": model_id,
+                "model_revision": model_revision,
+                "request_sha256": translator_request_sha256(translator, resolved_target),
+                "max_attempts": max_attempts,
+                "implementation_revision": code_revision,
+            },
+            "runtime": runtime_identity,
+            "source_code": {
+                "git_commit": code_revision,
+                "working_tree_clean": source_tree_clean,
+            },
+        }
+        _admit_full_hebrew_translation_run(
+            work,
+            run_id=run_id,
+            target_language=resolved_target,
+            config_yaml=config_yaml,
+            identity=run_identity,
+        )
+    else:
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "config.yaml").write_text(config_yaml, encoding="utf-8")
+    config_path = work / "config.yaml"
+
     expected_versions = _runtime_versions(runtime_backend)
     package_versions = _package_versions(expected_versions)
     _validate_full_hebrew_runtime(
@@ -517,31 +851,6 @@ def _run_remote_translation(
         selected = selected[:limit]
     print(f"[translate] translating {len(selected)} selected rows", flush=True)
 
-    resolved_model_len = max_model_len or (
-        2048 if resolved_interface in {"translategemma", "madlad_seq2seq"} else 8192
-    )
-    translator = TranslatorInfo(
-        model_id=model_id,
-        model_revision=model_revision,
-        max_new_tokens=max_new_tokens,
-        interface=resolved_interface,
-        max_model_len=resolved_model_len,
-        trust_remote_code=trust_remote_code,
-        output_decoder=output_decoder,  # type: ignore[arg-type]
-        implementation_revision=code_revision,
-        runtime_backend=runtime_backend,
-        provider_service_tier=(
-            resolved_openai_service_tier if runtime_backend == OPENAI_RUNTIME_BACKEND else None
-        ),
-        provider_sdk_version=(
-            dict(OPENAI_TRANSLATION_RUNTIME_VERSIONS)["openai"]
-            if runtime_backend == OPENAI_RUNTIME_BACKEND
-            else None
-        ),
-        provider_timeout_seconds=(
-            OPENAI_RESPONSES_TIMEOUT_SECONDS if runtime_backend == OPENAI_RUNTIME_BACKEND else None
-        ),
-    )
     provider_journal_path = (
         work / OPENAI_PROVIDER_JOURNAL_FILENAME
         if runtime_backend == OPENAI_RUNTIME_BACKEND
@@ -881,6 +1190,7 @@ def main(
     from sommelier.data.translate import translator_interface_for_model
 
     config_yaml = Path(config).read_text(encoding="utf-8")
+    _validate_translation_run_id(run_id)
     code_revision, source_tree_clean = _local_source_identity()
     resolved_interface = translator_interface_for_model(model_id, translator_interface)
     if runtime_backend == OPENAI_RUNTIME_BACKEND:
@@ -902,6 +1212,34 @@ def main(
         resolved_list_price_limit = validated_openai_list_price_limit_usd(
             openai_list_price_limit_usd
         )
+        launch = _validate_translation_launch_contract(
+            config_yaml,
+            run_id,
+            mode,
+            max_rows,
+            model_id,
+            model_revision,
+            max_new_tokens,
+            translator_interface,
+            max_model_len,
+            trust_remote_code,
+            output_decoder,
+            limit,
+            target_language,
+            code_revision,
+            source_tree_clean,
+            None,
+            TIMEOUT_SECONDS,
+            runtime_backend=OPENAI_RUNTIME_BACKEND,
+            openai_service_tier=openai_service_tier,
+            openai_max_workers=openai_max_workers,
+            openai_list_price_limit_usd=openai_list_price_limit_usd,
+        )
+        resolved_interface = launch.resolved_interface
+        resolved_service_tier = launch.resolved_openai_service_tier
+        resolved_max_workers = launch.resolved_openai_max_workers
+        assert launch.resolved_openai_list_price_limit is not None
+        resolved_list_price_limit = launch.resolved_openai_list_price_limit
         result = run_remote_openai_translation.remote(
             config_yaml,
             run_id,
@@ -940,6 +1278,32 @@ def main(
             if resolved_interface == "madlad_seq2seq"
             else run_remote_translation
         )
+        resolved_backend = (
+            SEQ2SEQ_RUNTIME_BACKEND
+            if resolved_interface == "madlad_seq2seq"
+            else VLLM_RUNTIME_BACKEND
+        )
+        launch = _validate_translation_launch_contract(
+            config_yaml,
+            run_id,
+            mode,
+            max_rows,
+            model_id,
+            model_revision,
+            max_new_tokens,
+            translator_interface,
+            max_model_len,
+            trust_remote_code,
+            output_decoder,
+            limit,
+            target_language,
+            code_revision,
+            source_tree_clean,
+            GPU,
+            TIMEOUT_SECONDS,
+            runtime_backend=resolved_backend,
+        )
+        resolved_interface = launch.resolved_interface
         result = remote_function.remote(
             config_yaml,
             run_id,

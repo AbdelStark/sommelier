@@ -8,10 +8,12 @@ from sommelier.errors import UserInputError
 if TYPE_CHECKING:
     import modal
 
-# Modal's standalone-Python selector accepts major.minor labels. The pipeline's
-# observed 3.13.3 patch version is therefore captured and gated separately
-# before a full Hebrew run can access datasets or models.
+# ``from_registry(..., add_python=...)`` accepts a major.minor selector, while
+# ``debian_slim`` accepts an exact patch. Keep the registry selector separate
+# so rebuilding the evidence pipeline cannot silently advance its Python patch
+# and then fail the runtime-identity gate after a paid allocation starts.
 PYTHON_VERSION = "3.13"
+PIPELINE_PYTHON_VERSION: Final = "3.13.3"
 
 # Base and vLLM versions are the exact environment observed in the first
 # successful Hebrew decoder-path smoke. The pipeline versions are the exact
@@ -31,10 +33,10 @@ TRAIN_PACKAGES = (
 
 # Immutable expected identity for full Hebrew pipeline evidence. Keeping this
 # adjacent to the image definition makes it difficult for the install and
-# runtime gates to drift apart. Python is included even though Modal can only
-# select its major.minor image line.
+# runtime gates to drift apart. The Debian pipeline image pins this exact
+# Python patch; registry-based auxiliary images retain the major.minor selector.
 PIPELINE_RUNTIME_VERSIONS: Final = (
-    ("python", "3.13.3"),
+    ("python", PIPELINE_PYTHON_VERSION),
     ("torch", "2.13.0"),
     ("transformers", "5.13.1"),
     ("tokenizers", "0.22.2"),
@@ -165,7 +167,7 @@ class RemoteStageOptions(TypedDict):
     timeout: int
 
 
-def _python_base(python_version: str = PYTHON_VERSION) -> modal.Image:
+def _python_base(python_version: str = PIPELINE_PYTHON_VERSION) -> modal.Image:
     import modal
 
     return modal.Image.debian_slim(python_version=python_version).pip_install(*BASE_PACKAGES)

@@ -76,6 +76,7 @@ Details worth knowing:
 | `sommelier.experiment_report.v1` | gated base/v1/v3 evidence, independently recomputed metrics, paired intervals, bounded TCO evidence, and machine-readable claim decisions | `report experiment` |
 | `sommelier.training_metric.v1` | one training log step (loss, learning rate, tokens) | `train run` |
 | `sommelier.translation_summary.v2` | a paired-dataset build's target policy, input/output digests, translator request identity, decoding, and drop counts | `data translate` |
+| `sommelier.translation_run_identity.v1` | internal full-Hebrew producer reservation binding exact config, selection, translator, provider, source, and allocation identity; not a publication file | `remote_translate.py`; dedicated exact-match validator |
 | `sommelier.openai_responses_provider_journal.v2` | one raw provider response, error, or replay event with source-id/attempt attribution, returned identity, completion status, usage, and output bytes where applicable | `remote_translate.py` OpenAI backend; dedicated validator |
 | `sommelier.openai_responses_provider_journal_summary.v2` | a content-free validated aggregate of one raw provider journal | provider-evidence builder; dedicated validator |
 | `sommelier.openai_provider_evidence.v2` | journal digest, exact requested/returned model and tier, clean counts, complete usage, and calculated public-list-price boundary | nested in `translation_summary.json`; dedicated validator |
@@ -247,6 +248,16 @@ Every `sommelier.tokenizer_tax_record.v1` line carries the example/root identity
 `sommelier.tokenizer_tax_report.v1` binds those records to the config digest, tokenizer id/revision, formatted-split checksums, and maximum sequence length. Its `languages` section reports mean, p50, p95, p99, max, totals, token rates, and over-budget counts. `pairing` reports exact root-matched coverage and aggregate/per-pair ratios by language and split. `training_workload` projects non-padding full tokens across configured epochs and explicitly excludes dynamic padding; it is a deterministic lower bound, not a billed-token estimate.
 
 ### Translation publication schemas
+
+Before a full Hebrew producer accesses the dataset or provider,
+`translation_run_identity.json` is created exclusively under
+`artifacts/translation/<run-id>/`. Its `sommelier.translation_run_identity.v1`
+payload is a closed exact-match contract over the submitted config digest,
+selection, translator request and implementation revision, backend-specific
+provider/resource fields, and clean source identity. A progress-only resume
+must match the complete object; unknown, missing, or changed fields fail before
+provider construction. The file remains internal producer evidence and is not
+part of the dataset publication allowlist.
 
 `sommelier.translation_summary.v2` records the accepted-row digest and
 canonical publication identity, target-script/bidi policy, retry/drop counts,

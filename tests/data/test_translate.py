@@ -23,6 +23,7 @@ from sommelier.data.translate import (
     HEBREW_V3_FORWARD_TRANSLATOR_OUTPUT_DECODER,
     HEBREW_V3_FORWARD_TRANSLATOR_TRUST_REMOTE_CODE,
     HEBREW_V3_TRANSLATION_CHUNK_SIZE,
+    HEBREW_V3_TRANSLATION_LIST_PRICE_LIMIT_USD,
     HEBREW_V3_TRANSLATION_MAX_ATTEMPTS,
     HEBREW_V3_TRANSLATION_MAX_ROWS,
     HEBREW_V3_TRANSLATION_PROVIDER_MAX_WORKERS,
@@ -2203,6 +2204,7 @@ def test_hebrew_v3_provider_preregistration_is_exact_and_retry_audited() -> None
     assert HEBREW_V3_FORWARD_TRANSLATOR_OUTPUT_DECODER == "standard"
     assert HEBREW_V3_TRANSLATION_MAX_ATTEMPTS == 3
     assert HEBREW_V3_TRANSLATION_PROVIDER_TIMEOUT_SECONDS == 900.0
+    assert HEBREW_V3_TRANSLATION_LIST_PRICE_LIMIT_USD == "50.00"
 
     exact: dict[str, Any] = {
         "target_language": "he",
@@ -2224,6 +2226,7 @@ def test_hebrew_v3_provider_preregistration_is_exact_and_retry_audited() -> None
         "provider_timeout_seconds": HEBREW_V3_TRANSLATION_PROVIDER_TIMEOUT_SECONDS,
         "provider_max_workers": HEBREW_V3_TRANSLATION_PROVIDER_MAX_WORKERS,
         "chunk_size": HEBREW_V3_TRANSLATION_CHUNK_SIZE,
+        "openai_list_price_limit_usd": HEBREW_V3_TRANSLATION_LIST_PRICE_LIMIT_USD,
     }
 
     validate_hebrew_v3_translation_request(**exact)
@@ -2235,6 +2238,10 @@ def test_hebrew_v3_provider_preregistration_is_exact_and_retry_audited() -> None
     timeout_drifted = {**exact, "provider_timeout_seconds": 60.0}
     with pytest.raises(UserInputError, match="provider_timeout_seconds=60.0"):
         validate_hebrew_v3_translation_request(**timeout_drifted)
+
+    price_drifted = {**exact, "openai_list_price_limit_usd": "1000.00"}
+    with pytest.raises(UserInputError, match="list_price_limit_usd='1000.00'"):
+        validate_hebrew_v3_translation_request(**price_drifted)
 
 
 def test_translation_model_factory_routes_seq2seq_without_vllm(

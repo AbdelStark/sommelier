@@ -159,7 +159,15 @@ runtime (Python 3.13.3, torch 2.11.0, transformers 5.13.1, tokenizers 0.22.2,
 accelerate 1.14.0, huggingface-hub 1.22.0, sentencepiece 0.2.2, and sacremoses
 0.1.1), a clean immutable code revision identical to the full translation
 revision, and a recorded hardware/allocation identity. The remote path pins
-that runtime in its image; a mismatched local environment fails closed. The
+that runtime in its image; a mismatched local environment fails closed. It also
+requires one safe run-id component and volume-commits an exclusively created,
+empty, invalid final-path reservation before config/data/model work. Any later
+failure removes it only when the producer can prove it is the exact unchanged
+empty inode; replaced or nonempty markers stay fail-closed. A hard crash leaves
+the empty marker for explicit operator inspection and recovery. This is a
+mounted-filesystem no-replace boundary, not a claim of cross-container Modal
+locking, so concurrent launches for one ID are unsupported. The pure local
+command intentionally retains ordinary fixture output behavior. The
 Marian request uses raw Hebrew input without a language prefix, disables
 sampling, fixes one beam, caps batches at eight, and rejects rather than
 truncates a source above 512 tokens.
@@ -382,7 +390,7 @@ sommelier pipeline run --config <yaml> --mode {smoke,full} [--input <jsonl>] [--
 | `--adapter-id` | no | | Evaluate this published adapter (local dir or Hugging Face repo id); the train stage is skipped |
 | `--adapter-revision` | no | `main` | Revision when `--adapter-id` is a Hugging Face repo id; full evidence must pass an immutable commit |
 
-Runs the seven stages in order (data → format → tokenization → eval-base → train → eval-adapter → compare) inside one run directory, with per-stage wall clock recorded in `runtime_metadata.json` and, after training, peak GPU memory read from the training metrics. Base and adapter evaluation write `eval-base_manifest.json` and `eval-adapter_manifest.json` respectively, so neither arm overwrites the other's evidence. The tokenization stage is the pre-compute sequence-budget gate and writes the matched-pair cost evidence used by multilingual runs. Stage failures propagate with their exit codes; nothing is retried. The command fails up front if `--input` does not exist. With `--adapter-id` the run takes the baseline shape: nothing is trained, the adapter evaluation loads the referenced published adapter, and the comparison measures that adapter against the base model on the same prompts.
+Runs the seven stages in order (data → format → tokenization → eval-base → train → eval-adapter → compare) inside one run directory, with per-stage wall clock recorded in `runtime_metadata.json` and, after training, peak GPU memory read from the training metrics. Base and adapter evaluation write `eval-base_manifest.json` and `eval-adapter_manifest.json` respectively, so neither arm overwrites the other's evidence. The tokenization stage is the pre-compute sequence-budget gate and writes the matched-pair cost evidence used by multilingual runs. Stage failures propagate with their exit codes; nothing is retried. The command fails up front if `--input` does not exist. Explicit run IDs must be 1–128 ASCII letters, digits, dots, underscores, or hyphens, beginning with an alphanumeric character; path separators, traversal, and absolute paths fail as user input before artifact mutation. Full mode also atomically rejects an existing run directory in the current filesystem view before writing its resolved config or manifest; a failed or completed full attempt must be followed by a fresh `--run-id`. Smoke mode keeps its diagnostic rerun behavior. With `--adapter-id` the run takes the baseline shape: nothing is trained, the adapter evaluation loads the referenced published adapter, and the comparison measures that adapter against the base model on the same prompts.
 
 Smoke mode caps the splits at 100 train, 20 validation, and 20 test examples (taking the minimum with the configured counts) and prefixes the run ID with `smoke-` so a later full run can never overwrite smoke artifacts. The remote driver may stage a matching completed translation run in smoke mode. Full remote mode rejects that staging override: each paired source must be an immutable published dataset revision; Hebrew evidence carries rows plus the digest-bound translation summary, locked semantic-review template, finalized review, and publication manifest. See the [remote driver](../guides/remote-execution.md) for that publication boundary and the outer-timeout admission floor derived from non-enforced stage planning estimates.
 
@@ -487,13 +495,15 @@ changes the receipt status to `verified`. Hugging Face's platform-managed
 `.gitattributes` is the only extra remote file allowed.
 
 ```bash
-# First pass: local validation only; no Hub import or mutation.
+# First pass: local validation only; no Hub import or mutation. This plan is
+# for an absent first-publication destination.
 uv run sommelier release publish-dataset \
   --config examples/config.v3-he-full.yaml \
   --bundle artifacts/publication/hebrew-dataset \
   --root-input artifacts/translation/he-v3-translate-full/rows.en.jsonl \
   --repo-id abdelstark/sommelier-xlam-single-call-splits-he \
-  --commit-message "Publish audited Hebrew v3 paired rows"
+  --commit-message "Publish audited Hebrew v3 paired rows" \
+  --create-repo
 
 # Deliberate first publication after reviewing the JSON plan.
 uv run --extra publish sommelier release publish-dataset \
@@ -506,6 +516,10 @@ uv run --extra publish sommelier release publish-dataset \
   --confirm-repo-id abdelstark/sommelier-xlam-single-call-splits-he \
   --receipt artifacts/publication/hebrew-dataset-receipt.json
 ```
+
+If the dedicated repository already has an immutable HEAD, omit
+`--create-repo` from both commands. Do not review a validation-only plan for an
+existing repository and then add repository creation only at execution time.
 
 ## release publish-adapter
 
@@ -548,6 +562,16 @@ The order is part of the contract:
 3. Do not mutate the bundle. Run `publish-adapter` in validation-only mode,
    review the plan, and only then repeat it with the explicit execution flags.
 
+For the canonical Hebrew run, the exact source mapping is documented in the
+[adapter publication handoff](../results/hebrew-v3.md#adapter-publication-handoff):
+`config.resolved.yaml`, `manifest.json`, and `train_manifest.json` come from
+`artifacts/runs/he-v3-full/`; the required PEFT files and optional allowlisted
+tokenizer sidecars come from its `train/adapter/`; and
+`experiment_report.json` comes from
+`artifacts/experiments/he-v3/experiment_report.json`. Copy the tracked card,
+`THIRD_PARTY.md`, and exact license/notice files into the bundle, fill the card
+from derived bundle identities, and publish before any tracked result edits.
+
 ```bash
 # During bundle assembly, copy the reviewed terms and notice without editing.
 cp licenses/LICENSE-NVIDIA-OPEN-MODEL.txt \
@@ -561,12 +585,29 @@ SOMMELIER_ACK_BASE_MODEL_LICENSE="nvidia/Llama-3.1-Nemotron-Nano-8B-v1" \
   --config artifacts/publication/hebrew-adapter/config.resolved.yaml \
   --artifact-root artifacts/publication/hebrew-adapter
 
-# Validation only: no Hub mutation.
+# Validation only: no Hub mutation. This plan assumes the destination is absent.
 uv run sommelier release publish-adapter \
   --bundle artifacts/publication/hebrew-adapter \
   --repo-id abdelstark/Llama-3.1-Nemotron-Nano-8B-xlam-tool-calling-he-en-lora \
-  --commit-message "Publish claim-gated Hebrew v3 QLoRA adapter"
+  --commit-message "Publish claim-gated Hebrew v3 QLoRA adapter" \
+  --create-repo
+
+# Deliberate first publication after reviewing that exact JSON plan.
+uv sync --extra publish
+uv run --extra publish sommelier release publish-adapter \
+  --bundle artifacts/publication/hebrew-adapter \
+  --repo-id abdelstark/Llama-3.1-Nemotron-Nano-8B-xlam-tool-calling-he-en-lora \
+  --commit-message "Publish claim-gated Hebrew v3 QLoRA adapter" \
+  --execute --create-repo \
+  --confirm-repo-id abdelstark/Llama-3.1-Nemotron-Nano-8B-xlam-tool-calling-he-en-lora \
+  --receipt artifacts/publication/hebrew-adapter-receipt.json
 ```
+
+The receipt path must be fresh and outside the bundle. Require status
+`verified` before recording the returned immutable commit or editing tracked
+claims. If the dedicated repository already has an immutable HEAD, omit
+`--create-repo` from both commands; never add it only after reviewing the
+validation plan.
 
 Validation and publication never delete remote files or overwrite a previous
 local receipt. The publisher first copies every source into a private snapshot;

@@ -14,6 +14,7 @@ from sommelier.remote.images import (
     OPENAI_TRANSLATION_PYTHON_VERSION,
     OPENAI_TRANSLATION_RUNTIME_VERSIONS,
     PIPELINE_HF_ENV,
+    PIPELINE_PYTHON_VERSION,
     PIPELINE_RUNTIME_VERSIONS,
     SEQ2SEQ_TRANSLATION_PACKAGES,
     SEQ2SEQ_TRANSLATION_RUNTIME_VERSIONS,
@@ -109,6 +110,7 @@ def test_translation_stacks_are_pinned_and_mutually_exclusive() -> None:
 
 
 def test_pipeline_stack_pins_the_observed_probe_runtime() -> None:
+    assert PIPELINE_PYTHON_VERSION == "3.13.3"
     assert TRAIN_PACKAGES == (
         "torch==2.13.0",
         "transformers==5.13.1",

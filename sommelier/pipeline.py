@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ PipelineMode = Literal["smoke", "full"]
 SMOKE_MAX_TRAIN: Final = 100
 SMOKE_MAX_VALIDATION: Final = 20
 SMOKE_MAX_TEST: Final = 20
+PIPELINE_RUN_ID_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 StageFn = Callable[["PipelinePaths", SommelierConfig, RunContext, list[str]], None]
 
@@ -353,7 +355,15 @@ def apply_smoke_overrides(config: SommelierConfig) -> SommelierConfig:
 def pipeline_run_id(mode: PipelineMode, run_id: str | None = None) -> str:
     """Builds the run ID; smoke runs get their own prefix so a later full
     run can never overwrite smoke artifacts."""
-    base = run_id or create_run_id()
+    base = create_run_id() if run_id is None else run_id
+    if PIPELINE_RUN_ID_PATTERN.fullmatch(base) is None:
+        raise UserInputError(
+            f"invalid pipeline run id: {base!r}",
+            hint=(
+                "Use 1-128 ASCII letters, digits, dots, underscores, or hyphens; "
+                "the first character must be alphanumeric."
+            ),
+        )
     if mode == "smoke" and not base.startswith("smoke-"):
         return f"smoke-{base}"
     return base
@@ -388,6 +398,7 @@ def run_pipeline(
             f"unsupported pipeline mode: {mode!r}",
             hint="Choose --mode smoke or --mode full.",
         )
+    resolved_run_id = pipeline_run_id(mode, run_id)
     if not input_path.exists():
         raise UserInputError(
             f"raw input file not found: {input_path}",
@@ -401,13 +412,12 @@ def run_pipeline(
         from sommelier.data.translate import validate_full_paired_input_contract
 
         validate_full_paired_input_contract(config, input_path)
-    resolved_run_id = pipeline_run_id(mode, run_id)
-
     context = ensure_run_context(
         config,
         config_path=config_path,
         run_id=resolved_run_id,
         project_root=project_root or Path.cwd(),
+        reject_existing_run=mode == "full",
     )
     external_adapter = None
     if adapter_id is not None:

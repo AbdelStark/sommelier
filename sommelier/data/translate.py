@@ -166,6 +166,7 @@ HEBREW_V3_TRANSLATION_PROVIDER_SDK_VERSION: Final = "2.45.0"
 HEBREW_V3_TRANSLATION_PROVIDER_TIMEOUT_SECONDS: Final = 900.0
 HEBREW_V3_TRANSLATION_PROVIDER_MAX_WORKERS: Final = 8
 HEBREW_V3_TRANSLATION_CHUNK_SIZE: Final = 32
+HEBREW_V3_TRANSLATION_LIST_PRICE_LIMIT_USD: Final = "50.00"
 
 _SCAFFOLDING_PREFIX = re.compile(
     r"^(?:translated\s+request|translation|\u05ea\u05e8\u05d2\u05d5\u05dd|\u05d4\u05e0\u05d7\u05d9\u05d4|\u05d4\u05e4\u05e2\u05dc)\s*[:\uff1a]\s*",
@@ -228,6 +229,7 @@ def validate_hebrew_v3_translation_request(
     provider_timeout_seconds: float | None = None,
     provider_max_workers: int | None = None,
     chunk_size: int | None = None,
+    openai_list_price_limit_usd: str | None = None,
 ) -> None:
     """Fail fast when a full Hebrew v3 launch changes its preregistration.
 
@@ -283,6 +285,11 @@ def validate_hebrew_v3_translation_request(
             HEBREW_V3_TRANSLATION_PROVIDER_MAX_WORKERS,
         ),
         ("chunk_size", chunk_size, HEBREW_V3_TRANSLATION_CHUNK_SIZE),
+        (
+            "list_price_limit_usd",
+            openai_list_price_limit_usd,
+            HEBREW_V3_TRANSLATION_LIST_PRICE_LIMIT_USD,
+        ),
     )
     selection_values: tuple[tuple[str, object, object], ...] = (
         ("max_rows", max_rows, HEBREW_V3_TRANSLATION_MAX_ROWS),
@@ -2915,6 +2922,10 @@ def _validate_hebrew_v3_translation_preregistration(
         provider_timeout_seconds=cast(float, provider_timeout_seconds),
         provider_max_workers=cast(int, runtime.get("provider_max_workers")),
         chunk_size=cast(int, runtime.get("translation_chunk_size")),
+        openai_list_price_limit_usd=cast(
+            str,
+            cast(dict[str, object], runtime.get("openai_list_price_ceiling")).get("limit_usd"),
+        ),
     )
     for field, expected_value in expected_translator.items():
         actual_value = translator.get(field)

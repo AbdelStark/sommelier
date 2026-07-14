@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -33,7 +33,7 @@ from sommelier.data.translate import (
     validate_full_paired_input_contract,
 )
 from sommelier.data.types import DROP_SUMMARY_SCHEMA, PREPARED_EXAMPLE_SCHEMA
-from sommelier.errors import EvaluationError
+from sommelier.errors import EvaluationError, SommelierError, UserInputError
 from sommelier.evaluation.generate import (
     GENERATION_SCHEMA,
     IMMUTABLE_HF_REVISION,
@@ -51,6 +51,7 @@ HEBREW_V3_BASE_MODEL_REVISION: Final = "54641c1611fcff44fa4865626462445e0a153fc7
 HEBREW_V3_ROOT_DATASET_ID: Final = "Salesforce/xlam-function-calling-60k"
 HEBREW_V3_ROOT_DATASET_REVISION: Final = "26d14ebfe18b1f7b524bd39b404b50af5dc97866"
 HEBREW_V3_PAIRED_DATASET_ID: Final = "abdelstark/sommelier-xlam-single-call-splits-he"
+HEBREW_V3_PROVISIONAL_PAIRED_DATASET_REVISION: Final = "main"
 HEBREW_V3_PROJECT_PREFIX: Final = "sommelier-v3-he"
 HEBREW_V3_FULL_MAX_ROWS: Final = 60_000
 HEBREW_V3_V1_ADAPTER_ID: Final = "abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora"
@@ -98,51 +99,63 @@ def is_hebrew_v3_config(config: SommelierConfig) -> bool:
     )
 
 
-def validate_hebrew_v3_preregistered_config(config: SommelierConfig) -> None:
-    """Reject a post-hoc model, corpus, training, or evaluation substitution.
+ConfigContractErrorFactory = Callable[[str], SommelierError]
 
-    This is shared by the paid-run preflight and terminal evidence validation,
-    so a configuration rejected after a run cannot first consume remote data or
-    model compute.
-    """
+
+def _validate_hebrew_v3_config_contract(
+    config: SommelierConfig,
+    *,
+    allow_provisional_paired_revision: bool,
+    error: ConfigContractErrorFactory,
+) -> None:
+    """Validate the shared Hebrew v3 config, with one phase-specific revision rule."""
     if config.project.seed != 42:
-        raise _error("Hebrew v3 config does not use preregistered seed 42")
+        raise error("Hebrew v3 config does not use preregistered seed 42")
     if config.project.name != "sommelier-v3-he-full" or config.project.artifact_root != Path(
         "artifacts"
     ):
-        raise _error("Hebrew v3 config changed the preregistered project/output contract")
+        raise error("Hebrew v3 config changed the preregistered project/output contract")
     if (
         config.model.base_model_id != HEBREW_V3_BASE_MODEL_ID
         or config.model.base_model_revision != HEBREW_V3_BASE_MODEL_REVISION
         or config.model.tokenizer_revision != HEBREW_V3_BASE_MODEL_REVISION
         or config.model.allow_remote_code
     ):
-        raise _error("Hebrew v3 config substituted the preregistered base or tokenizer")
+        raise error("Hebrew v3 config substituted the preregistered base or tokenizer")
 
     if tuple(source.language for source in config.datasets) != ("en", "he"):
-        raise _error("Hebrew v3 config must contain exactly the en/he dataset pair")
+        raise error("Hebrew v3 config must contain exactly the en/he dataset pair")
     root, paired = config.datasets
     if (
         root.dataset_id != HEBREW_V3_ROOT_DATASET_ID
         or root.dataset_revision != HEBREW_V3_ROOT_DATASET_REVISION
         or root.source_id_column is not None
     ):
-        raise _error("Hebrew v3 config substituted the preregistered English root corpus")
+        raise error("Hebrew v3 config substituted the preregistered English root corpus")
     if (
         paired.dataset_id != HEBREW_V3_PAIRED_DATASET_ID
         or paired.source_id_column != "source_example_id"
-        or IMMUTABLE_HF_REVISION.fullmatch(paired.dataset_revision) is None
     ):
-        raise _error(
-            "Hebrew v3 config does not pin the audited Hebrew corpus to an immutable commit"
+        raise error("Hebrew v3 config substituted the preregistered audited Hebrew corpus identity")
+    paired_revision_is_allowed = (
+        paired.dataset_revision == HEBREW_V3_PROVISIONAL_PAIRED_DATASET_REVISION
+        if allow_provisional_paired_revision
+        else IMMUTABLE_HF_REVISION.fullmatch(paired.dataset_revision) is not None
+    )
+    if not paired_revision_is_allowed:
+        revision_requirement = (
+            f"the provisional revision {HEBREW_V3_PROVISIONAL_PAIRED_DATASET_REVISION!r}"
+            if allow_provisional_paired_revision
+            else "an immutable commit"
         )
+        raise error(f"Hebrew v3 config does not use {revision_requirement} for the Hebrew corpus")
     for source in (root, paired):
         if (
             source.query_column != "query"
             or source.tools_column != "tools"
             or source.answers_column != "answers"
         ):
-            raise _error("Hebrew v3 config changed the preregistered dataset columns")
+            raise error("Hebrew v3 config changed the preregistered dataset columns")
 
     data_contract = (
         config.data.n_train,
@@ -153,7 +166,7 @@ def validate_hebrew_v3_preregistered_config(config: SommelierConfig) -> None:
         config.data.dedupe_key,
     )
     if data_contract != (15_000, 1_000, 1_000, 10, 2_000, "normalized_query"):
-        raise _error("Hebrew v3 config changed the preregistered cohort contract")
+        raise error("Hebrew v3 config changed the preregistered cohort contract")
 
     formatting_contract = (
         config.formatting.template_policy,
@@ -168,7 +181,7 @@ def validate_hebrew_v3_preregistered_config(config: SommelierConfig) -> None:
             "the JSON tool call. Do not include explanations."
         ),
     ):
-        raise _error("Hebrew v3 config changed the preregistered formatting contract")
+        raise error("Hebrew v3 config changed the preregistered formatting contract")
 
     train_contract = (
         config.train.epochs,
@@ -202,7 +215,7 @@ def validate_hebrew_v3_preregistered_config(config: SommelierConfig) -> None:
         ("en", "he"),
         HEBREW_V3_TARGET_MODULES,
     ):
-        raise _error("Hebrew v3 config changed the preregistered QLoRA contract")
+        raise error("Hebrew v3 config changed the preregistered QLoRA contract")
 
     eval_contract = (
         config.eval.split,
@@ -222,7 +235,7 @@ def validate_hebrew_v3_preregistered_config(config: SommelierConfig) -> None:
         "sommelier.parser.v1",
         "L40S",
     ):
-        raise _error("Hebrew v3 config changed the preregistered evaluation hardware contract")
+        raise error("Hebrew v3 config changed the preregistered evaluation hardware contract")
 
     remote_contract = (
         config.remote.enabled,
@@ -231,15 +244,54 @@ def validate_hebrew_v3_preregistered_config(config: SommelierConfig) -> None:
         config.remote.eval_timeout_seconds,
     )
     if remote_contract != (True, 1_800, 43_200, 18_000):
-        raise _error("Hebrew v3 config changed the preregistered remote planning contract")
+        raise error("Hebrew v3 config changed the preregistered remote planning contract")
     if not config.report.retain_raw_generations or config.report.redact_fields:
-        raise _error("Hebrew v3 config changed the preregistered report evidence contract")
+        raise error("Hebrew v3 config changed the preregistered report evidence contract")
     if (
         config.tracking.enabled
         or config.tracking.provider != "wandb"
         or config.tracking.project != "sommelier"
     ):
-        raise _error("Hebrew v3 config changed the preregistered tracking contract")
+        raise error("Hebrew v3 config changed the preregistered tracking contract")
+
+
+def validate_hebrew_v3_preregistered_config(config: SommelierConfig) -> None:
+    """Reject a post-hoc model, corpus, training, or evaluation substitution.
+
+    Terminal evidence requires the published Hebrew dataset's immutable Hub
+    revision. The same shared contract is used by the pre-publication producer,
+    whose only permitted mutable value is the committed ``main`` placeholder.
+    """
+    _validate_hebrew_v3_config_contract(
+        config,
+        allow_provisional_paired_revision=False,
+        error=_error,
+    )
+
+
+def validate_hebrew_v3_translation_config(config: SommelierConfig) -> None:
+    """Validate full Hebrew v3 before its not-yet-published corpus can exist.
+
+    Translation necessarily precedes publication, so the canonical ``main``
+    placeholder is accepted for the Hebrew revision. Every other project,
+    model, root corpus, column, cohort, formatting, QLoRA, evaluation, remote,
+    reporting, and tracking field is identical to the terminal validator.
+    """
+
+    def user_input_error(message: str) -> UserInputError:
+        return UserInputError(
+            message,
+            hint=(
+                "Launch the full producer with examples/config.v3-he-full.yaml; "
+                "only its provisional Hebrew dataset revision may remain 'main'."
+            ),
+        )
+
+    _validate_hebrew_v3_config_contract(
+        config,
+        allow_provisional_paired_revision=True,
+        error=user_input_error,
+    )
 
 
 def _artifact_ref(

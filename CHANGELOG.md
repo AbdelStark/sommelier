@@ -136,6 +136,25 @@ will execute a Hub publication.
 
 ### Changed
 
+- Full `pipeline run` attempts now accept only safe single-component run IDs,
+  require the same grammar for paired-smoke `--translation-run-id`, and
+  reject aliased translation directories before export. Full runs atomically
+  reserve a fresh directory; completed or failed full IDs are non-resumable,
+  while smoke IDs remain reusable. Migration: choose a new `--run-id` for every
+  full attempt and replace path-like legacy IDs.
+- The full Hebrew `remote_translate.py` producer now records
+  `sommelier.translation_run_identity.v1`, permits progress-only resume only
+  when the exact config, selection, translator, provider, source, and resource
+  identity still match, and permanently rejects a run ID after terminal output
+  appears. Migration: preserve old identity-less or finalized directories and
+  continue with a new safe run ID.
+- The remote Hebrew semantic-review producer now reserves its final template
+  path exclusively before input or model work. Caught failures release only
+  the same still-empty reservation; a replaced, nonempty, or hard-crash marker
+  remains fail-closed. Migration: retry directly only after caught cleanup; for
+  a hard crash, verify no producer is active and remove only a confirmed
+  zero-byte reservation using the documented recovery command.
+
 - `format build` defaults to tokenizer chat-template rendering; the
   no-tokenizer path moved behind `--fixture`. Migration: append
   `--fixture` to keep the previous fixture behavior.
@@ -184,6 +203,10 @@ will execute a Hub publication.
   loads, and persists artifacts to the `sommelier-artifacts` volume.
 
 ### Fixed
+
+- `sommelier.remote.images` now pins the evidence pipeline image and runtime
+  gate to the same exact Python 3.13.3 patch, preventing a rebuilt image from
+  drifting along the floating Python 3.13 line before paid work begins.
 
 - Public v1/v2 prose, paper, and video sources now distinguish published
   aggregate reports from non-published raw generations, maintainer-observed

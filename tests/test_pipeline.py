@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 import yaml
@@ -16,7 +18,7 @@ from sommelier.pipeline import (
     pipeline_run_id,
     run_pipeline,
 )
-from sommelier.run_context import RunContext
+from sommelier.run_context import RunContext, ensure_run_context
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
 FIXTURE_INPUT = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
@@ -217,10 +219,145 @@ def test_full_and_smoke_runs_use_separate_directories(tmp_path: Path) -> None:
     assert (tmp_path / "artifacts" / "runs" / "r1").exists()
 
 
+def test_full_pipeline_rejects_existing_run_before_rewriting_evidence(
+    tmp_path: Path,
+) -> None:
+    recorder = StageRecorder()
+    run_dir = tmp_path / "artifacts" / "runs" / "already-used"
+    run_dir.mkdir(parents=True)
+    sentinel = run_dir / "existing-evidence.json"
+    sentinel.write_text('{"attempt": 1}\n', encoding="utf-8")
+
+    with pytest.raises(UserInputError, match="full pipeline run directory already exists"):
+        run_pipeline(
+            write_config(tmp_path),
+            mode="full",
+            input_path=input_file(tmp_path),
+            run_id="already-used",
+            project_root=tmp_path,
+            stages=recorder.stages(),
+        )
+
+    assert recorder.calls == []
+    assert sentinel.read_text(encoding="utf-8") == '{"attempt": 1}\n'
+    assert sorted(path.name for path in run_dir.iterdir()) == ["existing-evidence.json"]
+
+
+def test_fresh_run_reservation_admits_only_one_concurrent_attempt(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    ready = Barrier(2)
+
+    def reserve() -> str | UserInputError:
+        ready.wait()
+        try:
+            return ensure_run_context(
+                config,
+                config_path=config_path,
+                run_id="contended-full-run",
+                project_root=tmp_path,
+                reject_existing_run=True,
+            ).run_id
+        except UserInputError as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _index: reserve(), range(2)))
+
+    assert outcomes.count("contended-full-run") == 1
+    errors = [outcome for outcome in outcomes if isinstance(outcome, UserInputError)]
+    assert len(errors) == 1
+    assert "full pipeline run directory already exists" in str(errors[0])
+
+
+def test_smoke_pipeline_can_rerun_in_its_existing_diagnostic_directory(
+    tmp_path: Path,
+) -> None:
+    config_path = write_config(tmp_path)
+    rows = input_file(tmp_path)
+
+    first = run_pipeline(
+        config_path,
+        mode="smoke",
+        input_path=rows,
+        run_id="repeatable",
+        project_root=tmp_path,
+        stages=StageRecorder().stages(),
+    )
+    second_recorder = StageRecorder()
+    second = run_pipeline(
+        config_path,
+        mode="smoke",
+        input_path=rows,
+        run_id="repeatable",
+        project_root=tmp_path,
+        stages=second_recorder.stages(),
+    )
+
+    assert first == second == "smoke-repeatable"
+    assert second_recorder.calls == [
+        "data",
+        "format",
+        "tokenization",
+        "eval-base",
+        "train",
+        "eval-adapter",
+        "compare",
+    ]
+
+
 def test_generated_run_ids_are_prefixed_for_smoke() -> None:
     assert pipeline_run_id("smoke").startswith("smoke-")
     assert not pipeline_run_id("full").startswith("smoke-")
     assert pipeline_run_id("smoke", "smoke-existing") == "smoke-existing"
+
+
+@pytest.mark.parametrize(
+    ("mode", "run_id"),
+    [
+        ("full", ".."),
+        ("smoke", ".."),
+        ("full", "nested/run"),
+        ("smoke", "nested/run"),
+        ("full", r"nested\run"),
+        ("smoke", r"nested\run"),
+        ("full", "/absolute/run"),
+        ("smoke", r"C:\absolute\run"),
+        ("smoke", "escape/../victim"),
+    ],
+)
+def test_pipeline_rejects_unsafe_explicit_run_id_before_artifact_mutation(
+    tmp_path: Path,
+    mode: str,
+    run_id: str,
+) -> None:
+    recorder = StageRecorder()
+
+    with pytest.raises(UserInputError, match="invalid pipeline run id"):
+        run_pipeline(
+            write_config(tmp_path),
+            mode=mode,  # type: ignore[arg-type]
+            input_path=input_file(tmp_path),
+            run_id=run_id,
+            project_root=tmp_path,
+            stages=recorder.stages(),
+        )
+
+    assert recorder.calls == []
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_full_pipeline_reserves_a_generated_run_id(tmp_path: Path) -> None:
+    run_id = run_pipeline(
+        write_config(tmp_path),
+        mode="full",
+        input_path=input_file(tmp_path),
+        project_root=tmp_path,
+        stages=StageRecorder().stages(),
+    )
+
+    assert not run_id.startswith("smoke-")
+    assert (tmp_path / "artifacts" / "runs" / run_id / "manifest.json").exists()
 
 
 def test_missing_input_fails_before_any_stage(tmp_path: Path) -> None:

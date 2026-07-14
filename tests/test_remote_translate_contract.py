@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import platform as platform_module
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ from sommelier.data.translate import (
     HEBREW_V3_FORWARD_TRANSLATOR_MODEL_REVISION,
     HEBREW_V3_FORWARD_TRANSLATOR_OUTPUT_DECODER,
     HEBREW_V3_FORWARD_TRANSLATOR_TRUST_REMOTE_CODE,
+    HEBREW_V3_TRANSLATION_LIST_PRICE_LIMIT_USD,
     HEBREW_V3_TRANSLATION_MAX_ROWS,
     HEBREW_V3_TRANSLATION_PROVIDER_MAX_WORKERS,
     HEBREW_V3_TRANSLATION_PROVIDER_SERVICE_TIER,
@@ -117,7 +119,7 @@ def _run_backend_for_args(args: dict[str, Any]) -> str:
                 **args,
                 openai_service_tier=HEBREW_V3_TRANSLATION_PROVIDER_SERVICE_TIER,
                 openai_max_workers=HEBREW_V3_TRANSLATION_PROVIDER_MAX_WORKERS,
-                openai_list_price_limit_usd="1000.00",
+                openai_list_price_limit_usd=HEBREW_V3_TRANSLATION_LIST_PRICE_LIMIT_USD,
             ),
         )
     resolved = translate_module.translator_interface_for_model(
@@ -138,7 +140,8 @@ def test_local_entrypoint_dispatches_exact_remote_contract(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     config_path = tmp_path / "config.yaml"
-    config_path.write_text("schema_version: test\n", encoding="utf-8")
+    config_yaml = (EXAMPLES_DIR / "config.v3-he-smoke.yaml").read_text(encoding="utf-8")
+    config_path.write_text(config_yaml, encoding="utf-8")
     captured: list[object] = []
 
     def fake_remote(*args: object) -> str:
@@ -171,7 +174,7 @@ def test_local_entrypoint_dispatches_exact_remote_contract(
     )
 
     assert captured == [
-        "schema_version: test\n",
+        config_yaml,
         "dispatch-run",
         "smoke",
         2500,
@@ -198,7 +201,10 @@ def test_local_entrypoint_resolves_madlad_to_seq2seq_runtime(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     config_path = tmp_path / "config.yaml"
-    config_path.write_text("schema_version: test\n", encoding="utf-8")
+    config_path.write_text(
+        (EXAMPLES_DIR / "config.v3-he-smoke.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     captured: list[object] = []
 
     def fake_seq2seq_remote(*args: object) -> str:
@@ -244,6 +250,234 @@ def test_local_entrypoint_resolves_madlad_to_seq2seq_runtime(
     assert capsys.readouterr().out.strip() == "seq2seq-ok"
 
 
+def test_local_smoke_rejects_unsafe_run_id_before_identity_or_modal_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reached: list[str] = []
+
+    def unexpected_identity() -> tuple[str, bool]:
+        reached.append("identity")
+        return "a" * 40, True
+
+    def unexpected_remote(*_args: object) -> str:
+        reached.append("remote")
+        return "unexpected"
+
+    monkeypatch.setattr(remote_translate, "_local_source_identity", unexpected_identity)
+    monkeypatch.setattr(remote_translate.run_remote_translation, "remote", unexpected_remote)
+
+    with pytest.raises(UserInputError, match="invalid translation run id"):
+        remote_translate.main.info.raw_f(
+            config=str(EXAMPLES_DIR / "config.v3-he-smoke.yaml"),
+            run_id="../escape",
+            mode="smoke",
+        )
+
+    assert reached == []
+
+
+def test_local_full_hebrew_config_rejects_before_modal_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_yaml = (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        config_yaml.replace("  seed: 42", "  seed: 43"),
+        encoding="utf-8",
+    )
+    reached: list[str] = []
+
+    def unexpected_remote(*_args: object) -> str:
+        reached.append("remote")
+        return "unexpected"
+
+    monkeypatch.setattr(
+        remote_translate.run_remote_openai_translation,
+        "remote",
+        unexpected_remote,
+    )
+    monkeypatch.setattr(
+        remote_translate,
+        "_local_source_identity",
+        lambda: ("a" * 40, True),
+    )
+
+    with pytest.raises(UserInputError, match="preregistered seed 42"):
+        remote_translate.main.info.raw_f(
+            config=str(config_path),
+            run_id="hebrew-v3-preflight",
+            mode="full",
+            max_rows=HEBREW_V3_TRANSLATION_MAX_ROWS,
+            model_id=HEBREW_V3_FORWARD_TRANSLATOR_MODEL_ID,
+            model_revision=HEBREW_V3_FORWARD_TRANSLATOR_MODEL_REVISION,
+            max_new_tokens=HEBREW_V3_FORWARD_TRANSLATOR_MAX_NEW_TOKENS,
+            translator_interface=HEBREW_V3_FORWARD_TRANSLATOR_INTERFACE,
+            max_model_len=HEBREW_V3_FORWARD_TRANSLATOR_MAX_MODEL_LEN,
+            trust_remote_code=HEBREW_V3_FORWARD_TRANSLATOR_TRUST_REMOTE_CODE,
+            output_decoder=HEBREW_V3_FORWARD_TRANSLATOR_OUTPUT_DECODER,
+            limit=0,
+            target_language="he",
+            runtime_backend=remote_translate.OPENAI_RUNTIME_BACKEND,
+            openai_service_tier=HEBREW_V3_TRANSLATION_PROVIDER_SERVICE_TIER,
+            openai_max_workers=HEBREW_V3_TRANSLATION_PROVIDER_MAX_WORKERS,
+            openai_list_price_limit_usd="50.00",
+        )
+
+    assert reached == []
+
+
+def test_local_full_hebrew_price_ceiling_rejects_before_modal_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reached: list[str] = []
+
+    def unexpected_remote(*_args: object) -> str:
+        reached.append("remote")
+        return "unexpected"
+
+    monkeypatch.setattr(
+        remote_translate.run_remote_openai_translation,
+        "remote",
+        unexpected_remote,
+    )
+    monkeypatch.setattr(
+        remote_translate,
+        "_local_source_identity",
+        lambda: ("a" * 40, True),
+    )
+
+    with pytest.raises(UserInputError, match="list_price_limit_usd='1000.00'"):
+        remote_translate.main.info.raw_f(
+            config=str(EXAMPLES_DIR / "config.v3-he-full.yaml"),
+            run_id="hebrew-v3-preflight",
+            mode="full",
+            max_rows=HEBREW_V3_TRANSLATION_MAX_ROWS,
+            model_id=HEBREW_V3_FORWARD_TRANSLATOR_MODEL_ID,
+            model_revision=HEBREW_V3_FORWARD_TRANSLATOR_MODEL_REVISION,
+            max_new_tokens=HEBREW_V3_FORWARD_TRANSLATOR_MAX_NEW_TOKENS,
+            translator_interface=HEBREW_V3_FORWARD_TRANSLATOR_INTERFACE,
+            max_model_len=HEBREW_V3_FORWARD_TRANSLATOR_MAX_MODEL_LEN,
+            trust_remote_code=HEBREW_V3_FORWARD_TRANSLATOR_TRUST_REMOTE_CODE,
+            output_decoder=HEBREW_V3_FORWARD_TRANSLATOR_OUTPUT_DECODER,
+            limit=0,
+            target_language="he",
+            runtime_backend=remote_translate.OPENAI_RUNTIME_BACKEND,
+            openai_service_tier=HEBREW_V3_TRANSLATION_PROVIDER_SERVICE_TIER,
+            openai_max_workers=HEBREW_V3_TRANSLATION_PROVIDER_MAX_WORKERS,
+            openai_list_price_limit_usd="1000.00",
+        )
+
+    assert reached == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("run_id", "../escape", "invalid translation run id"),
+        ("max_rows", 59_999, "translation selection max_rows"),
+        ("openai_max_workers", 7, "provider_max_workers"),
+    ],
+)
+def test_local_full_hebrew_request_rejects_before_modal_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    reached: list[str] = []
+    kwargs: dict[str, object] = {
+        "config": str(EXAMPLES_DIR / "config.v3-he-full.yaml"),
+        "run_id": "hebrew-v3-preflight",
+        "mode": "full",
+        "max_rows": HEBREW_V3_TRANSLATION_MAX_ROWS,
+        "model_id": HEBREW_V3_FORWARD_TRANSLATOR_MODEL_ID,
+        "model_revision": HEBREW_V3_FORWARD_TRANSLATOR_MODEL_REVISION,
+        "max_new_tokens": HEBREW_V3_FORWARD_TRANSLATOR_MAX_NEW_TOKENS,
+        "translator_interface": HEBREW_V3_FORWARD_TRANSLATOR_INTERFACE,
+        "max_model_len": HEBREW_V3_FORWARD_TRANSLATOR_MAX_MODEL_LEN,
+        "trust_remote_code": HEBREW_V3_FORWARD_TRANSLATOR_TRUST_REMOTE_CODE,
+        "output_decoder": HEBREW_V3_FORWARD_TRANSLATOR_OUTPUT_DECODER,
+        "limit": 0,
+        "target_language": "he",
+        "runtime_backend": remote_translate.OPENAI_RUNTIME_BACKEND,
+        "openai_service_tier": HEBREW_V3_TRANSLATION_PROVIDER_SERVICE_TIER,
+        "openai_max_workers": HEBREW_V3_TRANSLATION_PROVIDER_MAX_WORKERS,
+        "openai_list_price_limit_usd": HEBREW_V3_TRANSLATION_LIST_PRICE_LIMIT_USD,
+    }
+    kwargs[field] = value
+
+    def unexpected_remote(*_args: object) -> str:
+        reached.append("remote")
+        return "unexpected"
+
+    monkeypatch.setattr(
+        remote_translate.run_remote_openai_translation,
+        "remote",
+        unexpected_remote,
+    )
+    monkeypatch.setattr(
+        remote_translate,
+        "_local_source_identity",
+        lambda: ("a" * 40, True),
+    )
+
+    with pytest.raises(UserInputError, match=message):
+        remote_translate.main.info.raw_f(**kwargs)
+
+    assert reached == []
+
+
+@pytest.mark.parametrize(
+    ("revision", "clean"),
+    [("main", True), ("a" * 40, False), ("unknown", None)],
+)
+def test_local_full_hebrew_unpublishable_source_rejects_before_modal_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    revision: str,
+    clean: bool | None,
+) -> None:
+    reached: list[str] = []
+
+    def unexpected_remote(*_args: object) -> str:
+        reached.append("remote")
+        return "unexpected"
+
+    monkeypatch.setattr(
+        remote_translate.run_remote_openai_translation,
+        "remote",
+        unexpected_remote,
+    )
+    monkeypatch.setattr(
+        remote_translate,
+        "_local_source_identity",
+        lambda: (revision, clean),
+    )
+
+    with pytest.raises(UserInputError, match="clean, immutable local Git revision"):
+        remote_translate.main.info.raw_f(
+            config=str(EXAMPLES_DIR / "config.v3-he-full.yaml"),
+            run_id="hebrew-v3-preflight",
+            mode="full",
+            max_rows=HEBREW_V3_TRANSLATION_MAX_ROWS,
+            model_id=HEBREW_V3_FORWARD_TRANSLATOR_MODEL_ID,
+            model_revision=HEBREW_V3_FORWARD_TRANSLATOR_MODEL_REVISION,
+            max_new_tokens=HEBREW_V3_FORWARD_TRANSLATOR_MAX_NEW_TOKENS,
+            translator_interface=HEBREW_V3_FORWARD_TRANSLATOR_INTERFACE,
+            max_model_len=HEBREW_V3_FORWARD_TRANSLATOR_MAX_MODEL_LEN,
+            trust_remote_code=HEBREW_V3_FORWARD_TRANSLATOR_TRUST_REMOTE_CODE,
+            output_decoder=HEBREW_V3_FORWARD_TRANSLATOR_OUTPUT_DECODER,
+            limit=0,
+            target_language="he",
+            runtime_backend=remote_translate.OPENAI_RUNTIME_BACKEND,
+            openai_service_tier=HEBREW_V3_TRANSLATION_PROVIDER_SERVICE_TIER,
+            openai_max_workers=HEBREW_V3_TRANSLATION_PROVIDER_MAX_WORKERS,
+            openai_list_price_limit_usd=HEBREW_V3_TRANSLATION_LIST_PRICE_LIMIT_USD,
+        )
+
+    assert reached == []
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
@@ -256,7 +490,8 @@ def test_local_entrypoint_resolves_madlad_to_seq2seq_runtime(
         ("output_decoder", "bytelevel_unicode", "forward translator output_decoder"),
         ("max_rows", 59_999, "translation selection max_rows"),
         ("limit", 1, "translation selection limit"),
-        ("seed", 43, "translation selection seed"),
+        ("seed", 43, "preregistered seed 42"),
+        ("code_revision", "main", "clean, immutable local Git revision"),
     ],
 )
 def test_full_hebrew_remote_preflight_rejects_before_export_or_model_load(
@@ -290,6 +525,145 @@ def test_full_hebrew_remote_preflight_rejects_before_export_or_model_load(
         _run_backend_for_args(args)
 
     assert reached == []
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            "dataset_id: Salesforce/xlam-function-calling-60k",
+            "dataset_id: substitute/root",
+            "English root corpus",
+        ),
+        ("dataset_revision: main", "dataset_revision: staging", "provisional revision"),
+        (
+            "dataset_revision: main",
+            f"dataset_revision: {'e' * 40}",
+            "provisional revision",
+        ),
+        ("  n_train: 15000", "  n_train: 14999", "cohort contract"),
+        ("  epochs: 2", "  epochs: 3", "QLoRA contract"),
+        ("  max_new_tokens: 512", "  max_new_tokens: 511", "evaluation hardware"),
+        ("  gpu: L40S", "  gpu: A10G", "evaluation hardware"),
+    ],
+)
+def test_full_hebrew_config_contract_rejects_before_export_or_model_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    old: str,
+    new: str,
+    message: str,
+) -> None:
+    config_yaml = (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8")
+    assert old in config_yaml
+    args = _full_hebrew_args(config_yaml.replace(old, new, 1))
+    reached: list[str] = []
+
+    def unexpected_export(*_args: object, **_kwargs: object) -> int:
+        reached.append("export")
+        raise AssertionError("invalid full config must fail before dataset access")
+
+    def unexpected_model_load(*_args: object, **_kwargs: object) -> object:
+        reached.append("model_load")
+        raise AssertionError("invalid full config must fail before model/provider access")
+
+    monkeypatch.setattr(remote_translate, "ARTIFACTS_ROOT", tmp_path)
+    monkeypatch.setattr(export_module, "export_raw_rows", unexpected_export)
+    monkeypatch.setattr(
+        remote_translate, "_load_translation_model_for_backend", unexpected_model_load
+    )
+
+    with pytest.raises(UserInputError, match=message):
+        _run_backend_for_args(args)
+
+    assert reached == []
+    assert not (tmp_path / "translation").exists()
+
+
+def test_full_hebrew_completed_run_is_immutable_before_provider_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_yaml = (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8")
+    args = _full_hebrew_args(config_yaml)
+    work = tmp_path / "translation" / str(args["run_id"])
+    work.mkdir(parents=True)
+    config_path = work / "config.yaml"
+    rows_path = work / "rows.he.jsonl"
+    summary_path = work / "translation_summary.json"
+    publication_path = work / "translation_publication.json"
+    config_path.write_text(config_yaml, encoding="utf-8")
+    rows_path.write_text('{"accepted": true}\n', encoding="utf-8")
+    summary_path.write_text('{"status": "complete"}\n', encoding="utf-8")
+    publication_path.write_text('{"status": "complete"}\n', encoding="utf-8")
+    before = {
+        path: path.read_bytes() for path in (config_path, rows_path, summary_path, publication_path)
+    }
+    reached: list[str] = []
+
+    def unexpected_export(*_args: object, **_kwargs: object) -> int:
+        reached.append("export")
+        raise AssertionError("completed translation must not access the dataset")
+
+    def unexpected_model_load(*_args: object, **_kwargs: object) -> object:
+        reached.append("model_load")
+        raise AssertionError("completed translation must not load a provider/model")
+
+    monkeypatch.setattr(remote_translate, "ARTIFACTS_ROOT", tmp_path)
+    monkeypatch.setattr(export_module, "export_raw_rows", unexpected_export)
+    monkeypatch.setattr(
+        remote_translate, "_load_translation_model_for_backend", unexpected_model_load
+    )
+
+    with pytest.raises(UserInputError, match="already has finalized output"):
+        _run_backend_for_args(args)
+
+    assert reached == []
+    assert {path: path.read_bytes() for path in before} == before
+    assert not (work / remote_translate.TRANSLATION_RUN_IDENTITY_FILENAME).exists()
+
+
+def test_full_hebrew_incomplete_run_resumes_only_with_matching_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_yaml = (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8")
+    args = _full_hebrew_args(config_yaml)
+    export_calls: list[str] = []
+
+    class ExportReached(RuntimeError):
+        pass
+
+    def stop_at_export(*_args: object, **_kwargs: object) -> int:
+        export_calls.append("export")
+        raise ExportReached
+
+    monkeypatch.setattr(remote_translate, "ARTIFACTS_ROOT", tmp_path)
+    monkeypatch.setattr(remote_translate, "_package_versions", lambda expected: dict(expected))
+    monkeypatch.setattr(export_module, "export_raw_rows", stop_at_export)
+
+    with pytest.raises(ExportReached):
+        _run_backend_for_args(args)
+    with pytest.raises(ExportReached):
+        _run_backend_for_args(args)
+
+    drifted = dict(args)
+    drifted["code_revision"] = "b" * 40
+    with pytest.raises(UserInputError, match="different identity"):
+        _run_backend_for_args(drifted)
+
+    assert export_calls == ["export", "export"]
+    work = tmp_path / "translation" / str(args["run_id"])
+    identity_path = work / remote_translate.TRANSLATION_RUN_IDENTITY_FILENAME
+    assert identity_path.is_file()
+    assert (work / "config.yaml").read_text(encoding="utf-8") == config_yaml
+
+    observed = json.loads(identity_path.read_text(encoding="utf-8"))
+    observed["unexpected"] = True
+    identity_path.write_text(json.dumps(observed), encoding="utf-8")
+    with pytest.raises(UserInputError, match="different identity"):
+        _run_backend_for_args(args)
+    assert export_calls == ["export", "export"]
 
 
 def test_backend_interface_mismatch_rejects_before_artifact_or_data_access(

@@ -48,6 +48,7 @@ MODAL_MAX_TIMEOUT_SECONDS = 24 * 60 * 60
 # the same run directory. Fail once and require an explicit new run instead of
 # silently multiplying compute or obscuring the measured TCO.
 PIPELINE_MAX_RETRIES = 0
+TRANSLATION_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 GPU = os.environ.get("SOMMELIER_GPU", "A10G")
 TIMEOUT_SECONDS = int(os.environ.get("SOMMELIER_TIMEOUT_SECONDS", str(4 * 60 * 60)))
@@ -353,6 +354,7 @@ def _stage_paired_rows(
             "the smoke config declares paired sources but no translation run was named",
             hint="Pass --translation-run-id <id> of a completed smoke translation.",
         )
+    translation_run_dir = _validated_translation_run_directory(translation_run_id)
     selection_config = apply_smoke_overrides(config) if mode == "smoke" else config
     root_rows = load_raw_rows(rows_path)
     root_result = prepare_split_result(
@@ -388,9 +390,7 @@ def _stage_paired_rows(
         limit=0,
     )
     for source in paired:
-        translated = (
-            Path("/artifacts/translation") / translation_run_id / f"rows.{source.language}.jsonl"
-        )
+        translated = translation_run_dir / f"rows.{source.language}.jsonl"
         summary_path = translated.parent / "translation_summary.json"
         validate_translation_artifacts(
             summary_path=summary_path,
@@ -670,6 +670,83 @@ def _validate_remote_launch_boundary(
     return configured_stage_planning_estimate
 
 
+def _validate_translation_run_id(translation_run_id: str | None) -> str | None:
+    """Reject a translation artifact path that is not one safe component."""
+    if translation_run_id is None:
+        return None
+    if TRANSLATION_RUN_ID_PATTERN.fullmatch(translation_run_id) is None:
+        from sommelier.errors import UserInputError
+
+        raise UserInputError(
+            f"invalid translation run id: {translation_run_id!r}",
+            hint=(
+                "Use 1-128 ASCII letters, digits, dots, underscores, or hyphens; "
+                "the first character must be alphanumeric."
+            ),
+        )
+    return translation_run_id
+
+
+def _validate_paired_smoke_translation_run(
+    config: SommelierConfig,
+    *,
+    mode: str,
+    translation_run_id: str | None,
+) -> None:
+    """Require a safe completed translation ID for any paired smoke config."""
+    _validate_translation_run_id(translation_run_id)
+    has_paired_source = any(source.source_id_column is not None for source in config.datasets)
+    if mode == "smoke" and has_paired_source and translation_run_id is None:
+        from sommelier.errors import UserInputError
+
+        raise UserInputError(
+            "the smoke config declares paired sources but no translation run was named",
+            hint="Pass --translation-run-id <id> of a completed smoke translation.",
+        )
+
+
+def _validated_translation_run_directory(translation_run_id: str) -> Path:
+    """Resolve one mounted translation directory without following a final symlink."""
+    from sommelier.errors import UserInputError
+
+    _validate_translation_run_id(translation_run_id)
+    run_dir = ARTIFACTS_ROOT / "translation" / translation_run_id
+    if run_dir.is_symlink() or not run_dir.is_dir():
+        raise UserInputError(
+            f"translation run path is not a regular directory: {run_dir}",
+            hint="Name a completed translation run directory, never a symlink or path alias.",
+        )
+    return run_dir
+
+
+def _reject_existing_full_run_directory(
+    config: SommelierConfig,
+    *,
+    config_path: Path,
+    mode: str,
+    run_id: str,
+) -> None:
+    """Reject sequential reuse from the mounted artifact view before data work."""
+    if mode != "full":
+        return
+
+    from sommelier.errors import UserInputError
+    from sommelier.manifests import artifact_root_for, run_dir_for
+
+    config_dir = config_path.parent.resolve()
+    artifact_root = artifact_root_for(config, config_dir=config_dir)
+    requested_run_dir = artifact_root / "runs" / run_id
+    run_dir = run_dir_for(config, run_id, config_dir=config_dir)
+    if requested_run_dir.is_symlink() or run_dir.exists():
+        raise UserInputError(
+            f"full pipeline run directory already exists: {requested_run_dir}",
+            hint=(
+                "Choose a fresh --run-id. Full pipeline attempts are non-resumable "
+                "and never overwrite prior evidence."
+            ),
+        )
+
+
 @app.function(
     retries=PIPELINE_MAX_RETRIES,
     image=train_image(),
@@ -691,6 +768,17 @@ def run_remote_pipeline(
     allocation_gpu: str | None = None,
     function_timeout_seconds: int | None = None,
 ) -> dict[str, object]:
+    from sommelier.errors import UserInputError
+    from sommelier.pipeline import pipeline_run_id, run_pipeline
+
+    if mode not in {"smoke", "full"}:
+        raise UserInputError(
+            f"unsupported pipeline mode: {mode!r}",
+            hint="Choose --mode smoke or --mode full.",
+        )
+    resolved_run_id = pipeline_run_id(mode, run_id)  # type: ignore[arg-type]
+    _validate_translation_run_id(translation_run_id)
+
     _apply_pipeline_hf_policy()
     os.environ.setdefault("HF_HOME", "/hf-cache")
     # Long-sequence batches fragment the allocator; expandable segments
@@ -698,7 +786,6 @@ def run_remote_pipeline(
     # initializes CUDA inside the stages).
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-    from sommelier.pipeline import run_pipeline
     from sommelier.runtime_metadata import SourceCodeProvenance
 
     work = ARTIFACTS_ROOT
@@ -709,6 +796,17 @@ def run_remote_pipeline(
     from sommelier.config import load_config
 
     config = load_config(config_path)
+    _validate_paired_smoke_translation_run(
+        config,
+        mode=mode,
+        translation_run_id=translation_run_id,
+    )
+    if (
+        mode == "smoke"
+        and translation_run_id is not None
+        and any(source.source_id_column is not None for source in config.datasets)
+    ):
+        _validated_translation_run_directory(translation_run_id)
     resolved_allocation_gpu = allocation_gpu or GPU
     resolved_function_timeout = (
         TIMEOUT_SECONDS if function_timeout_seconds is None else function_timeout_seconds
@@ -730,6 +828,12 @@ def run_remote_pipeline(
         source_tree_clean=source_tree_clean,
         gpu_allocation_label=resolved_allocation_gpu,
         function_timeout_seconds=resolved_function_timeout,
+    )
+    _reject_existing_full_run_directory(
+        config,
+        config_path=config_path,
+        mode=mode,
+        run_id=resolved_run_id,
     )
     package_versions = _package_versions()
     _validate_hebrew_v3_full_runtime(
@@ -766,11 +870,11 @@ def run_remote_pipeline(
     )
 
     try:
-        resolved_run_id = run_pipeline(
+        completed_run_id = run_pipeline(
             config_path,
             mode=mode,  # type: ignore[arg-type]
             input_path=rows_path,
-            run_id=run_id,
+            run_id=resolved_run_id,
             project_root=work,
             stages=_wrapped_stages(),  # type: ignore[arg-type]
             adapter_id=adapter_id,
@@ -791,13 +895,15 @@ def run_remote_pipeline(
         artifacts_volume.commit()
         hf_cache_volume.commit()
 
-    run_dir = work / "artifacts" / "runs" / resolved_run_id
+    if completed_run_id != resolved_run_id:
+        raise RuntimeError("shared pipeline changed the preflighted run id")
+    run_dir = work / "artifacts" / "runs" / completed_run_id
     comparison = json.loads(
         (run_dir / "report" / "comparison_report.json").read_text(encoding="utf-8")
     )
     runtime = json.loads((run_dir / "runtime_metadata.json").read_text(encoding="utf-8"))
     return {
-        "run_id": resolved_run_id,
+        "run_id": completed_run_id,
         # The config value is authoritative; the module-level GPU default
         # is not visible inside the container.
         "gpu": load_config(config_path).remote.gpu,
@@ -811,7 +917,7 @@ def run_remote_pipeline(
         "stage_seconds": {
             name: value["elapsed_seconds"] for name, value in runtime["stages"].items()
         },
-        "report_path": f"runs/{resolved_run_id}/report/comparison_report.md",
+        "report_path": f"runs/{completed_run_id}/report/comparison_report.md",
     }
 
 
@@ -827,6 +933,7 @@ def main(
 ) -> None:
     from sommelier.config import load_config
     from sommelier.manifests import get_git_commit, get_git_worktree_clean
+    from sommelier.pipeline import pipeline_run_id
 
     config_path = Path(config)
     config_yaml = config_path.read_text(encoding="utf-8")
@@ -834,6 +941,11 @@ def main(
     resolved_adapter_id = adapter_id or None
     resolved_adapter_revision = adapter_revision or None
     resolved_translation_run_id = translation_run_id or None
+    _validate_paired_smoke_translation_run(
+        resolved_config,
+        mode=mode,
+        translation_run_id=resolved_translation_run_id,
+    )
     code_revision = get_git_commit()
     source_tree_clean = get_git_worktree_clean()
     _validate_hebrew_v3_full_request(
@@ -854,6 +966,11 @@ def main(
         gpu_allocation_label=GPU,
         function_timeout_seconds=TIMEOUT_SECONDS,
     )
+    if run_id:
+        # Validate an explicit ID before Modal allocation. The remote worker
+        # still resolves the final ID exactly once so generated IDs retain
+        # their existing remote-dispatch behavior.
+        pipeline_run_id(mode, run_id)  # type: ignore[arg-type]
     result = run_remote_pipeline.remote(
         config_yaml,
         mode,

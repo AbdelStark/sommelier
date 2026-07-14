@@ -369,6 +369,36 @@ def test_exact_v3_training_and_v1_baseline_arms_reach_export(
         remote_pipeline.run_remote_pipeline.get_raw_f()(**request)
 
 
+def test_existing_full_run_is_rejected_before_export_or_paired_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _full_hebrew_request(_full_hebrew_config_yaml())
+    run_dir = tmp_path / "artifacts" / "runs" / str(request["run_id"])
+    run_dir.mkdir(parents=True)
+    sentinel = run_dir / "existing-evidence.json"
+    sentinel.write_text('{"attempt": 1}\n', encoding="utf-8")
+    reached = _install_expensive_boundary_guards(monkeypatch, tmp_path)
+
+    def unexpected_staging(*_args: object, **_kwargs: object) -> None:
+        reached.append("staging")
+        raise AssertionError("existing run IDs must fail before paired-source staging")
+
+    monkeypatch.setattr(
+        remote_pipeline,
+        "_package_versions",
+        lambda: dict(PIPELINE_RUNTIME_VERSIONS),
+    )
+    monkeypatch.setattr(remote_pipeline, "_stage_paired_rows", unexpected_staging)
+
+    with pytest.raises(UserInputError, match="full pipeline run directory already exists"):
+        remote_pipeline.run_remote_pipeline.get_raw_f()(**request)
+
+    assert reached == []
+    assert sentinel.read_text(encoding="utf-8") == '{"attempt": 1}\n'
+    assert sorted(path.name for path in run_dir.iterdir()) == ["existing-evidence.json"]
+
+
 def test_full_hebrew_runtime_drift_fails_before_export_or_models(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -401,6 +431,7 @@ def test_smoke_keeps_adapter_and_config_diagnostics_flexible(
     monkeypatch.setattr(remote_pipeline, "GPU", "L40S")
     monkeypatch.setattr(remote_pipeline, "TIMEOUT_SECONDS", MODAL_MAX_TIMEOUT_SECONDS)
     monkeypatch.setattr(remote_pipeline, "_export_raw_rows", export_marker)
+    (tmp_path / "translation" / "diagnostic-translation").mkdir(parents=True)
     request = _full_hebrew_request(_full_hebrew_config_yaml().replace("  seed: 42", "  seed: 7"))
     request.update(
         mode="smoke",
@@ -503,6 +534,144 @@ def test_local_entrypoint_rejects_bad_v1_identity_before_remote_dispatch(
     assert dispatched == []
 
 
+def test_local_entrypoint_rejects_unsafe_run_id_before_remote_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatched: list[object] = []
+
+    def unexpected_remote(*args: object) -> dict[str, object]:
+        dispatched.extend(args)
+        raise AssertionError("an unsafe run id must not rent a remote GPU")
+
+    monkeypatch.setattr(remote_pipeline, "GPU", "A10G")
+    monkeypatch.setattr(remote_pipeline, "TIMEOUT_SECONDS", 10_800)
+    monkeypatch.setattr(remote_pipeline.run_remote_pipeline, "remote", unexpected_remote)
+
+    with pytest.raises(UserInputError, match="invalid pipeline run id"):
+        remote_pipeline.main.info.raw_f(
+            config=str(EXAMPLES_DIR / "config.v3-he-smoke.yaml"),
+            mode="smoke",
+            max_rows=2_500,
+            run_id="../escape",
+            adapter_id="",
+            adapter_revision="",
+            translation_run_id="diagnostic-translation",
+        )
+
+    assert dispatched == []
+
+
+def test_local_entrypoint_rejects_unsafe_translation_run_id_before_remote_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatched: list[object] = []
+
+    def unexpected_remote(*args: object) -> dict[str, object]:
+        dispatched.extend(args)
+        raise AssertionError("an unsafe translation run id must not rent a remote GPU")
+
+    monkeypatch.setattr(remote_pipeline, "GPU", "A10G")
+    monkeypatch.setattr(remote_pipeline, "TIMEOUT_SECONDS", 10_800)
+    monkeypatch.setattr(remote_pipeline.run_remote_pipeline, "remote", unexpected_remote)
+
+    with pytest.raises(UserInputError, match="invalid translation run id"):
+        remote_pipeline.main.info.raw_f(
+            config=str(EXAMPLES_DIR / "config.v3-he-smoke.yaml"),
+            mode="smoke",
+            max_rows=2_500,
+            run_id="safe-pipeline-id",
+            adapter_id="",
+            adapter_revision="",
+            translation_run_id="../runs/other",
+        )
+
+    assert dispatched == []
+
+
+def test_local_entrypoint_requires_paired_smoke_translation_before_remote_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatched: list[object] = []
+
+    def unexpected_remote(*args: object) -> dict[str, object]:
+        dispatched.extend(args)
+        raise AssertionError("a missing translation run must not rent a remote GPU")
+
+    monkeypatch.setattr(remote_pipeline, "GPU", "A10G")
+    monkeypatch.setattr(remote_pipeline, "TIMEOUT_SECONDS", 10_800)
+    monkeypatch.setattr(remote_pipeline.run_remote_pipeline, "remote", unexpected_remote)
+
+    with pytest.raises(UserInputError, match="no translation run was named"):
+        remote_pipeline.main.info.raw_f(
+            config=str(EXAMPLES_DIR / "config.v3-he-smoke.yaml"),
+            mode="smoke",
+            max_rows=2_500,
+            run_id="safe-pipeline-id",
+            adapter_id="",
+            adapter_revision="",
+            translation_run_id="",
+        )
+
+    assert dispatched == []
+
+
+def test_remote_entrypoint_rejects_unsafe_ids_before_artifact_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reached: list[str] = []
+
+    def unexpected_policy() -> None:
+        reached.append("policy")
+
+    monkeypatch.setattr(remote_pipeline, "ARTIFACTS_ROOT", tmp_path)
+    monkeypatch.setattr(remote_pipeline, "_apply_pipeline_hf_policy", unexpected_policy)
+
+    request = _full_hebrew_request(_full_hebrew_config_yaml())
+    request.update(mode="smoke", run_id="safe-pipeline-id", translation_run_id="../escape")
+    with pytest.raises(UserInputError, match="invalid translation run id"):
+        remote_pipeline.run_remote_pipeline.get_raw_f()(**request)
+
+    assert reached == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_remote_entrypoint_rejects_symlinked_translation_run_before_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "aliased-target"
+    target.mkdir()
+    translation_root = tmp_path / "translation"
+    translation_root.mkdir()
+    (translation_root / "diagnostic-translation").symlink_to(target, target_is_directory=True)
+    reached: list[str] = []
+
+    def unexpected_export(*_args: object, **_kwargs: object) -> int:
+        reached.append("export")
+        return 0
+
+    monkeypatch.setattr(remote_pipeline, "ARTIFACTS_ROOT", tmp_path)
+    monkeypatch.setattr(remote_pipeline, "GPU", "L40S")
+    monkeypatch.setattr(remote_pipeline, "TIMEOUT_SECONDS", MODAL_MAX_TIMEOUT_SECONDS)
+    monkeypatch.setattr(remote_pipeline, "_export_raw_rows", unexpected_export)
+
+    request = _full_hebrew_request(_full_hebrew_config_yaml())
+    request.update(
+        mode="smoke",
+        max_rows=17,
+        run_id="safe-pipeline-id",
+        translation_run_id="diagnostic-translation",
+        code_revision="unknown",
+        source_tree_clean=None,
+    )
+    with pytest.raises(UserInputError, match="not a regular directory"):
+        remote_pipeline.run_remote_pipeline.get_raw_f()(**request)
+
+    assert reached == []
+    assert list(target.iterdir()) == []
+
+
 def test_local_entrypoint_passes_allocation_identity_into_remote_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -549,6 +718,7 @@ def test_remote_body_uses_explicit_allocation_identity_not_container_globals(
     monkeypatch.setattr(remote_pipeline, "GPU", "L40S")
     monkeypatch.setattr(remote_pipeline, "TIMEOUT_SECONDS", MODAL_MAX_TIMEOUT_SECONDS)
     monkeypatch.setattr(remote_pipeline, "ARTIFACTS_ROOT", tmp_path)
+    (tmp_path / "translation" / "diagnostic-translation").mkdir(parents=True)
     monkeypatch.setattr(remote_pipeline, "_export_raw_rows", lambda *_args: 1)
     monkeypatch.setattr(remote_pipeline, "_stage_paired_rows", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(pipeline_module, "run_pipeline", capture_pipeline)

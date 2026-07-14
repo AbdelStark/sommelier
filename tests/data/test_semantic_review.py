@@ -509,8 +509,10 @@ def test_template_preregisters_exact_stratified_sample_and_model(tmp_path: Path)
         "boundary": NON_NATIVE_REVIEWER_BOUNDARY,
     }
 
-    # A second producer run gets identical membership despite new timestamps.
+    # The pure helper can replace a disposable local fixture; only the remote
+    # full-evidence producer enforces the one-shot output boundary.
     second = tmp_path / "second.json"
+    second.write_text("disposable fixture placeholder\n", encoding="utf-8")
     create_semantic_review_template(
         root_rows_path=root,
         paired_rows_path=paired,
