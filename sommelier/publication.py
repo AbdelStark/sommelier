@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -7,7 +8,7 @@ import shutil
 import stat
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1321,12 +1322,14 @@ def _assert_new_receipt_path(path: Path) -> None:
 @dataclass(frozen=True)
 class _ReceiptReservation:
     path: Path
+    descriptor: int
     capacity: int
     device: int
     inode: int
     parent_device: int
     parent_inode: int
     source_root_identities: frozenset[tuple[int, int]]
+    expected_sha256: str
 
 
 def _receipt_bytes(payload: Mapping[str, object], *, capacity: int | None = None) -> bytes:
@@ -1351,6 +1354,24 @@ def _write_all(descriptor: int, data: bytes) -> None:
         if written <= 0:
             raise OSError("short write while updating publication receipt")
         offset += written
+
+
+def _descriptor_sha256(descriptor: int, *, expected_bytes: int) -> str:
+    """Hash the exact current receipt without retaining or reporting its payload."""
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    observed_bytes = 0
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        observed_bytes += len(chunk)
+        if observed_bytes > expected_bytes:
+            raise OSError("reserved publication receipt size changed")
+        digest.update(chunk)
+    if observed_bytes != expected_bytes:
+        raise OSError("reserved publication receipt size changed")
+    return digest.hexdigest()
 
 
 def _source_root_identities(source_roots: Sequence[Path]) -> frozenset[tuple[int, int]]:
@@ -1451,10 +1472,12 @@ def _reserve_receipt(
     _assert_new_receipt_path(path)
     pending = _receipt_bytes(payload)
     capacity = len(pending) + 16_384
+    reserved_data = _receipt_bytes(payload, capacity=capacity)
     descriptor: int | None = None
     parent_descriptor: int | None = None
     metadata: os.stat_result | None = None
     parent_metadata: os.stat_result | None = None
+    keep_descriptor_open = False
     try:
         root_identities = _source_root_identities(source_roots)
         if os.name == "posix":
@@ -1464,14 +1487,22 @@ def _reserve_receipt(
             )
             descriptor = os.open(
                 path.name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                os.O_RDWR
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_BINARY", 0),
                 0o600,
                 dir_fd=parent_descriptor,
             )
         else:
             _assert_receipt_outside_publication_sources(path, source_roots=source_roots)
             parent_metadata = path.parent.stat()
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            descriptor = os.open(
+                path,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
     except FileExistsError as error:
         if parent_descriptor is not None:
             os.close(parent_descriptor)
@@ -1489,7 +1520,7 @@ def _reserve_receipt(
     try:
         if descriptor is None or parent_metadata is None:
             raise OSError("publication receipt descriptors were not initialized")
-        _write_all(descriptor, _receipt_bytes(payload, capacity=capacity))
+        _write_all(descriptor, reserved_data)
         os.fsync(descriptor)
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
@@ -1504,6 +1535,7 @@ def _reserve_receipt(
             ):
                 raise OSError("publication receipt parent moved into a publication source")
             os.fsync(parent_descriptor)
+        keep_descriptor_open = True
     except Exception as error:
         if descriptor is not None and parent_descriptor is not None:
             try:
@@ -1526,25 +1558,30 @@ def _reserve_receipt(
             hint="Choose a writable local path with sufficient durable storage, then retry.",
         ) from error
     finally:
-        if descriptor is not None:
+        if descriptor is not None and not keep_descriptor_open:
             os.close(descriptor)
         if parent_descriptor is not None:
             os.close(parent_descriptor)
-    if metadata is None or parent_metadata is None:
+    if descriptor is None or metadata is None or parent_metadata is None:
         raise UserInputError(f"could not reserve publication receipt before network access: {path}")
     return _ReceiptReservation(
         path=path,
+        descriptor=descriptor,
         capacity=capacity,
         device=metadata.st_dev,
         inode=metadata.st_ino,
         parent_device=parent_metadata.st_dev,
         parent_inode=parent_metadata.st_ino,
         source_root_identities=root_identities,
+        expected_sha256=hashlib.sha256(reserved_data).hexdigest(),
     )
 
 
-def _write_receipt(reservation: _ReceiptReservation, payload: Mapping[str, object]) -> None:
-    flags = os.O_WRONLY
+def _write_receipt(
+    reservation: _ReceiptReservation,
+    payload: Mapping[str, object],
+) -> _ReceiptReservation:
+    flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     if hasattr(os, "O_NONBLOCK"):
@@ -1566,6 +1603,8 @@ def _write_receipt(reservation: _ReceiptReservation, payload: Mapping[str, objec
         else:
             descriptor = os.open(reservation.path, flags)
     except OSError as error:
+        if descriptor is not None:
+            os.close(descriptor)
         if parent_descriptor is not None:
             os.close(parent_descriptor)
         raise ExternalDependencyError(
@@ -1575,16 +1614,60 @@ def _write_receipt(reservation: _ReceiptReservation, payload: Mapping[str, objec
     try:
         if descriptor is None:
             raise OSError("reserved publication receipt descriptor was not initialized")
+        held_metadata = os.fstat(reservation.descriptor)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(held_metadata.st_mode)
+            or held_metadata.st_dev != reservation.device
+            or held_metadata.st_ino != reservation.inode
+            or held_metadata.st_size != reservation.capacity
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_dev != reservation.device
+            or metadata.st_ino != reservation.inode
+            or metadata.st_size != reservation.capacity
+        ):
+            raise OSError("reserved publication receipt path identity changed")
+        if parent_descriptor is not None:
+            entry = os.stat(
+                reservation.path.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        else:
+            entry = reservation.path.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISREG(entry.st_mode)
+            or entry.st_dev != metadata.st_dev
+            or entry.st_ino != metadata.st_ino
+        ):
+            raise OSError("reserved publication receipt path identity changed")
+        observed_sha256 = _descriptor_sha256(
+            descriptor,
+            expected_bytes=reservation.capacity,
+        )
+        if observed_sha256 != reservation.expected_sha256:
+            raise OSError("reserved publication receipt content changed")
+        data = _receipt_bytes(payload, capacity=reservation.capacity)
+        expected_sha256 = hashlib.sha256(data).hexdigest()
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        _write_all(descriptor, data)
+        os.fsync(descriptor)
+        if (
+            _descriptor_sha256(
+                descriptor,
+                expected_bytes=reservation.capacity,
+            )
+            != expected_sha256
+        ):
+            raise OSError("reserved publication receipt content changed during update")
         metadata = os.fstat(descriptor)
         if (
             not stat.S_ISREG(metadata.st_mode)
             or metadata.st_dev != reservation.device
             or metadata.st_ino != reservation.inode
+            or metadata.st_size != reservation.capacity
         ):
             raise OSError("reserved publication receipt path identity changed")
-        data = _receipt_bytes(payload, capacity=reservation.capacity)
-        _write_all(descriptor, data)
-        os.fsync(descriptor)
         if parent_descriptor is not None:
             entry = os.stat(
                 reservation.path.name,
@@ -1598,6 +1681,14 @@ def _write_receipt(reservation: _ReceiptReservation, payload: Mapping[str, objec
                 source_root_identities=reservation.source_root_identities,
             ):
                 raise OSError("publication receipt parent moved into a publication source")
+        else:
+            entry = reservation.path.stat(follow_symlinks=False)
+            if (
+                not stat.S_ISREG(entry.st_mode)
+                or entry.st_dev != metadata.st_dev
+                or entry.st_ino != metadata.st_ino
+            ):
+                raise OSError("reserved publication receipt path identity changed")
     except Exception as error:
         raise ExternalDependencyError(
             f"could not durably update publication receipt: {reservation.path}",
@@ -1608,9 +1699,21 @@ def _write_receipt(reservation: _ReceiptReservation, payload: Mapping[str, objec
             os.close(descriptor)
         if parent_descriptor is not None:
             os.close(parent_descriptor)
+    return replace(
+        reservation,
+        expected_sha256=expected_sha256,
+    )
 
 
-def _publish_prepared_bundle(
+def _close_receipt_reservation(reservation: _ReceiptReservation) -> None:
+    try:
+        os.close(reservation.descriptor)
+    except OSError:
+        # Closing is best effort and must never hide the publication outcome.
+        pass
+
+
+def _publish_prepared_bundle_impl(
     prepared: PreparedPublication,
     *,
     repo_id: str,
@@ -1621,6 +1724,7 @@ def _publish_prepared_bundle(
     receipt_path: Path | None = None,
     client: HubPublicationClient | None = None,
     _snapshot: _PrivateSnapshot | None = None,
+    _exit_stack: ExitStack,
 ) -> dict[str, object]:
     """Validate-only by default; explicitly execute and round-trip one commit."""
     _validate_repo_id(repo_id)
@@ -1704,6 +1808,7 @@ def _publish_prepared_bundle(
         plan,
         source_roots=prepared.source_roots,
     )
+    _exit_stack.callback(_close_receipt_reservation, reservation)
 
     active = client if client is not None else _HuggingFaceHubClient()
     allowed_remote = frozenset(prepared.files) | PLATFORM_MANAGED_FILES
@@ -1786,7 +1891,7 @@ def _publish_prepared_bundle(
         },
         "platform_files": sorted(existing - frozenset(prepared.files)),
     }
-    _write_receipt(reservation, commit_submitting)
+    reservation = _write_receipt(reservation, commit_submitting)
     _assert_snapshot_unchanged(_snapshot)
 
     try:
@@ -1815,7 +1920,7 @@ def _publish_prepared_bundle(
             "create_repo": create_repo,
         },
     }
-    _write_receipt(reservation, commit_returned)
+    reservation = _write_receipt(reservation, commit_returned)
     _assert_snapshot_unchanged(_snapshot)
     if IMMUTABLE_HF_REVISION.fullmatch(revision) is None:
         raise ExternalDependencyError(
@@ -1886,6 +1991,33 @@ def _publish_prepared_bundle(
     }
     _write_receipt(reservation, receipt)
     return receipt
+
+
+def _publish_prepared_bundle(
+    prepared: PreparedPublication,
+    *,
+    repo_id: str,
+    commit_message: str,
+    execute: bool = False,
+    create_repo: bool = False,
+    confirmed_repo_id: str | None = None,
+    receipt_path: Path | None = None,
+    client: HubPublicationClient | None = None,
+    _snapshot: _PrivateSnapshot | None = None,
+) -> dict[str, object]:
+    with ExitStack() as exit_stack:
+        return _publish_prepared_bundle_impl(
+            prepared,
+            repo_id=repo_id,
+            commit_message=commit_message,
+            execute=execute,
+            create_repo=create_repo,
+            confirmed_repo_id=confirmed_repo_id,
+            receipt_path=receipt_path,
+            client=client,
+            _snapshot=_snapshot,
+            _exit_stack=exit_stack,
+        )
 
 
 def publish_hebrew_dataset_bundle(

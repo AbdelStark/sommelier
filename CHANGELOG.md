@@ -128,6 +128,11 @@ will execute a Hub publication.
   source or snapshot path, including filesystem aliases; ambiguous parentless
   repositories fail closed; JSON object keys and safetensors metadata receive
   the same secret-shape checks as public text artifacts.
+- Executed publication keeps the originally reserved receipt handle open across
+  the complete Hub transaction, verifies exact prior-content hashes and sizes
+  before every state transition, reads back each durable update, and closes the
+  handle on every success or error path. Filesystem inode reuse can no longer
+  make an unlinked/recreated receipt appear to be the original journal.
 
 ### Changed
 

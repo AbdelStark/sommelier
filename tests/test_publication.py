@@ -874,6 +874,160 @@ def test_commit_failure_leaves_durable_submission_journal(tmp_path: Path) -> Non
     assert receipt.stat().st_mode & 0o777 == 0o600
 
 
+def test_receipt_content_continuity_rejects_same_inode_tampering_without_leak(
+    tmp_path: Path,
+) -> None:
+    receipt = tmp_path / "receipt.json"
+    reservation = publication._reserve_receipt(
+        receipt,
+        {"status": "pending"},
+        source_roots=(),
+    )
+    secret = "hf_" + "z" * 30
+    replacement = f'{{"replacement":"{secret}"}}\n'.encode()
+    replacement += b" " * (reservation.capacity - len(replacement))
+    try:
+        receipt.write_bytes(replacement)
+
+        with pytest.raises(
+            ExternalDependencyError,
+            match="durably update publication receipt",
+        ) as captured:
+            publication._write_receipt(
+                reservation,
+                {"status": "commit_submitting"},
+            )
+
+        assert secret not in str(captured.value)
+        assert receipt.read_bytes() == replacement
+    finally:
+        publication._close_receipt_reservation(reservation)
+
+
+def test_receipt_content_identity_advances_across_every_durable_stage(tmp_path: Path) -> None:
+    receipt = tmp_path / "receipt.json"
+    reservation = publication._reserve_receipt(
+        receipt,
+        {"status": "pending"},
+        source_roots=(),
+    )
+    observed_hashes = [reservation.expected_sha256]
+    try:
+        for status in ("commit_submitting", "commit_returned_unverified", "verified"):
+            reservation = publication._write_receipt(reservation, {"status": status})
+            assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == status
+            assert reservation.expected_sha256 == sha256_file(receipt)
+            observed_hashes.append(reservation.expected_sha256)
+    finally:
+        publication._close_receipt_reservation(reservation)
+
+    assert len(set(observed_hashes)) == len(observed_hashes)
+
+
+def test_receipt_update_verifies_written_content_before_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt = tmp_path / "receipt.json"
+    reservation = publication._reserve_receipt(
+        receipt,
+        {"status": "pending"},
+        source_roots=(),
+    )
+    real_write_all = publication._write_all
+
+    def corrupt_after_write(descriptor: int, data: bytes) -> None:
+        real_write_all(descriptor, data)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        assert os.write(descriptor, b"x") == 1
+
+    monkeypatch.setattr(publication, "_write_all", corrupt_after_write)
+    try:
+        with pytest.raises(
+            ExternalDependencyError,
+            match="durably update publication receipt",
+        ):
+            publication._write_receipt(
+                reservation,
+                {"status": "commit_submitting"},
+            )
+    finally:
+        publication._close_receipt_reservation(reservation)
+
+
+@pytest.mark.parametrize("outcome", ("success", "inspect-error", "commit-error"))
+def test_receipt_handle_closes_on_every_publication_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    captured: dict[str, int] = {}
+    real_reserve = publication._reserve_receipt
+    real_close = os.close
+    closed: list[int] = []
+
+    def tracking_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    def capture_reservation(
+        path: Path,
+        payload: Mapping[str, object],
+        *,
+        source_roots: Sequence[Path],
+    ) -> publication._ReceiptReservation:
+        reservation = real_reserve(path, payload, source_roots=source_roots)
+        captured["descriptor"] = reservation.descriptor
+        captured["prior_closes"] = closed.count(reservation.descriptor)
+        return reservation
+
+    monkeypatch.setattr(os, "close", tracking_close)
+    monkeypatch.setattr(publication, "_reserve_receipt", capture_reservation)
+
+    class InspectFailureClient(FakeHubClient):
+        def resolve_revision(
+            self,
+            *,
+            repo_id: str,
+            repo_type: publication.PublicationRepoType,
+        ) -> str | None:
+            super().resolve_revision(repo_id=repo_id, repo_type=repo_type)
+            raise RuntimeError("inspection failed")
+
+    if outcome == "inspect-error":
+        client: FakeHubClient = InspectFailureClient(tmp_path)
+    else:
+        client = FakeHubClient(tmp_path)
+        client.fail_commit = outcome == "commit-error"
+
+    if outcome == "success":
+        publish_prepared_bundle(
+            _prepared_dataset(tmp_path),
+            repo_id="owner/hebrew-data",
+            commit_message="Publish",
+            execute=True,
+            confirmed_repo_id="owner/hebrew-data",
+            receipt_path=tmp_path / "receipt.json",
+            client=client,
+        )
+    else:
+        with pytest.raises(ExternalDependencyError):
+            publish_prepared_bundle(
+                _prepared_dataset(tmp_path),
+                repo_id="owner/hebrew-data",
+                commit_message="Publish",
+                execute=True,
+                confirmed_repo_id="owner/hebrew-data",
+                receipt_path=tmp_path / "receipt.json",
+                client=client,
+            )
+
+    descriptor = captured["descriptor"]
+    assert closed.count(descriptor) == captured["prior_closes"] + 1
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+
+
 def test_receipt_inode_replacement_is_detected_before_commit(tmp_path: Path) -> None:
     receipt = tmp_path / "receipt.json"
 
