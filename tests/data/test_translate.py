@@ -2959,6 +2959,77 @@ def test_write_translation_outputs_records_provenance(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "tamper",
+    ["duplicate_summary_key", "duplicate_manifest_key", "extra_manifest_key", "extra_paired_key"],
+)
+def test_translation_publication_rejects_duplicate_or_open_schema_inputs(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    query = "Find flights from Berlin now please"
+    translated, stats = translate_rows(
+        [
+            _row(
+                1,
+                query,
+                '[{"name":"search_flights","arguments":{"origin":"Berlin"}}]',
+            )
+        ],
+        FakeTranslator({query: ["Trouver des vols depuis Berlin"]}),
+    )
+    rows_path, summary_path = write_translation_outputs(
+        tmp_path,
+        translated,
+        stats,
+        translator=TranslatorInfo(
+            model_id="stub/translator",
+            model_revision="rev-9",
+            max_new_tokens=128,
+        ),
+        input_description="closed-schema test",
+    )
+    publication_path = tmp_path / PUBLICATION_MANIFEST_FILENAME
+    if tamper == "duplicate_summary_key":
+        text = summary_path.read_text(encoding="utf-8")
+        summary_path.write_text(
+            text.replace(
+                '"schema_version":',
+                '"schema_version": "duplicate",\n  "schema_version":',
+                1,
+            ),
+            encoding="utf-8",
+        )
+    elif tamper == "duplicate_manifest_key":
+        text = publication_path.read_text(encoding="utf-8")
+        publication_path.write_text(
+            text.replace(
+                '"schema_version":',
+                '"schema_version": "duplicate",\n  "schema_version":',
+                1,
+            ),
+            encoding="utf-8",
+        )
+    else:
+        payload = json.loads(publication_path.read_text(encoding="utf-8"))
+        if tamper == "extra_manifest_key":
+            payload["unchecked"] = True
+        else:
+            payload["paired_rows"]["unchecked"] = True
+        publication_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(
+        UserInputError,
+        match="missing or invalid|wrong schema or language|unsupported canonical field",
+    ):
+        validate_translation_publication(
+            translated_rows_path=rows_path,
+            summary_path=summary_path,
+            publication_manifest_path=publication_path,
+            target_language="fr",
+        )
+
+
 def test_write_madlad_translation_summary_omits_vllm_only_loader_field(
     tmp_path: Path,
 ) -> None:

@@ -28,7 +28,10 @@ from sommelier.data.semantic_review import (
 from sommelier.data.translate import (
     PUBLICATION_MANIFEST_FILENAME,
     SUMMARY_FILENAME,
+    TRANSLATION_CONFIG_FILENAME,
     TRANSLATION_PUBLICATION_SCHEMA,
+    TRANSLATION_RUN_IDENTITY_FILENAME,
+    TRANSLATION_RUN_IDENTITY_SCHEMA,
     TRANSLATION_SUMMARY_SCHEMA,
     validate_full_paired_input_contract,
 )
@@ -41,6 +44,7 @@ from sommelier.evaluation.generate import (
     INFERENCE_TELEMETRY_SCHEMA,
 )
 from sommelier.formatting.chat import FORMATTED_EXAMPLE_SCHEMA
+from sommelier.hebrew_v3_preregistration import require_preregistered_reviewer
 from sommelier.runtime_metadata import RUNTIME_METADATA_FILENAME, RUNTIME_METADATA_SCHEMA
 
 MANIFEST_SCHEMA: Final = "sommelier.manifest.v1"
@@ -267,6 +271,10 @@ def validate_hebrew_v3_preregistered_config(config: SommelierConfig) -> None:
         allow_provisional_paired_revision=False,
         error=_error,
     )
+    try:
+        require_preregistered_reviewer(config, context="Hebrew v3 Phase-B config")
+    except UserInputError as error:
+        raise _error(str(error), hint=error.hint) from error
 
 
 def validate_hebrew_v3_translation_config(config: SommelierConfig) -> None:
@@ -292,6 +300,7 @@ def validate_hebrew_v3_translation_config(config: SommelierConfig) -> None:
         allow_provisional_paired_revision=True,
         error=user_input_error,
     )
+    require_preregistered_reviewer(config, context="Hebrew v3 Phase-A config")
 
 
 def _artifact_ref(
@@ -513,6 +522,20 @@ def _source_input_refs(
                         root_rows_path.with_name(f"{Path(SEMANTIC_REVIEW_FILENAME).stem}.he.json"),
                         "translation_semantic_review",
                         SEMANTIC_REVIEW_SCHEMA,
+                    ),
+                    "translation_config": (
+                        root_rows_path.with_name(
+                            f"{Path(TRANSLATION_CONFIG_FILENAME).stem}.he.yaml"
+                        ),
+                        "config",
+                        "sommelier.config.v2",
+                    ),
+                    "translation_run_identity": (
+                        root_rows_path.with_name(
+                            f"{Path(TRANSLATION_RUN_IDENTITY_FILENAME).stem}.he.json"
+                        ),
+                        "translation_run_identity",
+                        TRANSLATION_RUN_IDENTITY_SCHEMA,
                     ),
                 }
             )

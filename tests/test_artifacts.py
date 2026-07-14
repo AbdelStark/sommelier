@@ -37,6 +37,44 @@ def test_atomic_write_creates_checksum(tmp_path: Path) -> None:
     assert ref["sha256"] == sha256_file(target)
 
 
+@pytest.mark.parametrize("occupied_kind", ["file", "symlink"])
+def test_atomic_write_can_publish_new_evidence_without_replacing_target(
+    tmp_path: Path,
+    occupied_kind: str,
+) -> None:
+    target = tmp_path / "artifact.json"
+    victim = tmp_path / "victim.json"
+    if occupied_kind == "file":
+        target.write_text("existing\n", encoding="utf-8")
+    else:
+        victim.write_text("victim\n", encoding="utf-8")
+        target.symlink_to(victim)
+
+    def writer(path: Path) -> None:
+        path.write_text("replacement\n", encoding="utf-8")
+
+    with pytest.raises(SchemaValidationError, match="already exists and is immutable"):
+        write_artifact_atomic(target, writer, replace_existing=False)
+
+    expected = "existing\n" if occupied_kind == "file" else "victim\n"
+    observed = target.read_text(encoding="utf-8")
+    assert observed == expected
+    if occupied_kind == "symlink":
+        assert target.is_symlink()
+
+
+def test_atomic_write_exclusively_publishes_absent_evidence(tmp_path: Path) -> None:
+    target = tmp_path / "artifact.json"
+
+    def writer(path: Path) -> None:
+        path.write_text("new evidence\n", encoding="utf-8")
+
+    ref = write_artifact_atomic(target, writer, replace_existing=False)
+
+    assert target.read_text(encoding="utf-8") == "new evidence\n"
+    assert ref["sha256"] == sha256_file(target)
+
+
 def test_atomic_write_cleans_up_on_failure(tmp_path: Path) -> None:
     target = tmp_path / "artifact.json"
 

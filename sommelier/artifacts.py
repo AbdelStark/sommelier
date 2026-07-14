@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from sommelier.errors import SchemaValidationError
+from sommelier.redaction import DuplicateJsonKeyError, loads_unique_json
 
 SUPPORTED_SCHEMAS = frozenset(
     {
@@ -35,13 +36,18 @@ SUPPORTED_SCHEMAS = frozenset(
         "sommelier.comparison_report.v1",
         "sommelier.comparison_report.v2",
         "sommelier.comparison_report.v3",
+        # v1 remains readable for historical inspection. The current
+        # finalizer and release/publication validators require v2.
         "sommelier.experiment_report.v1",
+        "sommelier.experiment_report.v2",
         "sommelier.training_metric.v1",
         "sommelier.translation_summary.v1",
         "sommelier.translation_summary.v2",
         "sommelier.translation_publication_manifest.v1",
+        "sommelier.translation_run_identity.v1",
         "sommelier.translation_semantic_review.v1",
         "sommelier.translation_semantic_review_template.v1",
+        "sommelier.translation_semantic_review_attestation.v1",
         "sommelier.tokenizer_tax_record.v1",
         "sommelier.tokenizer_tax_report.v1",
         "sommelier.sovereign_tco_evidence.v1",
@@ -114,7 +120,15 @@ def read_jsonl_with_schema(
             stripped = line.strip()
             if not stripped:
                 continue
-            payload = json.loads(stripped)
+            try:
+                payload = loads_unique_json(stripped)
+            except (json.JSONDecodeError, DuplicateJsonKeyError) as error:
+                raise SchemaValidationError(
+                    f"{path}:{line_number} contains invalid JSON",
+                    hint=(
+                        "Use one valid JSON object per line; duplicate object keys are forbidden."
+                    ),
+                ) from error
             if not isinstance(payload, dict):
                 raise SchemaValidationError(
                     f"{path}:{line_number} must contain a JSON object",
@@ -304,6 +318,7 @@ def write_artifact_atomic(
     artifact_root: Path | None = None,
     kind: str = "file",
     schema_version: str = "",
+    replace_existing: bool = True,
 ) -> ArtifactRef:
     artifact_path = (
         path.name
@@ -362,8 +377,28 @@ def write_artifact_atomic(
         os.fsync(destination_descriptor)
         os.close(destination_descriptor)
         destination_descriptor = None
-        os.replace(temp_path, path)
-        temp_path = None
+        if replace_existing:
+            os.replace(temp_path, path)
+            temp_path = None
+        else:
+            try:
+                # The staged file and destination share a filesystem. A hard
+                # link publishes the fully fsynced inode without following or
+                # replacing an existing final component; unlike a preflight
+                # exists() check, this remains exclusive at the mutation.
+                os.link(temp_path, path)
+            except FileExistsError as error:
+                raise SchemaValidationError(
+                    f"artifact already exists and is immutable: {path}",
+                    hint="Choose a fresh output path or verify the existing evidence.",
+                ) from error
+            except OSError as error:
+                raise SchemaValidationError(
+                    f"could not publish a new immutable artifact: {path}",
+                    hint="Use a local filesystem that supports same-filesystem hard links.",
+                ) from error
+            temp_path.unlink()
+            temp_path = None
         _fsync_directory(path.parent)
     finally:
         if source_descriptor is not None:

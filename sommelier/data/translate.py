@@ -23,19 +23,24 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Final, Literal, Protocol, cast
 
-from sommelier.artifacts import sha256_file
+from sommelier.artifacts import sha256_file, write_artifact_atomic
 from sommelier.config import SommelierConfig
 from sommelier.data.types import JsonObject, RawToolCallRow, ToolCall, ToolSchema
 from sommelier.data.validate import validate_raw_row
 from sommelier.errors import ExternalDependencyError, UserInputError
+from sommelier.redaction import DuplicateJsonKeyError, loads_unique_json
+from sommelier.reviewer import ReviewerRequirement
 from sommelier.run_context import read_jsonl_records, write_jsonl_records
 
 TRANSLATION_SUMMARY_SCHEMA: Final = "sommelier.translation_summary.v2"
 TRANSLATION_AUDIT_SCHEMA: Final = "sommelier.translation_audit.v11"
 TRANSLATION_PUBLICATION_SCHEMA: Final = "sommelier.translation_publication_manifest.v1"
+TRANSLATION_RUN_IDENTITY_SCHEMA: Final = "sommelier.translation_run_identity.v1"
 ROWS_FILENAME: Final = "rows.fr.jsonl"
 SUMMARY_FILENAME: Final = "translation_summary.json"
 PUBLICATION_MANIFEST_FILENAME: Final = "translation_publication.json"
+TRANSLATION_CONFIG_FILENAME: Final = "translation_config.yaml"
+TRANSLATION_RUN_IDENTITY_FILENAME: Final = "translation_run_identity.json"
 PROGRESS_FILENAME: Final = "translation_progress.jsonl"
 PUBLICATION_CANONICAL_FIELDS: Final = (
     "source_example_id",
@@ -2505,6 +2510,7 @@ def write_translation_publication_manifest(
     target_language: str,
     semantic_review_path: Path | None = None,
     semantic_review_template_path: Path | None = None,
+    replace_existing: bool = True,
 ) -> Path:
     """Writes the pre-publication bridge consumed at an immutable Hub commit."""
     target = resolve_translation_target(target_language)
@@ -2544,7 +2550,27 @@ def write_translation_publication_manifest(
                 "sha256": sha256_file(semantic_review_template_path),
             },
         }
-    manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if not replace_existing and (manifest_path.exists() or manifest_path.is_symlink()):
+        if (
+            manifest_path.is_file()
+            and not manifest_path.is_symlink()
+            and manifest_path.read_bytes() == encoded
+        ):
+            return manifest_path
+        raise UserInputError(
+            f"reviewed translation publication manifest already exists: {manifest_path}",
+            hint="Preserve prior evidence and use a fresh full translation run id.",
+        )
+
+    def writer(path: Path) -> None:
+        path.write_bytes(encoded)
+
+    write_artifact_atomic(
+        manifest_path,
+        writer,
+        replace_existing=replace_existing,
+    )
     return manifest_path
 
 
@@ -2560,12 +2586,13 @@ def validate_translation_publication(
     root_rows_path: Path | None = None,
     root_split_by_id: dict[str, Literal["train", "validation", "test"]] | None = None,
     expected_seed: int | None = None,
+    expected_reviewer_requirement: ReviewerRequirement | None = None,
 ) -> dict[str, object]:
     """Verifies a published summary against the exact paired rows consumed."""
     try:
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        publication = json.loads(publication_manifest_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError) as error:
+        summary = loads_unique_json(summary_path.read_text(encoding="utf-8"))
+        publication = loads_unique_json(publication_manifest_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, DuplicateJsonKeyError) as error:
         raise UserInputError(
             "published translation provenance is missing or invalid",
             hint=(
@@ -2585,6 +2612,14 @@ def validate_translation_publication(
         )
     if (
         not isinstance(publication, dict)
+        or set(publication)
+        != {
+            "schema_version",
+            "language",
+            "translation_summary_sha256",
+            "paired_rows",
+            "semantic_review",
+        }
         or publication.get("schema_version") != TRANSLATION_PUBLICATION_SCHEMA
         or publication.get("language") != target.code
     ):
@@ -2601,6 +2636,7 @@ def validate_translation_publication(
     summary_identity = summary.get("publication_identity")
     if (
         not isinstance(summary_identity, dict)
+        or set(summary_identity) != {"rows", "canonical_fields", "canonical_sha256"}
         or summary_identity.get("canonical_fields") != list(PUBLICATION_CANONICAL_FIELDS)
         or summary_identity.get("rows") != count
         or summary_identity.get("canonical_sha256") != canonical_sha256
@@ -2611,8 +2647,10 @@ def validate_translation_publication(
             hint="Publish the exact audited rows and summary from the same translation run.",
         )
     paired = publication.get("paired_rows")
-    if not isinstance(paired, dict) or paired.get("canonical_fields") != list(
-        PUBLICATION_CANONICAL_FIELDS
+    if (
+        not isinstance(paired, dict)
+        or set(paired) != {"rows", "canonical_fields", "canonical_sha256"}
+        or paired.get("canonical_fields") != list(PUBLICATION_CANONICAL_FIELDS)
     ):
         raise UserInputError(
             "published translation manifest has an unsupported canonical field contract",
@@ -2678,6 +2716,7 @@ def validate_translation_publication(
             translation_summary_path=summary_path,
             root_split_by_id=root_split_by_id,
             expected_seed=expected_seed,
+            expected_reviewer_requirement=expected_reviewer_requirement,
             require_passed=True,
             template_path=semantic_review_template_path,
         )
@@ -2812,17 +2851,168 @@ def _validate_full_translation_provenance(payload: dict[str, object]) -> None:
         )
 
 
-def _validate_hebrew_v3_translation_preregistration(
+def validate_hebrew_v3_translation_preregistration(
     payload: dict[str, object],
+    *,
+    config: SommelierConfig,
+    expected_config_sha256: str,
 ) -> None:
-    """Require the exact preregistered Hebrew v3 forward producer.
+    """Require the exact preregistered Hebrew v3 forward producer and cohort.
 
     General paired-language publication validation deliberately permits any
     clean, immutable translator.  Hebrew v3 is narrower: its model, request,
-    loader, and decoding contract were fixed before the evidence run.  Keep
-    this check language-scoped so historical French publications retain their
-    existing generic provenance contract.
+    loader, decoding, and root-selection contract were fixed before the
+    evidence run.  This public preflight is also used by semantic-review
+    producers before they load the independent backtranslation model.  Keep it
+    language-scoped so historical French publications retain their existing
+    generic provenance contract.
     """
+    from sommelier.evaluation.data_provenance import validate_hebrew_v3_translation_config
+
+    validate_hebrew_v3_translation_config(config)
+    if re.fullmatch(r"[0-9a-f]{64}", expected_config_sha256) is None:
+        raise UserInputError("Hebrew v3 translation config SHA-256 is invalid")
+    expected_top_level = {
+        "schema_version",
+        "created_at",
+        "language",
+        "language_name",
+        "script_policy",
+        "translator",
+        "input",
+        "rows_sha256",
+        "publication_identity",
+        "translation_identity_sha256",
+        "input_rows",
+        "translated_rows",
+        "dropped",
+        "retried_rows",
+        "translation_attempts",
+        "max_attempts",
+        "provider_evidence",
+        "runtime",
+        "environment",
+        "selection",
+        "source_code",
+        "reviewer_preregistration",
+        "reviewer_preregistration_sha256",
+        "translation_run_identity_sha256",
+    }
+    if set(payload) != expected_top_level:
+        raise UserInputError(
+            "Hebrew v3 translation summary has unknown or missing top-level fields"
+        )
+    if (
+        payload.get("schema_version") != TRANSLATION_SUMMARY_SCHEMA
+        or payload.get("language") != "he"
+        or payload.get("language_name") != "Hebrew"
+    ):
+        raise UserInputError("Hebrew v3 translation summary has the wrong schema or language")
+    created_at = payload.get("created_at")
+    try:
+        parsed_created_at = datetime.fromisoformat(cast(str, created_at))
+    except (TypeError, ValueError) as error:
+        raise UserInputError("Hebrew v3 translation summary has an invalid created_at") from error
+    if (
+        not isinstance(created_at, str)
+        or parsed_created_at.utcoffset() != UTC.utcoffset(None)
+        or parsed_created_at.isoformat() != created_at
+    ):
+        raise UserInputError("Hebrew v3 translation summary created_at is not canonical UTC")
+    publication_identity = payload.get("publication_identity")
+    if not isinstance(publication_identity, dict) or set(publication_identity) != {
+        "rows",
+        "canonical_fields",
+        "canonical_sha256",
+    }:
+        raise UserInputError(
+            "Hebrew v3 translation publication_identity has unknown or missing fields"
+        )
+    selection = payload.get("selection")
+    if not isinstance(selection, dict) or set(selection) != {
+        "config_sha256",
+        "contract_sha256",
+        "mode",
+        "max_rows",
+        "limit",
+        "seed",
+        "selected_rows",
+        "selected_source_ids_sha256",
+    }:
+        raise UserInputError("Hebrew v3 translation selection has unknown or missing fields")
+    if not all(
+        isinstance(selection.get(field), str)
+        and re.fullmatch(r"[0-9a-f]{64}", cast(str, selection.get(field))) is not None
+        for field in ("config_sha256", "contract_sha256", "selected_source_ids_sha256")
+    ):
+        raise UserInputError("Hebrew v3 translation selection has an invalid digest")
+    expected_selected_rows = config.data.n_train + config.data.n_validation + config.data.n_test
+    expected_selection = {
+        "config_sha256": expected_config_sha256,
+        "contract_sha256": translation_selection_contract_sha256(
+            config,
+            mode="full",
+            max_rows=HEBREW_V3_TRANSLATION_MAX_ROWS,
+            limit=HEBREW_V3_TRANSLATION_LIMIT,
+        ),
+        "mode": "full",
+        "max_rows": HEBREW_V3_TRANSLATION_MAX_ROWS,
+        "limit": HEBREW_V3_TRANSLATION_LIMIT,
+        "seed": HEBREW_V3_TRANSLATION_SEED,
+        "selected_rows": expected_selected_rows,
+    }
+    for field, expected_value in expected_selection.items():
+        if selection.get(field) != expected_value:
+            raise UserInputError(
+                f"Hebrew v3 translation selection {field}={selection.get(field)!r} "
+                f"does not match the preregistered value {expected_value!r}"
+            )
+    if payload.get("input_rows") != expected_selected_rows:
+        raise UserInputError(
+            "Hebrew v3 translation input-row count does not match the preregistered cohort"
+        )
+    source_code = payload.get("source_code")
+    if not isinstance(source_code, dict) or set(source_code) != {
+        "git_commit",
+        "working_tree_clean",
+        "boundary",
+    }:
+        raise UserInputError("Hebrew v3 translation source_code has unknown or missing fields")
+    runtime = payload.get("runtime")
+    if not isinstance(runtime, dict) or set(runtime) != {
+        "gpu",
+        "provider",
+        "execution_provider",
+        "backend",
+        "gpu_allocation_label",
+        "function_timeout_seconds",
+        "model_load_seconds",
+        "translation_seconds",
+        "translation_chunk_size",
+        "boundary",
+        "provider_service_tier",
+        "provider_timeout_seconds",
+        "provider_max_workers",
+        "provider_journal_filename",
+        "openai_list_price_ceiling",
+        "credential_source",
+    }:
+        raise UserInputError("Hebrew v3 translation runtime has unknown or missing fields")
+    input_payload = payload.get("input")
+    if not isinstance(input_payload, dict) or set(input_payload) != {"description", "sha256"}:
+        raise UserInputError("Hebrew v3 translation input has unknown or missing fields")
+    script_policy = payload.get("script_policy")
+    if not isinstance(script_policy, dict) or set(script_policy) != {
+        "required_script",
+        "min_fraction",
+        "unsafe_bidi_controls",
+        "unicode_normalization",
+    }:
+        raise UserInputError("Hebrew v3 translation script policy has unknown or missing fields")
+    dropped = payload.get("dropped")
+    if not isinstance(dropped, dict) or set(dropped) != set(DROP_REASONS):
+        raise UserInputError("Hebrew v3 translation drop accounting has unknown or missing fields")
+
     _validate_full_translation_provenance(payload)
     from sommelier.data.openai_evidence import OPENAI_PROVIDER_JOURNAL_FILENAME
     from sommelier.remote.images import OPENAI_TRANSLATION_RUNTIME_VERSIONS
@@ -2947,6 +3137,152 @@ def _validate_hebrew_v3_translation_preregistration(
         )
 
 
+def validate_hebrew_v3_translation_run_identity(
+    identity_path: Path,
+    *,
+    summary: Mapping[str, object],
+    expected_config_sha256: str,
+) -> dict[str, object]:
+    """Validate the immutable identity reserved before any provider/model access."""
+    try:
+        encoded = identity_path.read_bytes()
+        payload = loads_unique_json(encoded.decode("utf-8"))
+    except (
+        FileNotFoundError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        DuplicateJsonKeyError,
+    ) as error:
+        raise UserInputError("Hebrew v3 translation run identity is missing or invalid") from error
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema_version",
+        "run_id",
+        "config_sha256",
+        "selection",
+        "translator",
+        "runtime",
+        "source_code",
+        "reviewer_preregistration",
+        "reviewer_preregistration_sha256",
+    }:
+        raise UserInputError(
+            "Hebrew v3 translation run identity has unknown or missing top-level fields"
+        )
+    if payload.get("schema_version") != TRANSLATION_RUN_IDENTITY_SCHEMA:
+        raise UserInputError("Hebrew v3 translation run identity has the wrong schema")
+    run_id = payload.get("run_id")
+    if (
+        not isinstance(run_id, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id) is None
+    ):
+        raise UserInputError("Hebrew v3 translation run identity has an invalid run_id")
+    summary_identity_sha256 = summary.get("translation_run_identity_sha256")
+    if summary_identity_sha256 != hashlib.sha256(encoded).hexdigest():
+        raise UserInputError(
+            "Hebrew v3 translation summary does not bind its pre-provider run identity"
+        )
+    summary_selection = summary.get("selection")
+    identity_selection = payload.get("selection")
+    if not isinstance(summary_selection, Mapping) or not isinstance(identity_selection, dict):
+        raise UserInputError("Hebrew v3 translation run identity has no selection contract")
+    if set(identity_selection) != {
+        "contract_sha256",
+        "mode",
+        "max_rows",
+        "limit",
+        "seed",
+    }:
+        raise UserInputError(
+            "Hebrew v3 translation run identity selection has unknown or missing fields"
+        )
+    if (
+        payload.get("config_sha256") != expected_config_sha256
+        or summary_selection.get("config_sha256") != expected_config_sha256
+    ):
+        raise UserInputError(
+            "Hebrew v3 translation run identity does not bind the exact Phase-A config"
+        )
+    for field in ("contract_sha256", "mode", "max_rows", "limit", "seed"):
+        if identity_selection.get(field) != summary_selection.get(field):
+            raise UserInputError(
+                f"Hebrew v3 translation run identity selection {field} does not match summary"
+            )
+
+    summary_translator = summary.get("translator")
+    identity_translator = payload.get("translator")
+    if not isinstance(summary_translator, Mapping) or not isinstance(identity_translator, dict):
+        raise UserInputError("Hebrew v3 translation run identity has no translator contract")
+    if set(identity_translator) != {
+        "model_id",
+        "model_revision",
+        "request_sha256",
+        "max_attempts",
+        "implementation_revision",
+    }:
+        raise UserInputError(
+            "Hebrew v3 translation run identity translator has unknown or missing fields"
+        )
+    for field in ("model_id", "model_revision", "request_sha256", "implementation_revision"):
+        if identity_translator.get(field) != summary_translator.get(field):
+            raise UserInputError(
+                f"Hebrew v3 translation run identity translator {field} does not match summary"
+            )
+    if identity_translator.get("max_attempts") != summary.get("max_attempts"):
+        raise UserInputError(
+            "Hebrew v3 translation run identity max_attempts does not match summary"
+        )
+
+    summary_runtime = summary.get("runtime")
+    identity_runtime = payload.get("runtime")
+    if not isinstance(summary_runtime, Mapping) or not isinstance(identity_runtime, dict):
+        raise UserInputError("Hebrew v3 translation run identity has no runtime contract")
+    if set(identity_runtime) != {
+        "backend",
+        "translation_chunk_size",
+        "allocation_gpu",
+        "function_timeout_seconds",
+        "provider_service_tier",
+        "provider_sdk_version",
+        "provider_timeout_seconds",
+        "provider_max_workers",
+        "openai_list_price_limit_usd",
+    }:
+        raise UserInputError(
+            "Hebrew v3 translation run identity runtime has unknown or missing fields"
+        )
+    provider_request = summary_translator.get("provider_request")
+    list_price = summary_runtime.get("openai_list_price_ceiling")
+    if not isinstance(provider_request, Mapping) or not isinstance(list_price, Mapping):
+        raise UserInputError("Hebrew v3 translation summary lacks its provider runtime contract")
+    expected_runtime = {
+        "backend": summary_runtime.get("backend"),
+        "translation_chunk_size": summary_runtime.get("translation_chunk_size"),
+        "allocation_gpu": summary_runtime.get("gpu_allocation_label"),
+        "function_timeout_seconds": summary_runtime.get("function_timeout_seconds"),
+        "provider_service_tier": summary_runtime.get("provider_service_tier"),
+        "provider_sdk_version": provider_request.get("sdk_version"),
+        "provider_timeout_seconds": summary_runtime.get("provider_timeout_seconds"),
+        "provider_max_workers": summary_runtime.get("provider_max_workers"),
+        "openai_list_price_limit_usd": list_price.get("limit_usd"),
+    }
+    if identity_runtime != expected_runtime:
+        raise UserInputError(
+            "Hebrew v3 translation run identity runtime does not match the summary"
+        )
+    if payload.get("source_code") != summary.get("source_code"):
+        raise UserInputError(
+            "Hebrew v3 translation run identity source code does not match the summary"
+        )
+    if payload.get("reviewer_preregistration") != summary.get("reviewer_preregistration") or (
+        payload.get("reviewer_preregistration_sha256")
+        != summary.get("reviewer_preregistration_sha256")
+    ):
+        raise UserInputError(
+            "Hebrew v3 translation run identity reviewer does not match the summary"
+        )
+    return cast(dict[str, object], payload)
+
+
 def validate_translation_selection_provenance(
     *,
     summary_path: Path,
@@ -3039,6 +3375,11 @@ def validate_full_paired_input_contract(
         SEMANTIC_REVIEW_TEMPLATE_FILENAME,
     )
     from sommelier.data.split import all_examples, prepare_split_result
+    from sommelier.evaluation.data_provenance import validate_hebrew_v3_translation_config
+    from sommelier.hebrew_v3_preregistration import (
+        validate_hebrew_v3_phase_transition,
+        validate_reviewer_anchor_evidence,
+    )
 
     paired_sources = [source for source in config.datasets if source.source_id_column is not None]
     if not paired_sources:
@@ -3091,6 +3432,8 @@ def validate_full_paired_input_contract(
         }
         semantic_review: Path | None = None
         semantic_template: Path | None = None
+        phase_a_config_path: Path | None = None
+        translation_run_identity_path: Path | None = None
         if source.language == "he":
             semantic_review = translation_provenance_sidecar_path(
                 root_rows_path, SEMANTIC_REVIEW_FILENAME, source.language
@@ -3100,10 +3443,22 @@ def validate_full_paired_input_contract(
             )
             required["semantic_review"] = semantic_review
             required["semantic_review_template"] = semantic_template
+            phase_a_config_path = translation_provenance_sidecar_path(
+                root_rows_path,
+                TRANSLATION_CONFIG_FILENAME,
+                source.language,
+            )
+            required["translation_config"] = phase_a_config_path
+            translation_run_identity_path = translation_provenance_sidecar_path(
+                root_rows_path,
+                TRANSLATION_RUN_IDENTITY_FILENAME,
+                source.language,
+            )
+            required["translation_run_identity"] = translation_run_identity_path
         for kind, path in required.items():
-            if not path.exists():
+            if path.is_symlink() or not path.is_file():
                 raise UserInputError(
-                    f"full paired-input {kind} not found: {path}",
+                    f"full paired-input {kind} is not a regular file: {path}",
                     hint=(
                         "Stage the exact published paired rows and provenance sidecars "
                         "beside the root input."
@@ -3117,13 +3472,50 @@ def validate_full_paired_input_contract(
             raise UserInputError("full paired-input translation summary must be an object")
         selection = summary_payload.get("selection")
         max_rows: int
+        expected_reviewer_requirement: ReviewerRequirement | None = None
         if source.language == "he":
+            if phase_a_config_path is None:  # pragma: no cover - construction invariant
+                raise AssertionError("Hebrew publication lacks its Phase-A config path")
+            from sommelier.config import load_config
+
+            phase_a_config = load_config(phase_a_config_path)
+            validate_hebrew_v3_translation_config(phase_a_config)
+            expected_reviewer_requirement = validate_hebrew_v3_phase_transition(
+                phase_a_config,
+                config,
+            )
+            if not isinstance(selection, dict) or selection.get("config_sha256") != sha256_file(
+                phase_a_config_path
+            ):
+                raise UserInputError(
+                    "Hebrew v3 translation summary does not bind the published Phase-A config",
+                    hint=(
+                        "Publish translation_config.yaml as the exact config.yaml bytes used "
+                        "before the translation provider call."
+                    ),
+                )
+            validate_reviewer_anchor_evidence(
+                phase_a_config,
+                summary_payload,
+                context="Hebrew v3 translation summary",
+            )
+            if translation_run_identity_path is None:  # pragma: no cover - invariant
+                raise AssertionError("Hebrew publication lacks its pre-provider run identity")
+            validate_hebrew_v3_translation_run_identity(
+                translation_run_identity_path,
+                summary=summary_payload,
+                expected_config_sha256=sha256_file(phase_a_config_path),
+            )
             if config.project.seed != HEBREW_V3_TRANSLATION_SEED:
                 raise UserInputError(
                     f"Hebrew v3 config seed {config.project.seed!r} does not match "
                     f"the preregistered seed {HEBREW_V3_TRANSLATION_SEED}"
                 )
-            _validate_hebrew_v3_translation_preregistration(summary_payload)
+            validate_hebrew_v3_translation_preregistration(
+                summary_payload,
+                config=phase_a_config,
+                expected_config_sha256=sha256_file(phase_a_config_path),
+            )
             selection_seed = HEBREW_V3_TRANSLATION_SEED
             max_rows = HEBREW_V3_TRANSLATION_MAX_ROWS
             limit = HEBREW_V3_TRANSLATION_LIMIT
@@ -3171,6 +3563,7 @@ def validate_full_paired_input_contract(
             root_rows_path=root_rows_path,
             root_split_by_id=root_split_by_id,
             expected_seed=config.project.seed,
+            expected_reviewer_requirement=expected_reviewer_requirement,
         )
         validated[source.language] = required
     return validated

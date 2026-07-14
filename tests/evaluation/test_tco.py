@@ -181,6 +181,28 @@ def _tokenizer_input() -> TokenizerTaxInput:
             "non_padding_full_tokens_per_epoch": 33,
             "epochs": 2,
             "projected_non_padding_full_tokens": 66,
+            "english_only_counterfactual": {
+                "language": "en",
+                "examples_per_epoch": 1,
+                "non_padding_full_tokens_per_epoch": 15,
+                "epochs": 2,
+                "projected_non_padding_full_tokens": 30,
+            },
+            "hebrew_increment": {
+                "language": "he",
+                "examples_per_epoch": 1,
+                "examples_per_epoch_ratio_to_english_only": 1.0,
+                "non_padding_full_tokens_per_epoch": 18,
+                "non_padding_full_tokens_per_epoch_ratio_to_english_only": 1.2,
+                "epochs": 2,
+                "projected_non_padding_full_tokens": 36,
+                "projected_non_padding_full_tokens_ratio_to_english_only": 1.2,
+            },
+            "combined_vs_english_only": {
+                "examples_per_epoch_multiplier": 2.0,
+                "non_padding_full_tokens_per_epoch_multiplier": 2.2,
+                "projected_non_padding_full_tokens_multiplier": 2.2,
+            },
             "boundary": (
                 "Excludes dynamic padding and is a deterministic lower bound on "
                 "tokens processed by training."
@@ -532,6 +554,28 @@ def test_builds_bounded_observed_and_projected_tco_evidence() -> None:
     workload = paired["projected_training_workload"]
     assert workload["projected_non_padding_full_tokens"] == 66
     assert workload["evidence_kind"] == "deterministic_projection"
+    assert workload["english_only_counterfactual"] == {
+        "language": "en",
+        "examples_per_epoch": 1,
+        "non_padding_full_tokens_per_epoch": 15,
+        "epochs": 2,
+        "projected_non_padding_full_tokens": 30,
+    }
+    assert workload["hebrew_increment"] == {
+        "language": "he",
+        "examples_per_epoch": 1,
+        "examples_per_epoch_ratio_to_english_only": 1.0,
+        "non_padding_full_tokens_per_epoch": 18,
+        "non_padding_full_tokens_per_epoch_ratio_to_english_only": 1.2,
+        "epochs": 2,
+        "projected_non_padding_full_tokens": 36,
+        "projected_non_padding_full_tokens_ratio_to_english_only": 1.2,
+    }
+    assert workload["combined_vs_english_only"] == {
+        "examples_per_epoch_multiplier": 2.0,
+        "non_padding_full_tokens_per_epoch_multiplier": 2.2,
+        "projected_non_padding_full_tokens_multiplier": 2.2,
+    }
 
     qlora = evidence["qlora_training"]
     assert qlora["train_stage_runtime"]["elapsed_seconds"] == 3600.0
@@ -715,6 +759,61 @@ def test_tokenizer_report_hash_linkage_fails_closed() -> None:
     )
 
     with pytest.raises(EvaluationError, match="records sha256"):
+        build_sovereign_tco_evidence(
+            identity,
+            tokenizer_tax=tampered,
+            training=training,
+            inference_arms=[inference],
+        )
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "message"),
+    (
+        (
+            "english_only_counterfactual",
+            "examples_per_epoch",
+            2,
+            "English-only counterfactual",
+        ),
+        (
+            "hebrew_increment",
+            "non_padding_full_tokens_per_epoch_ratio_to_english_only",
+            1.3,
+            "Hebrew increment",
+        ),
+        (
+            "combined_vs_english_only",
+            "non_padding_full_tokens_per_epoch_multiplier",
+            2.3,
+            "combined-vs-English",
+        ),
+    ),
+)
+def test_tokenizer_training_tax_tampering_fails_closed(
+    section: str,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    identity, tokenizer, training, inference = _complete_inputs()
+    report = copy.deepcopy(dict(tokenizer.report))
+    workload = report["training_workload"]
+    assert isinstance(workload, dict)
+    payload = workload[section]
+    assert isinstance(payload, dict)
+    payload[field] = value
+    tampered = TokenizerTaxInput(
+        report=report,
+        records=tokenizer.records,
+        manifest=tokenizer.manifest,
+        report_artifact=tokenizer.report_artifact,
+        records_artifact=tokenizer.records_artifact,
+        manifest_artifact=tokenizer.manifest_artifact,
+        formatted_inputs=tokenizer.formatted_inputs,
+    )
+
+    with pytest.raises(EvaluationError, match=message):
         build_sovereign_tco_evidence(
             identity,
             tokenizer_tax=tampered,

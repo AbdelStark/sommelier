@@ -22,6 +22,12 @@ from sommelier.runtime_metadata import (
     record_peak_gpu_memory,
     record_stage_runtime,
 )
+from sommelier.training.authorization import (
+    FullPairedInputValidationCapability,
+    _FullPairedInputValidationReceipt,
+    _issue_full_paired_input_for_training,
+    _validate_full_paired_input_for_pipeline,
+)
 from sommelier.training.metrics import METRICS_FILENAME
 from sommelier.training.qlora import train_adapter
 
@@ -53,6 +59,7 @@ class PipelinePaths:
     eval_adapter_dir: Path
     report_dir: Path
     external_adapter: AdapterRef | None = None
+    full_paired_input_validation_receipt: _FullPairedInputValidationReceipt | None = None
 
 
 def _stage_prepare(
@@ -74,7 +81,9 @@ def _stage_prepare(
     from sommelier.data.translate import (
         PUBLICATION_MANIFEST_FILENAME,
         SUMMARY_FILENAME,
+        TRANSLATION_CONFIG_FILENAME,
         TRANSLATION_PUBLICATION_SCHEMA,
+        TRANSLATION_RUN_IDENTITY_FILENAME,
         TRANSLATION_SUMMARY_SCHEMA,
     )
 
@@ -133,6 +142,51 @@ def _stage_prepare(
                     artifact_root=context.artifact_root,
                     kind=kind,
                     schema_version=schema_version,
+                )
+            )
+        if source.language == "he":
+            config_name = Path(TRANSLATION_CONFIG_FILENAME)
+            phase_a_config_source = paths.input_path.with_name(
+                f"{config_name.stem}.{source.language}{config_name.suffix}"
+            )
+            if not phase_a_config_source.exists():
+                raise UserInputError(
+                    f"paired dataset Phase-A config not found: {phase_a_config_source}",
+                    hint=(
+                        "Stage translation_config.yaml from the exact published Hebrew "
+                        "dataset revision."
+                    ),
+                )
+            phase_a_config_target = source_dir / phase_a_config_source.name
+            shutil.copy2(phase_a_config_source, phase_a_config_target)
+            source_inputs.append(
+                make_artifact_ref(
+                    phase_a_config_target,
+                    artifact_root=context.artifact_root,
+                    kind="config",
+                    schema_version="sommelier.config.v2",
+                )
+            )
+            identity_name = Path(TRANSLATION_RUN_IDENTITY_FILENAME)
+            identity_source = paths.input_path.with_name(
+                f"{identity_name.stem}.{source.language}{identity_name.suffix}"
+            )
+            if not identity_source.exists():
+                raise UserInputError(
+                    f"paired dataset pre-provider identity not found: {identity_source}",
+                    hint=(
+                        "Stage translation_run_identity.json from the exact published Hebrew "
+                        "dataset revision."
+                    ),
+                )
+            identity_target = source_dir / identity_source.name
+            shutil.copy2(identity_source, identity_target)
+            source_inputs.append(
+                make_artifact_ref(
+                    identity_target,
+                    artifact_root=context.artifact_root,
+                    kind="translation_run_identity",
+                    schema_version="sommelier.translation_run_identity.v1",
                 )
             )
         for filename, schema_version, kind in (
@@ -269,12 +323,22 @@ def _stage_train(
             flush=True,
         )
         return
+    full_paired_input_validation: FullPairedInputValidationCapability | None = (
+        _issue_full_paired_input_for_training(
+            paths.full_paired_input_validation_receipt,
+            config,
+            context,
+            paths.formatted_dir,
+            paths.data_dir / "source_inputs" / f"rows.{config.root_dataset.language}.jsonl",
+        )
+    )
     train_adapter(
         config,
         paths.formatted_dir,
         paths.train_dir,
         context=context,
         command=command,
+        full_paired_input_validation=full_paired_input_validation,
     )
 
 
@@ -406,12 +470,14 @@ def run_pipeline(
         )
 
     config = load_config(config_path)
+    full_paired_input_validation_receipt = None
     if mode == "smoke":
         config = apply_smoke_overrides(config)
     else:
-        from sommelier.data.translate import validate_full_paired_input_contract
-
-        validate_full_paired_input_contract(config, input_path)
+        full_paired_input_validation_receipt = _validate_full_paired_input_for_pipeline(
+            config,
+            input_path,
+        )
     context = ensure_run_context(
         config,
         config_path=config_path,
@@ -436,6 +502,7 @@ def run_pipeline(
         eval_adapter_dir=context.run_dir / "eval" / "adapter",
         report_dir=context.run_dir / "report",
         external_adapter=external_adapter,
+        full_paired_input_validation_receipt=full_paired_input_validation_receipt,
     )
 
     command = [

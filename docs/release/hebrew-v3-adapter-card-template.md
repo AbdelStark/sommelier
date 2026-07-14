@@ -37,18 +37,25 @@ weights, not merged base weights.
 - Hebrew paired dataset revision: `REPLACE_FROM_VERIFIED_BUNDLE`
 
 The `sommelier/` directory contains the resolved config, succeeded run/train
-manifests, passing release preflight, and final claim-gated experiment report.
-The experiment report is authoritative for cohort sizes, exact metrics,
+manifests, passing release preflight, and final claim-gated
+`sommelier.experiment_report.v2`. The experiment report is authoritative for
+cohort sizes, marginal and exact matched-pair metrics, ordered pairing identity,
 paired-bootstrap intervals, claim decisions, tokenizer tax, training runtime,
 memory, storage, and inference telemetry.
 
-## Claim-gated result
+The immutable Hebrew dataset revision named above is separately validated to
+contain the exact Phase-A config, its pre-provider translation run identity,
+and the finalized semantic review carrying the preregistered human reviewer's
+signed attestation. Signature verification establishes possession of that
+configured public key and integrity of the attested decisions; it does not
+establish native fluency or semantic correctness.
 
-Replace this section from the final `approved_claims` and interval objects. If a
-gate failed, retain the estimate and criterion but do not write the withheld
-claim. The preregistered gates are Hebrew full-call uplift versus the immutable
-v1 English adapter and English non-inferiority within an absolute one-point
-margin.
+Its training-tax evidence separates the observed combined en+he formatted-row
+workload into an English-only arithmetic counterfactual and an additive Hebrew
+increment, with data/token ratios and combined-vs-English multipliers. The
+counterfactual is not a separately trained English-only runtime or accuracy arm.
+
+REPLACE_FROM_VERIFIED_BUNDLE_WITH_RENDERED_CLAIM_SECTION
 
 ## Limitations
 
@@ -57,5 +64,6 @@ semantic review is non-native and does not establish native fluency or complete
 semantic correctness. Results apply only to the pinned dataset, prompts,
 parser, decoding, model, adapter tree, and hardware/runtime evidence. Sequential
 inference telemetry is not serving throughput, projected tokens are not billed
-tokens, and no full-fine-tuning or currency saving is claimed without a matched
+tokens, the Hebrew increment is selection-conditioned on accepted translated
+rows, and no full-fine-tuning or currency saving is claimed without a matched
 measurement.

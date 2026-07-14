@@ -211,6 +211,28 @@ def test_analysis_writes_exact_paired_counts_coverage_and_manifest(tmp_path: Pat
         "non_padding_full_tokens_per_epoch": 8,
         "epochs": 1,
         "projected_non_padding_full_tokens": 8,
+        "english_only_counterfactual": {
+            "language": "en",
+            "examples_per_epoch": 1,
+            "non_padding_full_tokens_per_epoch": 3,
+            "epochs": 1,
+            "projected_non_padding_full_tokens": 3,
+        },
+        "hebrew_increment": {
+            "language": "he",
+            "examples_per_epoch": 1,
+            "examples_per_epoch_ratio_to_english_only": 1.0,
+            "non_padding_full_tokens_per_epoch": 5,
+            "non_padding_full_tokens_per_epoch_ratio_to_english_only": 5 / 3,
+            "epochs": 1,
+            "projected_non_padding_full_tokens": 5,
+            "projected_non_padding_full_tokens_ratio_to_english_only": 5 / 3,
+        },
+        "combined_vs_english_only": {
+            "examples_per_epoch_multiplier": 2.0,
+            "non_padding_full_tokens_per_epoch_multiplier": 8 / 3,
+            "projected_non_padding_full_tokens_multiplier": 8 / 3,
+        },
         "boundary": (
             "Excludes dynamic padding and is a deterministic lower bound on tokens "
             "processed by training."

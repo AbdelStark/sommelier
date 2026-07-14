@@ -126,10 +126,12 @@ new strict French run requires a provenance-complete republish. The default
 The v3 experiment extends the paired design to Hebrew and adds the cost
 measurement that multilingual fine-tuning discussions often omit. It will
 report the observed English↔Hebrew token inflation under the pinned base
-tokenizer, projected non-padding training workload, and exact matched-pair
-accuracy gaps. A gated three-arm comparison—base model, published v1
-English adapter, and v3 English+Hebrew QLoRA adapter—will test Hebrew uplift
-while enforcing a predeclared English non-inferiority margin.
+tokenizer, the English-only workload counterfactual, additive Hebrew data/token
+tax, combined-vs-English multipliers, and exact matched-pair accuracy gaps. The
+counterfactual is derived from the same formatted rows and epochs, not a
+separately trained runtime or accuracy arm. A gated three-arm comparison—base
+model, published v1 English adapter, and v3 English+Hebrew QLoRA adapter—will
+test Hebrew uplift while enforcing a predeclared English non-inferiority margin.
 
 The one-time dataset teacher is the exact dated OpenAI Responses snapshot
 `gpt-5.5-2026-04-23`, under the `instruction_chat` contract with 512 maximum
@@ -148,6 +150,14 @@ byte-identical. The API snapshot is an identity, not a public weight digest or
 a promise of byte-identical provider regeneration. The external teacher is
 limited to dataset creation; training, evaluation, adapter weights, and
 deployment remain on the pinned open Nemotron/Llama-derived stack.
+
+Before that full provider run, the Phase-A config must commit one named human
+reviewer's stable id, canonical comment-free Ed25519 public key, and matching
+OpenSSH SHA-256 fingerprint. The private key remains solely with the reviewer:
+it must never enter the repository, Modal, Sommelier, or Codex. The producer
+exclusively reserves `translation_run_identity.json` before dataset or provider
+access, and the published paired dataset includes that identity plus the exact
+Phase-A config bytes as `translation_config.yaml`.
 
 A 140-row Flex smoke accepted 140/140 rows after 143 provider requests. Its
 model-assisted, non-native diagnostic inspection—not independent human
@@ -307,8 +317,9 @@ uv run modal run --detach remote_pipeline.py \
 The default full config has no paired source and needs no translation staging.
 Paired smoke runs may stage a completed diagnostic translation with
 `--translation-run-id`; paired full runs reject that override and verify the
-translation summary, locked semantic-review template, finalized review, and
-publication manifest at the pinned dataset revision. The exact paired
+translation summary, pre-provider run identity, exact Phase-A config, locked
+semantic-review template, finalized signed review, and publication manifest at
+the pinned dataset revision. The exact paired
 translation and three-arm commands are in the
 [Hebrew v3 methodology](docs/results/hebrew-v3.md).
 
@@ -320,6 +331,7 @@ translation and three-arm commands are in the
 | `sommelier data prepare` | Validate, filter, dedupe, and split raw rows |
 | `sommelier data translate` | Build a French or Hebrew paired dataset by constrained, audited translation |
 | `sommelier data semantic-review-create` | Lock and back-translate the preregistered Hebrew review sample |
+| `sommelier data semantic-review-attestation-create` | Recompute the sample and create the canonical payload for the named human to sign |
 | `sommelier data semantic-review-finalize` | Validate reviewer decisions and bind the publication manifest |
 | `sommelier data validate-fixtures` | Check the synthetic test fixtures |
 | `sommelier format build` | Render chat templates + prompt digests (`--fixture` for no-tokenizer builds) |

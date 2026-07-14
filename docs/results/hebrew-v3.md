@@ -84,7 +84,10 @@ Before publication, the release freezes a deterministic 200-row sample
 balanced across root split, source-query length decile, protected-span count,
 and tool/action family, with a fixed quota for ambiguous high-risk action
 verbs. The sample IDs, full paired-corpus digest, and locked review-input
-digest are selected before judgments.
+digest are selected before judgments. The named human reviewer's stable id,
+canonical Ed25519 public key, and matching fingerprint are committed in the
+Phase-A config before translation and carried through the pre-provider run
+identity, summary, and locked template.
 
 The independent back-translator is
 `Helsinki-NLP/opus-mt-tc-big-he-en@134c5a850dcaa763eec85bd1f4eb25112fecedbb`
@@ -101,17 +104,20 @@ prompt/model correction and whole-run regeneration, never row removal. The
 `sommelier.translation_semantic_review_template.v1` artifact locks the complete
 paired corpus, forward translator, back-translator revision and decoding, and
 sample before review. `sommelier.translation_semantic_review.v1` must preserve
-those bytes while adding the rubric, every decision, and reviewer boundary.
-No native-speaker review has been performed yet. Passing supports only
-the bounded statement “200-row preregistered non-native back-translation
+those bytes while adding the rubric, every decision, the canonical attestation,
+and its verified detached OpenSSH signature under the dedicated semantic-review
+namespace. Signature verification establishes possession of the preregistered
+private key and integrity of the attested decisions; it does not establish
+their correctness. No native-speaker review has been performed yet. Passing
+supports only the bounded statement “200-row preregistered non-native back-translation
 audit: zero critical errors”; it does not establish native fluency or
 full-corpus semantic correctness.
 
 ## Tokenizer and training-cost evidence
 
-`analyze tokenization` runs on the exact formatted strings consumed by evaluation and training. It records query characters, UTF-8 bytes, whitespace words, query tokens, prompt tokens, target tokens, and full tokens for every row. English↔Hebrew ratios use exact roots, with coverage and p50/p95/max per-pair ratios. The run also records over-budget rows and projected non-padding full tokens across configured epochs.
+`analyze tokenization` runs on the exact formatted strings consumed by evaluation and training. It records query characters, UTF-8 bytes, whitespace words, query tokens, prompt tokens, target tokens, and full tokens for every row. English↔Hebrew ratios use exact roots, with coverage and p50/p95/max per-pair ratios. The run also records over-budget rows and separates three projected workloads across the configured epochs: English-only on the retained English train rows, the additive retained Hebrew examples/tokens, and the actual combined en+he workload. The report gives Hebrew-to-English incremental ratios and combined-vs-English multipliers for examples, per-epoch non-padding full tokens, and projected non-padding full tokens.
 
-The allowed claim is narrow: **observed token inflation on this paired corpus under this pinned tokenizer**. The projected workload excludes dynamic padding and is a deterministic lower bound, not a cloud invoice and not evidence that Hebrew script alone caused the difference.
+The allowed claim is narrow: **observed token inflation on this paired corpus under this pinned tokenizer**. The English-only quantity is an arithmetic counterfactual over the same formatted English rows and epoch count; it is not a separately trained arm and supports no runtime, memory, accuracy, or billing comparison. The Hebrew increment is selection-conditioned on translated rows that survived the data gates. Every projected workload excludes dynamic padding and is a deterministic lower bound, not a cloud invoice and not evidence that Hebrew script alone caused the difference.
 
 The three-arm experiment embeds `sommelier.sovereign_tco_evidence.v1`. It can
 report observed QLoRA train-stage wall time, configured GPU-hours, peak
@@ -183,7 +189,79 @@ proof of semantic correctness.
 
 ## Reproduction commands
 
-The full config is [`examples/config.v3-he-full.yaml`](https://github.com/AbdelStark/sommelier/blob/main/examples/config.v3-he-full.yaml). Its Hebrew dataset revision is currently provisional (`main`); replace it with the published immutable commit before the evidence run.
+The full config is [`examples/config.v3-he-full.yaml`](https://github.com/AbdelStark/sommelier/blob/main/examples/config.v3-he-full.yaml). Its Hebrew dataset revision is currently provisional (`main`). The end-to-end run deliberately uses two clean, immutable producer commits:
+
+1. **Phase A — `TRANSLATION_SHA`.** Commit the implementation with the
+   provisional `main` revision and one named human reviewer's stable id,
+   canonical comment-free Ed25519 public key, and matching OpenSSH fingerprint.
+   From that exact clean commit, run and verify the
+   current-contract Responses/Flex plus A10 smoke, run and verify the synthetic
+   L40S full-shape preflight, produce the full translation, create the locked
+   template, collect all 200 decisions from a named human, finalize the review,
+   and publish the audited dataset.
+2. **Phase B — `PIPELINE_SHA`.** Extract the immutable dataset commit from the
+   verified publication receipt, replace only the provisional revision, and
+   commit that pin. From this second exact clean commit, run both full pipeline
+   arms, finalize the experiment, assemble and publish the adapter, and verify
+   its receipt.
+3. Only after adapter verification, create a later documentation commit that
+   updates tracked result tables and narrative claims.
+
+The Phase A translation validator accepts only the committed `main` placeholder
+and preregistered reviewer; the Phase B full-pipeline validator accepts only an
+immutable dataset commit and proves every other resolved field, including the
+reviewer anchor, is unchanged. The config pin therefore cannot be an
+uncommitted edit and the two producer SHAs cannot be collapsed into one. Every
+paid stage requires separate operator authorization; completing an earlier
+stage does not authorize a later one. Smoke and preflight artifacts are
+diagnostics only and cannot fill the result table.
+
+Choose deterministic run IDs once. Re-run this block in every new operator
+shell, preserving any suffixes already advanced after a failed attempt. Every
+full or smoke pipeline retry and every QLoRA-preflight retry gets a fresh ID. A
+full translation ID may resume only while it contains progress artifacts and no
+terminal rows, summary, or publication manifest; a terminal or semantically
+rejected translation gets a fresh ID, which automatically propagates through
+every later command below.
+
+```bash
+export SMOKE_TRANSLATION_RUN_ID=he-v3-translate-smoke-001
+export SMOKE_PIPELINE_RUN_ID=smoke-he-v3-pipeline-001
+export QLORA_PREFLIGHT_RUN_ID=he-v3-l40s-shape-001
+export TRANSLATION_RUN_ID=he-v3-translate-full-001
+export V1_RUN_ID=he-v3-v1-baseline-001
+export V3_RUN_ID=he-v3-full-001
+export DATASET_RECEIPT=artifacts/publication/hebrew-dataset-receipt.json
+export ADAPTER_RECEIPT=artifacts/publication/hebrew-adapter-receipt.json
+```
+
+Before recording Phase A, the named human must provide the three public reviewer
+fields and the operator must uncomment and fill the `semantic_review.reviewer`
+section in `examples/config.v3-he-full.yaml`. Commit the canonical comment-free
+`ssh-ed25519` public key and its matching `SHA256:...` OpenSSH fingerprint. The
+private key stays solely with the human: never put it in the repository, Modal,
+Sommelier, Codex, an artifact, or a command sent to another operator.
+
+Start Phase A only after that exact config is committed. The typed config check
+also prevents accidentally starting translation after the Phase B pin:
+
+```bash
+export TRANSLATION_SHA="$(git rev-parse --verify HEAD)"
+test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+uv run sommelier config validate --config examples/config.v3-he-full.yaml
+uv run python - <<'PY'
+from pathlib import Path
+
+from sommelier.config import load_config
+from sommelier.evaluation.data_provenance import validate_hebrew_v3_translation_config
+
+validate_hebrew_v3_translation_config(
+    load_config(Path("examples/config.v3-he-full.yaml"))
+)
+PY
+test "$(uv run python -c \
+  'from pathlib import Path; from sommelier.config import load_config; print(load_config(Path("examples/config.v3-he-full.yaml")).dataset_for("he").dataset_revision)')" = main
+```
 
 Provision the two named Modal secrets without putting credentials in the config
 or artifacts:
@@ -193,7 +271,94 @@ uv run modal secret create openai-api-key OPENAI_API_KEY="$OPENAI_API_KEY"
 uv run modal secret create huggingface-read-token HF_TOKEN="$HF_TOKEN"
 ```
 
-Then build the audited Hebrew pairs with the exact dated Responses snapshot.
+### Phase A diagnostic hard stops
+
+Run the current-contract translation and paired pipeline smoke first. Supplying
+the already `smoke-`-prefixed pipeline ID makes the requested ID and the actual
+artifact directory identical:
+
+```bash
+SOMMELIER_TIMEOUT_SECONDS=3600 \
+uv run modal run --detach remote_translate.py \
+  --config examples/config.v3-he-smoke.yaml \
+  --run-id "$SMOKE_TRANSLATION_RUN_ID" --mode smoke --max-rows 2500 \
+  --target-language he \
+  --model-id gpt-5.5-2026-04-23 \
+  --model-revision gpt-5.5-2026-04-23 \
+  --max-new-tokens 512 --translator-interface instruction_chat \
+  --max-model-len 0 --output-decoder standard \
+  --runtime-backend openai_responses \
+  --openai-service-tier flex --openai-max-workers 8 \
+  --openai-list-price-limit-usd 1.00
+
+SOMMELIER_GPU=A10G SOMMELIER_TIMEOUT_SECONDS=10800 \
+uv run modal run --detach remote_pipeline.py \
+  --config examples/config.v3-he-smoke.yaml --mode smoke --max-rows 2500 \
+  --run-id "$SMOKE_PIPELINE_RUN_ID" \
+  --translation-run-id "$SMOKE_TRANSLATION_RUN_ID"
+```
+
+Pull the named pipeline artifact into a fresh local path and fail closed unless
+the run succeeded under the Phase A source identity and produced the expected
+comparison/runtime schemas:
+
+```bash
+SMOKE_RUN="artifacts/runs/$SMOKE_PIPELINE_RUN_ID"
+test ! -e "$SMOKE_RUN"
+mkdir -p artifacts/runs
+uv run modal volume get sommelier-artifacts \
+  "artifacts/runs/$SMOKE_PIPELINE_RUN_ID/" artifacts/runs/
+
+jq -e --arg run_id "$SMOKE_PIPELINE_RUN_ID" \
+  '.run_id == $run_id and .status == "succeeded"' \
+  "$SMOKE_RUN/manifest.json"
+jq -e --arg run_id "$SMOKE_PIPELINE_RUN_ID" \
+  '.schema_version == "sommelier.comparison_report.v3" and .run_id == $run_id' \
+  "$SMOKE_RUN/report/comparison_report.json"
+jq -e --arg run_id "$SMOKE_PIPELINE_RUN_ID" --arg sha "$TRANSLATION_SHA" \
+  '.schema_version == "sommelier.runtime_metadata.v1" and
+   .run_id == $run_id and .source_code.git_commit == $sha and
+   .source_code.working_tree_clean == true' \
+  "$SMOKE_RUN/runtime_metadata.json"
+```
+
+Then exercise the exact full QLoRA resource shape and verify its separate,
+diagnostic-only terminal artifact:
+
+```bash
+uv run modal run --detach remote_qlora_preflight.py \
+  --config examples/config.v3-he-full.yaml \
+  --run-id "$QLORA_PREFLIGHT_RUN_ID"
+
+QLORA_PARENT=artifacts/diagnostics/qlora-shape-preflight
+QLORA_RUN="$QLORA_PARENT/$QLORA_PREFLIGHT_RUN_ID"
+test ! -e "$QLORA_RUN"
+mkdir -p "$QLORA_PARENT"
+uv run modal volume get sommelier-artifacts \
+  "diagnostics/qlora-shape-preflight/$QLORA_PREFLIGHT_RUN_ID/" \
+  "$QLORA_PARENT/"
+
+jq -e --arg run_id "$QLORA_PREFLIGHT_RUN_ID" --arg sha "$TRANSLATION_SHA" \
+  '.schema_version == "sommelier.qlora_shape_preflight.v1" and
+   .run_id == $run_id and .status == "succeeded" and
+   .diagnostic_only == true and .release_evidence_eligible == false and
+   .source_code.git_commit == $sha and .source_code.working_tree_clean == true' \
+  "$QLORA_RUN/preflight_report.json"
+```
+
+These successful diagnostics are mandatory operator hard stops for this
+sequence, but remain ineligible for full-corpus, accuracy, cost-saving, or
+release claims. Confirm Phase A did not move or become dirty before authorizing
+the full provider run:
+
+```bash
+test "$(git rev-parse --verify HEAD)" = "$TRANSLATION_SHA"
+test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+```
+
+### Phase A full translation and semantic review
+
+Now build the audited Hebrew pairs with the exact dated Responses snapshot.
 Choosing `--runtime-backend openai_responses` is the explicit paid-inference
 authorization; model-name matching alone never selects a provider:
 
@@ -201,7 +366,7 @@ authorization; model-name matching alone never selects a provider:
 SOMMELIER_TIMEOUT_SECONDS=28800 \
 uv run modal run --detach remote_translate.py \
   --config examples/config.v3-he-full.yaml \
-  --run-id he-v3-translate-full --mode full --max-rows 60000 \
+  --run-id "$TRANSLATION_RUN_ID" --mode full --max-rows 60000 \
   --target-language he \
   --model-id gpt-5.5-2026-04-23 \
   --model-revision gpt-5.5-2026-04-23 \
@@ -235,9 +400,13 @@ Before dataset export or provider construction, a full Hebrew launch validates
 the complete v3 project, base/tokenizer, English root, split, formatting,
 QLoRA, evaluation, remote, reporting, and tracking contract. The Hebrew dataset
 revision is the sole pre-publication exception: the committed `main` placeholder
-is accepted until the audited rows are published. The run directory also locks
-an exact config and run identity. A matching progress-only attempt can resume;
-once accepted `rows.he.jsonl`, `translation_summary.json`, or the publication
+is accepted until the audited rows are published. Before dataset export or
+provider construction, the producer exclusively reserves
+`translation_run_identity.json`. That closed identity binds the exact submitted
+config digest and preregistered reviewer, selection, provider, translator,
+clean source, and allocation contract; the exact submitted config bytes remain
+beside it as `config.yaml`. A matching progress-only attempt can resume. Once
+accepted `rows.he.jsonl`, `translation_summary.json`, or the publication
 manifest exists, that run ID cannot be launched again or overwritten. The
 identity reservation is not a distributed mutex: launching the same incomplete
 run ID concurrently is unsupported. Operators must wait for an invocation to
@@ -259,15 +428,19 @@ Create the locked back-translation template from that exact full translation
 run, then pull a local copy for review:
 
 ```bash
+test "$(git rev-parse --verify HEAD)" = "$TRANSLATION_SHA"
+test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+
 SOMMELIER_GPU=A10G SOMMELIER_TIMEOUT_SECONDS=14400 \
 uv run modal run --detach remote_semantic_review.py \
-  --translation-run-id he-v3-translate-full
+  --translation-run-id "$TRANSLATION_RUN_ID"
 
+test ! -e "artifacts/translation/$TRANSLATION_RUN_ID"
 mkdir -p artifacts/translation
 uv run modal volume get sommelier-artifacts \
-  translation/he-v3-translate-full/ artifacts/translation/
-cp artifacts/translation/he-v3-translate-full/translation_semantic_review_template.json \
-  artifacts/translation/he-v3-translate-full/translation_semantic_review_reviewed.json
+  "translation/$TRANSLATION_RUN_ID/" artifacts/translation/
+cp "artifacts/translation/$TRANSLATION_RUN_ID/translation_semantic_review_template.json" \
+  "artifacts/translation/$TRANSLATION_RUN_ID/translation_semantic_review_reviewed.json"
 ```
 
 The remote producer accepts only a 1-128 character safe run-id component, then
@@ -288,35 +461,78 @@ retrying the semantic job:
 ```bash
 RECOVERY_COPY="$(mktemp)"
 uv run modal volume get --force sommelier-artifacts \
-  translation/<full-id>/translation_semantic_review_template.json \
+  "translation/$TRANSLATION_RUN_ID/translation_semantic_review_template.json" \
   "$RECOVERY_COPY"
 test ! -s "$RECOVERY_COPY"
 rm "$RECOVERY_COPY"
 uv run modal volume rm sommelier-artifacts \
-  translation/<full-id>/translation_semantic_review_template.json
+  "translation/$TRANSLATION_RUN_ID/translation_semantic_review_template.json"
 ```
 
 Exclusive creation closes the mounted-filesystem
 check/write race; it is not a claim of provider-wide locking across separately
-launched Modal containers, so do not launch the same ID concurrently. The pure
-local template builder may still replace disposable test fixtures, but it is
-not the remote release-evidence boundary.
+launched Modal containers, so do not launch the same ID concurrently. The local
+builder also refuses a differing existing file and accepts only an exact,
+fully validated idempotent retry.
 
 Fill only the `review` fields in the copied file. Keep the machine template
-untouched, then finalize all 200 judgments and regenerate the publication
-manifest:
+untouched. Reviewer identity comes from the committed Phase-A config; none of
+the semantic-review commands accepts a post-hoc reviewer argument. The named
+human must personally make all 200 judgments. Automation may validate the
+completed copy but must not impersonate the reviewer or self-certify the
+decisions.
+
+First create the canonical attestation. This revalidates the exact Phase-A
+config, summary, pre-provider run identity, rows, untouched template, and
+reviewed copy, and recomputes the pinned back-translations:
+
+```bash
+uv run sommelier data semantic-review-attestation-create \
+  --config examples/config.v3-he-full.yaml \
+  --root-input "artifacts/translation/$TRANSLATION_RUN_ID/rows.en.jsonl" \
+  --paired-input "artifacts/translation/$TRANSLATION_RUN_ID/rows.he.jsonl" \
+  --translation-summary "artifacts/translation/$TRANSLATION_RUN_ID/translation_summary.json" \
+  --translation-run-identity "artifacts/translation/$TRANSLATION_RUN_ID/translation_run_identity.json" \
+  --template "artifacts/translation/$TRANSLATION_RUN_ID/translation_semantic_review_template.json" \
+  --reviewed "artifacts/translation/$TRANSLATION_RUN_ID/translation_semantic_review_reviewed.json" \
+  --out "artifacts/translation/$TRANSLATION_RUN_ID/translation_semantic_review_attestation.json"
+```
+
+The named human then signs those exact bytes with the private key corresponding
+to the public key committed before `TRANSLATION_SHA`:
+
+```bash
+cd "artifacts/translation/$TRANSLATION_RUN_ID"
+ssh-keygen -Y sign -f <private-key> \
+  -n sommelier-hebrew-v3-semantic-review \
+  translation_semantic_review_attestation.json
+cd -
+```
+
+This creates `translation_semantic_review_attestation.json.sig`. The reviewer
+must not give the private key to the operator or place it in the repository,
+Modal, Sommelier, Codex, or the publication bundle. Return only the detached
+signature, then finalize the signed review and write a fresh reviewed manifest:
 
 ```bash
 uv run sommelier data semantic-review-finalize \
   --config examples/config.v3-he-full.yaml \
-  --root-input artifacts/translation/he-v3-translate-full/rows.en.jsonl \
-  --paired-input artifacts/translation/he-v3-translate-full/rows.he.jsonl \
-  --translation-summary artifacts/translation/he-v3-translate-full/translation_summary.json \
-  --template artifacts/translation/he-v3-translate-full/translation_semantic_review_template.json \
-  --reviewed artifacts/translation/he-v3-translate-full/translation_semantic_review_reviewed.json \
-  --out artifacts/translation/he-v3-translate-full/translation_semantic_review.json \
-  --reviewer-id <stable-non-secret-reviewer-id>
+  --root-input "artifacts/translation/$TRANSLATION_RUN_ID/rows.en.jsonl" \
+  --paired-input "artifacts/translation/$TRANSLATION_RUN_ID/rows.he.jsonl" \
+  --translation-summary "artifacts/translation/$TRANSLATION_RUN_ID/translation_summary.json" \
+  --translation-run-identity "artifacts/translation/$TRANSLATION_RUN_ID/translation_run_identity.json" \
+  --template "artifacts/translation/$TRANSLATION_RUN_ID/translation_semantic_review_template.json" \
+  --reviewed "artifacts/translation/$TRANSLATION_RUN_ID/translation_semantic_review_reviewed.json" \
+  --attestation "artifacts/translation/$TRANSLATION_RUN_ID/translation_semantic_review_attestation.json" \
+  --attestation-signature "artifacts/translation/$TRANSLATION_RUN_ID/translation_semantic_review_attestation.json.sig" \
+  --out "artifacts/translation/$TRANSLATION_RUN_ID/translation_semantic_review.json" \
+  --publication-manifest "artifacts/translation/$TRANSLATION_RUN_ID/translation_publication.reviewed.json"
 ```
+
+The finalizer verifies the configured public identity and signature and embeds
+the attestation and signature in `translation_semantic_review.json`. It refuses
+to overwrite the initial `translation_publication.json`; the reviewed manifest
+is deliberately a new file.
 
 Any critical error fails this publication; fix the translation contract and
 regenerate the whole full run rather than deleting the row. After the gate
@@ -327,22 +543,27 @@ release-specific evidence statement and remove its marker before validation:
 
 ```bash
 DATASET_BUNDLE=artifacts/publication/hebrew-dataset
+test ! -e "$DATASET_BUNDLE"
 mkdir -p "$DATASET_BUNDLE"
 cp docs/release/hebrew-v3-dataset-card.md "$DATASET_BUNDLE/README.md"
 # Edit README.md from verified full evidence; remove only the resolved
 # REPLACE_FROM_VERIFIED_DATASET_BUNDLE marker.
 for name in rows.he.jsonl translation_summary.json \
   translation_semantic_review_template.json \
-  translation_semantic_review.json translation_publication.json; do
-  cp "artifacts/translation/he-v3-translate-full/$name" "$DATASET_BUNDLE/$name"
+  translation_semantic_review.json translation_run_identity.json; do
+  cp "artifacts/translation/$TRANSLATION_RUN_ID/$name" "$DATASET_BUNDLE/$name"
 done
+cp "artifacts/translation/$TRANSLATION_RUN_ID/config.yaml" \
+  "$DATASET_BUNDLE/translation_config.yaml"
+cp "artifacts/translation/$TRANSLATION_RUN_ID/translation_publication.reviewed.json" \
+  "$DATASET_BUNDLE/translation_publication.json"
 
 # No Hub import or mutation: validate the complete local contract and the
 # intended first-publication plan. This assumes the destination is absent.
 uv run sommelier release publish-dataset \
   --config examples/config.v3-he-full.yaml \
   --bundle "$DATASET_BUNDLE" \
-  --root-input artifacts/translation/he-v3-translate-full/rows.en.jsonl \
+  --root-input "artifacts/translation/$TRANSLATION_RUN_ID/rows.en.jsonl" \
   --repo-id abdelstark/sommelier-xlam-single-call-splits-he \
   --commit-message "Publish audited Hebrew v3 paired rows" \
   --create-repo
@@ -358,16 +579,27 @@ commit:
 
 ```bash
 uv sync --extra publish
+DATASET_BUNDLE=artifacts/publication/hebrew-dataset
+test ! -e "$DATASET_RECEIPT"
 uv run --extra publish sommelier release publish-dataset \
   --config examples/config.v3-he-full.yaml \
   --bundle "$DATASET_BUNDLE" \
-  --root-input artifacts/translation/he-v3-translate-full/rows.en.jsonl \
+  --root-input "artifacts/translation/$TRANSLATION_RUN_ID/rows.en.jsonl" \
   --repo-id abdelstark/sommelier-xlam-single-call-splits-he \
   --commit-message "Publish audited Hebrew v3 paired rows" \
   --execute --create-repo \
   --confirm-repo-id abdelstark/sommelier-xlam-single-call-splits-he \
-  --receipt artifacts/publication/hebrew-dataset-receipt.json
+  --receipt "$DATASET_RECEIPT"
 ```
+
+The bundle is fresh by construction. Never copy or overwrite the producer's
+stale initial `translation_publication.json`: only the finalizer's
+`translation_publication.reviewed.json` becomes the canonical filename inside
+this new bundle. Its exact allowlist is `README.md`, `rows.he.jsonl`,
+`translation_summary.json`, `translation_publication.json`,
+`translation_semantic_review_template.json`,
+`translation_semantic_review.json`, `translation_config.yaml`, and
+`translation_run_identity.json`.
 
 The publisher refuses symlinks, extra files, raw provider journals, secret-like
 content, incomplete semantic/provider evidence, unrelated remote files, and an
@@ -375,50 +607,128 @@ existing or inside-bundle receipt. It validates, scans, hashes, and uploads one
 private byte snapshot, then downloads every file from the returned immutable
 revision and verifies its SHA-256 before writing a verified receipt. The
 publication manifest must bind the row identity plus the SHA-256 digests of the
-summary, untouched template, and semantic review.
+summary, untouched template, and signed semantic review. It also verifies that
+`translation_config.yaml` is byte-for-byte the committed Phase-A config and
+that `translation_run_identity.json` was reserved before provider access and
+matches the summary, config, and preregistered reviewer.
 The summary embeds the content-free provider-evidence v2 aggregate and the
 SHA-256 of `openai_responses_provider.jsonl`. The raw provider journal remains
 in the durable producer artifacts for audit and replay; do not publish it in
 the paired dataset.
 
-Replace the provisional Hebrew revision in the config with the exact immutable
-`repository.commit_sha` from the verified receipt. Full evidence runs consume
-and verify the published rows and all four provenance files; diagnostic
-`--translation-run-id` staging is smoke-only.
+### Phase B immutable dataset pin
 
-There are two complementary paid pre-full checks, and neither is full evidence.
-The current-contract paired smoke in the
-[remote execution guide](../guides/remote-execution.md#pipeline-and-translation-commands)
-runs the 512-token, provider-evidence-v2 translation path and then the reduced
-smoke pipeline, so it checks provider/data/pipeline integration. Its training
-and evaluation config deliberately uses smaller limits and is not the full v3
-resource shape. The completed historical 140-row Flex smoke used a 256-token,
-v1 evidence contract and does not count as this current-contract smoke. The
-L40S check below does the opposite: it exercises the exact full QLoRA resource
-shape with synthetic rows, but does not call the provider, consume the
-published dataset, or run end-to-end accuracy. Do not describe either check as
-run until its own artifact exists, and do not combine them into a release
-claim.
-
-Before the two full training/evaluation allocations, exercise the exact v3
-memory shape once from the clean producer revision:
+Do not read the commit SHA from console text or an unverified receipt. Extract
+it with a closed status and length check, recover the Phase A source identity
+from the downloaded translation summary, and confirm the checkout is still
+exactly that clean commit:
 
 ```bash
-uv run modal run --detach remote_qlora_preflight.py \
-  --config examples/config.v3-he-full.yaml \
-  --run-id he-v3-l40s-shape-001
+DATASET_SHA="$(jq -er \
+  'select(.status == "verified") | .repository.commit_sha |
+   select(type == "string" and test("^[0-9a-f]{40}([0-9a-f]{24})?$"))' \
+  "$DATASET_RECEIPT")"
+export TRANSLATION_SHA="$(jq -er \
+  '.source_code.git_commit |
+   select(type == "string" and test("^[0-9a-f]{40}([0-9a-f]{24})?$"))' \
+  "artifacts/translation/$TRANSLATION_RUN_ID/translation_summary.json")"
+
+test "$(git rev-parse --verify HEAD)" = "$TRANSLATION_SHA"
+test -z "$(git status --porcelain=v1 --untracked-files=normal)"
 ```
 
-This paid L40S diagnostic uses synthetic paired English/Hebrew examples only.
-It verifies four near-4096-token batch-4 microbatches, one real gradient-
-accumulated optimizer update, and one batch-4 evaluation forward under the full
-NF4/bfloat16 QLoRA module/checkpointing contract. Each source has exactly one
-English and one Hebrew row, the runtime exposes exactly one L40S, and every
-`hf_device_map` entry must resolve to CUDA device 0 with no CPU or disk offload.
-Its report preserves peak
-memory and redacted failure evidence, but is explicitly ineligible for dataset,
-accuracy, full-training, TCO-saving, or release claims. The full pipeline still
-has to measure the actual dataset and complete all claim gates.
+Replace only the provisional Hebrew revision, review that one-file diff, and
+commit it. This commit is the Phase B producer identity; leaving the pin as an
+uncommitted edit makes both full pipeline commands fail locally before Modal
+dispatch.
+
+```bash
+DATASET_SHA="$DATASET_SHA" uv run python - <<'PY'
+import os
+from pathlib import Path
+
+path = Path("examples/config.v3-he-full.yaml")
+text = path.read_text(encoding="utf-8")
+old = "    dataset_revision: main"
+if text.count(old) != 1:
+    raise SystemExit("expected exactly one provisional Hebrew dataset revision")
+path.write_text(
+    text.replace(old, f"    dataset_revision: {os.environ['DATASET_SHA']}"),
+    encoding="utf-8",
+)
+PY
+
+uv run python - \
+  "$DATASET_BUNDLE/translation_config.yaml" \
+  examples/config.v3-he-full.yaml <<'PY'
+import sys
+from pathlib import Path
+
+from sommelier.config import load_config
+from sommelier.hebrew_v3_preregistration import validate_hebrew_v3_phase_transition
+
+validate_hebrew_v3_phase_transition(
+    load_config(Path(sys.argv[1])),
+    load_config(Path(sys.argv[2])),
+)
+PY
+
+git diff --check
+test "$(git diff --name-only)" = examples/config.v3-he-full.yaml
+git diff -- examples/config.v3-he-full.yaml
+git add examples/config.v3-he-full.yaml
+git commit -m "Pin audited Hebrew v3 dataset revision"
+
+export PIPELINE_SHA="$(git rev-parse --verify HEAD)"
+test "$PIPELINE_SHA" != "$TRANSLATION_SHA"
+test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+test "$(uv run python -c \
+  'from pathlib import Path; from sommelier.config import load_config; print(load_config(Path("examples/config.v3-he-full.yaml")).dataset_for("he").dataset_revision)')" = "$DATASET_SHA"
+```
+
+Full evidence runs now consume the published rows and the complete six-file
+provenance chain; diagnostic `--translation-run-id` staging is smoke-only. The
+two Phase A diagnostics are complementary hard stops, not full evidence: the
+current-contract paired smoke checks provider/data/pipeline integration at reduced
+training limits, while the synthetic L40S diagnostic checks the exact full
+QLoRA shape without provider or dataset I/O. The historical 140-row Flex smoke
+used the older 256-token/v1 contract and satisfies neither stop.
+
+Immediately before the two full allocations, recheck both named diagnostic
+artifacts and the clean Phase B identity. Any failed command below is a stop,
+not permission to infer that the diagnostic ran:
+
+```bash
+SMOKE_RUN="artifacts/runs/$SMOKE_PIPELINE_RUN_ID"
+QLORA_RUN="artifacts/diagnostics/qlora-shape-preflight/$QLORA_PREFLIGHT_RUN_ID"
+export PIPELINE_SHA="$(git rev-parse --verify HEAD)"
+DATASET_SHA="$(jq -er \
+  'select(.status == "verified") | .repository.commit_sha |
+   select(type == "string" and test("^[0-9a-f]{40}([0-9a-f]{24})?$"))' \
+  "$DATASET_RECEIPT")"
+export TRANSLATION_SHA="$(jq -er \
+  '.source_code.git_commit |
+   select(type == "string" and test("^[0-9a-f]{40}([0-9a-f]{24})?$"))' \
+  "artifacts/translation/$TRANSLATION_RUN_ID/translation_summary.json")"
+jq -e --arg run_id "$SMOKE_PIPELINE_RUN_ID" \
+  '.run_id == $run_id and .status == "succeeded"' \
+  "$SMOKE_RUN/manifest.json"
+jq -e --arg run_id "$SMOKE_PIPELINE_RUN_ID" --arg sha "$TRANSLATION_SHA" \
+  '.schema_version == "sommelier.runtime_metadata.v1" and
+   .run_id == $run_id and .source_code.git_commit == $sha and
+   .source_code.working_tree_clean == true' \
+  "$SMOKE_RUN/runtime_metadata.json"
+jq -e --arg run_id "$QLORA_PREFLIGHT_RUN_ID" --arg sha "$TRANSLATION_SHA" \
+  '.schema_version == "sommelier.qlora_shape_preflight.v1" and
+   .run_id == $run_id and .status == "succeeded" and
+   .diagnostic_only == true and .release_evidence_eligible == false and
+   .source_code.git_commit == $sha and .source_code.working_tree_clean == true' \
+  "$QLORA_RUN/preflight_report.json"
+test "$(git rev-parse --verify HEAD)" = "$PIPELINE_SHA"
+test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+test "$(uv run python -c \
+  'from pathlib import Path; from sommelier.config import load_config; print(load_config(Path("examples/config.v3-he-full.yaml")).dataset_for("he").dataset_revision)')" = "$DATASET_SHA"
+```
 
 For the two pipeline commands below, `SOMMELIER_TIMEOUT_SECONDS` is Modal's
 provider-enforced outer deadline. The config's legacy-named data, train, and
@@ -436,18 +746,20 @@ uv run modal run --detach remote_pipeline.py \
   --config examples/config.v3-he-full.yaml --mode full --max-rows 60000 \
   --adapter-id abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora \
   --adapter-revision 45a6e2fa3e29f8393ddf1e9bda51a9461b41ee0e \
-  --run-id he-v3-v1-baseline
+  --run-id "$V1_RUN_ID"
 
 # v3 English+Hebrew QLoRA training and evaluation
 SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=86400 \
 uv run modal run --detach remote_pipeline.py \
   --config examples/config.v3-he-full.yaml --mode full --max-rows 60000 \
-  --run-id he-v3-full
+  --run-id "$V3_RUN_ID"
 ```
 
-Run the current-contract paired smoke before these full allocations. Its output
-proves bounded integration wiring only and must not fill the result table; the
-full-shape diagnostic independently proves bounded resource fit only.
+Both full attempts are non-resumable. After any failure, preserve its artifacts,
+advance only the failed arm's run-ID suffix in the variable block, and relaunch
+from the same clean `PIPELINE_SHA`. Every pull, report, and publication command
+below consumes the variables, so the fresh ID propagates without pointing back
+to a failed attempt.
 
 After both full evaluation arms exist, build the claim-gated experiment artifact:
 
@@ -456,25 +768,61 @@ source revision recorded by both full runs. The downloaded bundles live under
 the ignored `artifacts/` tree, so they do not dirty that check.
 
 ```bash
+export PIPELINE_SHA="$(git rev-parse --verify HEAD)"
+V1_RUN="artifacts/runs/$V1_RUN_ID"
+V3_RUN="artifacts/runs/$V3_RUN_ID"
+EXPERIMENT_DIR=artifacts/experiments/he-v3
+EXPERIMENT="$EXPERIMENT_DIR/experiment_report.json"
+
+test ! -e "$V1_RUN"
+test ! -e "$V3_RUN"
+test ! -e "$EXPERIMENT_DIR"
 mkdir -p artifacts/runs
 uv run modal volume get sommelier-artifacts \
-  artifacts/runs/he-v3-v1-baseline/ artifacts/runs/
+  "artifacts/runs/$V1_RUN_ID/" artifacts/runs/
 uv run modal volume get sommelier-artifacts \
-  artifacts/runs/he-v3-full/ artifacts/runs/
+  "artifacts/runs/$V3_RUN_ID/" artifacts/runs/
+
+for run_id in "$V1_RUN_ID" "$V3_RUN_ID"; do
+  run="artifacts/runs/$run_id"
+  jq -e --arg run_id "$run_id" \
+    '.run_id == $run_id and .status == "succeeded"' "$run/manifest.json"
+  jq -e --arg run_id "$run_id" --arg sha "$PIPELINE_SHA" \
+    '.schema_version == "sommelier.runtime_metadata.v1" and
+     .run_id == $run_id and .source_code.git_commit == $sha and
+     .source_code.working_tree_clean == true' "$run/runtime_metadata.json"
+done
+test "$(git rev-parse --verify HEAD)" = "$PIPELINE_SHA"
+test -z "$(git status --porcelain=v1 --untracked-files=normal)"
 
 uv run sommelier report experiment \
-  --base artifacts/runs/he-v3-full/eval/base \
-  --v1-en artifacts/runs/he-v3-v1-baseline/eval/adapter \
-  --v3-en-he artifacts/runs/he-v3-full/eval/adapter \
+  --base "$V3_RUN/eval/base" \
+  --v1-en "$V1_RUN/eval/adapter" \
+  --v3-en-he "$V3_RUN/eval/adapter" \
   --english-non-inferiority-margin 0.01 \
   --seed 42 --resamples 2000 \
-  --out artifacts/experiments/he-v3
+  --out "$EXPERIMENT_DIR"
 ```
+
+This writes the current `sommelier.experiment_report.v2` contract. In addition
+to the marginal language slices, each arm retains the exact English rows paired
+to the accepted Hebrew rows, their ordered mapping digest, matched metrics,
+target-minus-reference gaps, and fixed-seed paired-bootstrap intervals. The
+release evidence manifest carries the same mapping so publication can recompute
+the matched results from the privacy-minimized row ledgers. Historical v1
+experiment reports remain inspectable but are not publication evidence.
+
+The finalizer also creates `$EXPERIMENT_DIR/evaluation_evidence/`. Its
+privacy-minimized row ledgers contain additive metric components and row
+indices only; the closed manifest binds those rows to the ordered cohort
+digests, source generation/report hashes, evaluation manifests, and telemetry.
+Do not reuse an earlier experiment directory or copy the report without this
+subbundle.
 
 ### Adapter publication handoff
 
 Publication order is evidence-bearing. Stay on the exact clean training SHA
-recorded by `artifacts/runs/he-v3-full/train_manifest.json` while finalizing the
+recorded by `$V3_RUN/train_manifest.json` while finalizing the
 experiment, assembling and certifying the adapter, and publishing it. Do this
 **before** editing tracked result tables, README claims, or paper text. If the
 main checkout has already moved or become dirty, use a separate clean worktree
@@ -487,12 +835,15 @@ from the finalizer output above. Training metrics are evidence in the run tree,
 but are not an allowed adapter-bundle file.
 
 ```bash
-V3_RUN=artifacts/runs/he-v3-full
-EXPERIMENT=artifacts/experiments/he-v3/experiment_report.json
+export PIPELINE_SHA="$(git rev-parse --verify HEAD)"
+V3_RUN="artifacts/runs/$V3_RUN_ID"
+EXPERIMENT_DIR=artifacts/experiments/he-v3
+EXPERIMENT="$EXPERIMENT_DIR/experiment_report.json"
 ADAPTER_BUNDLE=artifacts/publication/hebrew-adapter
 TRAINING_SHA="$(jq -er '.git_commit' "$V3_RUN/train_manifest.json")"
 
 test "$(git rev-parse HEAD)" = "$TRAINING_SHA"
+test "$TRAINING_SHA" = "$PIPELINE_SHA"
 test -z "$(git status --porcelain=v1 --untracked-files=normal)"
 test ! -e "$ADAPTER_BUNDLE"
 mkdir -p "$ADAPTER_BUNDLE/adapter"
@@ -506,6 +857,8 @@ cp "$V3_RUN/config.resolved.yaml" \
   "$V3_RUN/train_manifest.json" \
   "$ADAPTER_BUNDLE/"
 cp "$EXPERIMENT" "$ADAPTER_BUNDLE/experiment_report.json"
+cp -R "$EXPERIMENT_DIR/evaluation_evidence" \
+  "$ADAPTER_BUNDLE/evaluation_evidence"
 cp "$V3_RUN/train/adapter/README.md" \
   "$V3_RUN/train/adapter/adapter_config.json" \
   "$V3_RUN/train/adapter/adapter_model.safetensors" \
@@ -520,8 +873,11 @@ done
 ```
 
 Fill the copied model card only from the bundle. These commands derive every
-required identity and expose the claim decisions; retain only claims whose
-gates passed, then remove every `REPLACE_FROM_VERIFIED_BUNDLE` marker.
+required identity and expose the claim decisions. Replace
+`REPLACE_FROM_VERIFIED_BUNDLE_WITH_RENDERED_CLAIM_SECTION` with the exact output
+of `render_hebrew_v3_claim_section`; publication rejects a missing, edited,
+duplicated, or unapproved claim. Fill the remaining identity markers, then
+remove every `REPLACE_FROM_VERIFIED_BUNDLE` marker.
 
 ```bash
 uv run python -c \
@@ -531,6 +887,9 @@ jq -er '.git_commit' "$ADAPTER_BUNDLE/train_manifest.json"
 uv run python -c \
   'from pathlib import Path; from sommelier.config import load_config; print(load_config(Path("artifacts/publication/hebrew-adapter/config.resolved.yaml")).dataset_for("he").dataset_revision)'
 jq '{all_claims_passed, approved_claims, claims}' \
+  "$ADAPTER_BUNDLE/experiment_report.json"
+uv run python -c \
+  'import json, sys; from pathlib import Path; from sommelier.publication import render_hebrew_v3_claim_section; print(render_hebrew_v3_claim_section(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))))' \
   "$ADAPTER_BUNDLE/experiment_report.json"
 ```
 
@@ -552,6 +911,7 @@ has an immutable HEAD; a pre-existing empty repository is not an eligible
 parentless target.
 
 ```bash
+ADAPTER_BUNDLE=artifacts/publication/hebrew-adapter
 ADAPTER_REPO=abdelstark/Llama-3.1-Nemotron-Nano-8B-xlam-tool-calling-he-en-lora
 
 # Validation only: no Hub import or mutation.
@@ -563,34 +923,41 @@ uv run sommelier release publish-adapter \
 
 # Deliberate first publication after reviewing the JSON plan.
 uv sync --extra publish
-test ! -e artifacts/publication/hebrew-adapter-receipt.json
+test ! -e "$ADAPTER_RECEIPT"
 uv run --extra publish sommelier release publish-adapter \
   --bundle "$ADAPTER_BUNDLE" \
   --repo-id "$ADAPTER_REPO" \
   --commit-message "Publish claim-gated Hebrew v3 QLoRA adapter" \
   --execute --create-repo \
   --confirm-repo-id "$ADAPTER_REPO" \
-  --receipt artifacts/publication/hebrew-adapter-receipt.json
+  --receipt "$ADAPTER_RECEIPT"
+
+ADAPTER_SHA="$(jq -er \
+  'select(.status == "verified") | .repository.commit_sha |
+   select(type == "string" and test("^[0-9a-f]{40}([0-9a-f]{24})?$"))' \
+  "$ADAPTER_RECEIPT")"
+printf 'verified adapter revision: %s\n' "$ADAPTER_SHA"
 ```
 
-Require receipt status `verified`, record its immutable
-`repository.commit_sha`, and only then edit tracked result tables, README
-claims, paper text, or release links. A failed attempt deliberately owns its
-fresh receipt path; inspect that journal and the Hub before choosing a new path
-or retrying.
+The `jq -e` assignment is the hard stop: only its verified immutable revision
+may be linked from a later documentation commit. A failed attempt deliberately
+owns its fresh receipt path; inspect that journal and the Hub before choosing a
+new path or retrying. Do not edit tracked result tables, README claims, paper
+text, or release links until `ADAPTER_SHA` was produced successfully.
 
 ## Result placeholders
 
 | Evidence | Required artifact | Status |
 |----------|-------------------|--------|
 | Teacher selection and 140-row Flex smoke | `evidence/hebrew-teacher-selection.json` plus checksummed diagnostic artifacts | Diagnostic complete; not full evidence |
+| Committed Phase-A reviewer/config and pre-provider run identity | `translation_config.yaml` plus `translation_run_identity.json` (`sommelier.translation_run_identity.v1`) | Pending full run |
 | Translation yield, protected-span/script/bidi drops, provider identity/usage/list-price calculation | `translation_summary.json` (`sommelier.translation_summary.v2`, nested `sommelier.openai_provider_evidence.v2`) | Pending full run |
 | Preregistered sample and locked Helsinki-NLP OPUS-MT back-translations | `translation_semantic_review_template.json` (`sommelier.translation_semantic_review_template.v1`) | Pending full run |
-| Preregistered semantic sample and back-translation judgments | `translation_semantic_review.json` (`sommelier.translation_semantic_review.v1`) | Pending full run |
+| Preregistered semantic sample, human-signed attestation, and back-translation judgments | `translation_semantic_review.json` (`sommelier.translation_semantic_review.v1`) | Pending full run |
 | Published row/summary/template/review binding | `translation_publication.json` (`sommelier.translation_publication_manifest.v1`) | Pending full run |
 | English↔Hebrew token ratios and projected workload | `analysis/tokenization/tokenizer_tax_report.json` | Pending full run |
 | Base and v3 adapter metrics with paired intervals | `report/comparison_report.json` (`sommelier.comparison_report.v3`) | Pending full run |
-| v1 versus v3 Hebrew uplift and English non-inferiority | gated three-arm `experiment_report.json` | Pending full run |
+| v1 versus v3 Hebrew uplift and English non-inferiority | gated three-arm `experiment_report.json` (`sommelier.experiment_report.v2`) | Pending full run |
 | Bounded QLoRA/TCO evidence | `experiment_report.json.sovereign_tco_evidence` (`sommelier.sovereign_tco_evidence.v1`) | Pending full run |
 
 Do not replace “Pending full run” with hand-copied console values. Fill those

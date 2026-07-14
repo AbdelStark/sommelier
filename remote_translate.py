@@ -27,9 +27,11 @@ seconds), translates exactly the selected rows with the selected pinned
 runtime, audits every output against its protected spans, and writes
 rows.<language>.jsonl plus translation_summary.json to the artifacts volume under
 artifacts/translation/<run_id>/. Progress is checkpointed per row. A full
-Hebrew run ID resumes only while terminal outputs are absent and its config,
-selection, translator, provider, source revision, and resource identity still
-match; accepted rows and their summary make the run ID permanently one-shot.
+Hebrew run ID first reserves ``translation_run_identity.json`` with the exact
+committed config and named-reviewer anchor, before provider access. It resumes
+only while terminal outputs are absent and that config, selection, translator,
+provider, source revision, reviewer, and resource identity still match;
+accepted rows and their summary make the run ID permanently one-shot.
 """
 
 from __future__ import annotations
@@ -62,6 +64,10 @@ from sommelier.data.openai_pricing import (
 from sommelier.data.openai_translate import (
     OPENAI_RESPONSES_SDK_MAX_RETRIES,
     OPENAI_RESPONSES_TIMEOUT_SECONDS,
+)
+from sommelier.data.translate import (
+    TRANSLATION_RUN_IDENTITY_FILENAME,
+    TRANSLATION_RUN_IDENTITY_SCHEMA,
 )
 from sommelier.remote.images import (
     OPENAI_TRANSLATION_RUNTIME_VERSIONS,
@@ -105,8 +111,6 @@ SEQ2SEQ_TRANSLATION_MAX_ATTEMPTS: Final = 1
 OPENAI_TRANSLATION_MAX_ATTEMPTS: Final = 3
 OPENAI_TRANSLATION_CHUNK_SIZE: Final = 32
 TRANSLATION_RUN_ID_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-TRANSLATION_RUN_IDENTITY_SCHEMA: Final = "sommelier.translation_run_identity.v1"
-TRANSLATION_RUN_IDENTITY_FILENAME: Final = "translation_run_identity.json"
 
 
 @dataclass(frozen=True)
@@ -755,6 +759,19 @@ def _run_remote_translation(
     )
     work = ARTIFACTS_ROOT / "translation" / run_id
     if mode == "full" and resolved_target == "he":
+        from sommelier.hebrew_v3_preregistration import (
+            reviewer_anchor_payload,
+            reviewer_anchor_sha256,
+        )
+
+        reviewer_preregistration = reviewer_anchor_payload(
+            config,
+            context="Hebrew v3 full translation",
+        )
+        reviewer_preregistration_sha256 = reviewer_anchor_sha256(
+            config,
+            context="Hebrew v3 full translation",
+        )
         runtime_identity: dict[str, object] = {
             "backend": runtime_backend,
             "translation_chunk_size": resolved_chunk_size,
@@ -802,7 +819,13 @@ def _run_remote_translation(
             "source_code": {
                 "git_commit": code_revision,
                 "working_tree_clean": source_tree_clean,
+                "boundary": (
+                    "Computed by the local Modal entrypoint for the source tree mounted "
+                    "into this function."
+                ),
             },
+            "reviewer_preregistration": reviewer_preregistration,
+            "reviewer_preregistration_sha256": reviewer_preregistration_sha256,
         }
         _admit_full_hebrew_translation_run(
             work,
@@ -972,6 +995,23 @@ def _run_remote_translation(
             "Computed by the local Modal entrypoint for the source tree mounted into this function."
         ),
     }
+    if mode == "full" and resolved_target == "he":
+        from sommelier.hebrew_v3_preregistration import (
+            reviewer_anchor_payload,
+            reviewer_anchor_sha256,
+        )
+
+        stats["reviewer_preregistration"] = reviewer_anchor_payload(
+            config,
+            context="Hebrew v3 full translation",
+        )
+        stats["reviewer_preregistration_sha256"] = reviewer_anchor_sha256(
+            config,
+            context="Hebrew v3 full translation",
+        )
+        stats["translation_run_identity_sha256"] = sha256_file(
+            work / TRANSLATION_RUN_IDENTITY_FILENAME
+        )
     rows_out, summary_path = write_translation_outputs(
         work,
         translated,
@@ -1188,10 +1228,20 @@ def main(
     openai_list_price_limit_usd: str = "",
 ) -> None:
     from sommelier.data.translate import translator_interface_for_model
+    from sommelier.hebrew_v3_preregistration import require_committed_config_bytes
 
-    config_yaml = Path(config).read_text(encoding="utf-8")
+    config_path = Path(config)
+    config_yaml = config_path.read_text(encoding="utf-8")
     _validate_translation_run_id(run_id)
     code_revision, source_tree_clean = _local_source_identity()
+    if mode == "full" and target_language in {"", "he"}:
+        committed = require_committed_config_bytes(
+            config_path,
+            code_revision=code_revision,
+            context="Hebrew v3 Phase-A launch",
+        )
+        if committed.decode("utf-8") != config_yaml:  # pragma: no cover - helper invariant
+            raise AssertionError("validated committed config bytes changed while reading")
     resolved_interface = translator_interface_for_model(model_id, translator_interface)
     if runtime_backend == OPENAI_RUNTIME_BACKEND:
         from sommelier.errors import UserInputError

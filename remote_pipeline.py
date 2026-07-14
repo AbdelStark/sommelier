@@ -163,8 +163,11 @@ def _stage_paired_rows(
     from sommelier.data.translate import (
         PUBLICATION_MANIFEST_FILENAME,
         SUMMARY_FILENAME,
+        TRANSLATION_CONFIG_FILENAME,
+        TRANSLATION_RUN_IDENTITY_FILENAME,
         TranslationStagingContract,
         translation_selection_contract_sha256,
+        validate_hebrew_v3_translation_run_identity,
         validate_translation_artifacts,
         validate_translation_publication,
         validate_translation_selection_provenance,
@@ -272,6 +275,9 @@ def _stage_paired_rows(
             )
             semantic_review_download: Path | None = None
             semantic_review_template_download: Path | None = None
+            translation_config_download: Path | None = None
+            translation_run_identity_download: Path | None = None
+            expected_reviewer_requirement = None
             if source.language == "he":
                 semantic_review_download = Path(
                     hf_hub_download(
@@ -288,6 +294,54 @@ def _stage_paired_rows(
                         repo_type="dataset",
                         revision=source.dataset_revision,
                     )
+                )
+                translation_config_download = Path(
+                    hf_hub_download(
+                        repo_id=source.dataset_id,
+                        filename=TRANSLATION_CONFIG_FILENAME,
+                        repo_type="dataset",
+                        revision=source.dataset_revision,
+                    )
+                )
+                translation_run_identity_download = Path(
+                    hf_hub_download(
+                        repo_id=source.dataset_id,
+                        filename=TRANSLATION_RUN_IDENTITY_FILENAME,
+                        repo_type="dataset",
+                        revision=source.dataset_revision,
+                    )
+                )
+                from sommelier.artifacts import sha256_file
+                from sommelier.hebrew_v3_preregistration import (
+                    validate_hebrew_v3_phase_transition,
+                    validate_reviewer_anchor_evidence,
+                )
+                from sommelier.redaction import loads_unique_json
+
+                phase_a_config = load_config(translation_config_download)
+                expected_reviewer_requirement = validate_hebrew_v3_phase_transition(
+                    phase_a_config,
+                    config,
+                )
+                summary_payload = loads_unique_json(summary_download.read_text(encoding="utf-8"))
+                if not isinstance(summary_payload, dict):
+                    raise UserInputError("published Hebrew translation summary must be an object")
+                selection = summary_payload.get("selection")
+                if not isinstance(selection, dict) or selection.get("config_sha256") != sha256_file(
+                    translation_config_download
+                ):
+                    raise UserInputError(
+                        "published Hebrew summary does not bind translation_config.yaml"
+                    )
+                validate_reviewer_anchor_evidence(
+                    phase_a_config,
+                    summary_payload,
+                    context="published Hebrew translation summary",
+                )
+                validate_hebrew_v3_translation_run_identity(
+                    translation_run_identity_download,
+                    summary=summary_payload,
+                    expected_config_sha256=sha256_file(translation_config_download),
                 )
             validate_translation_selection_provenance(
                 summary_path=summary_download,
@@ -306,6 +360,7 @@ def _stage_paired_rows(
                 root_rows_path=rows_path,
                 root_split_by_id=root_split_by_id,
                 expected_seed=config.project.seed,
+                expected_reviewer_requirement=expected_reviewer_requirement,
             )
             shutil.copy2(
                 summary_download,
@@ -332,6 +387,26 @@ def _stage_paired_rows(
                     _translation_provenance_sidecar(
                         rows_path,
                         SEMANTIC_REVIEW_FILENAME,
+                        source.language,
+                    ),
+                )
+                if translation_config_download is None:  # pragma: no cover - invariant
+                    raise AssertionError("Hebrew source lacks its Phase-A config download")
+                shutil.copy2(
+                    translation_config_download,
+                    _translation_provenance_sidecar(
+                        rows_path,
+                        TRANSLATION_CONFIG_FILENAME,
+                        source.language,
+                    ),
+                )
+                if translation_run_identity_download is None:  # pragma: no cover - invariant
+                    raise AssertionError("Hebrew source lacks its pre-provider run identity")
+                shutil.copy2(
+                    translation_run_identity_download,
+                    _translation_provenance_sidecar(
+                        rows_path,
+                        TRANSLATION_RUN_IDENTITY_FILENAME,
                         source.language,
                     ),
                 )
@@ -932,6 +1007,8 @@ def main(
     translation_run_id: str = "",
 ) -> None:
     from sommelier.config import load_config
+    from sommelier.evaluation.data_provenance import is_hebrew_v3_config
+    from sommelier.hebrew_v3_preregistration import require_committed_config_bytes
     from sommelier.manifests import get_git_commit, get_git_worktree_clean
     from sommelier.pipeline import pipeline_run_id
 
@@ -956,6 +1033,14 @@ def main(
         adapter_revision=resolved_adapter_revision,
         translation_run_id=resolved_translation_run_id,
     )
+    if mode == "full" and is_hebrew_v3_config(resolved_config):
+        committed = require_committed_config_bytes(
+            config_path,
+            code_revision=code_revision,
+            context="Hebrew v3 Phase-B launch",
+        )
+        if committed.decode("utf-8") != config_yaml:  # pragma: no cover - helper invariant
+            raise AssertionError("validated committed config bytes changed while reading")
     _validate_remote_launch_boundary(
         resolved_config,
         mode=mode,

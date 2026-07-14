@@ -32,66 +32,75 @@ uv run sommelier release preflight --config examples/config.full.yaml
 
 ## The commands
 
-### Hebrew v3 full-shape QLoRA diagnostic
+The [Hebrew v3 methodology](../results/hebrew-v3.md#reproduction-commands) is
+the canonical two-commit operator sequence: Phase A produces and publishes the
+translation from `TRANSLATION_SHA`; Phase B commits the verified dataset pin and
+runs full evidence from `PIPELINE_SHA`. The commands below preserve that order.
 
-Before committing to a full training allocation, the dedicated diagnostic
-exercises the exact v3 resource shape on one L40S without reading either
-experiment dataset or calling the translation provider:
-
-```bash
-uv run modal run --detach remote_qlora_preflight.py \
-  --config examples/config.v3-he-full.yaml \
-  --run-id he-v3-l40s-shape-001
-```
-
-It constructs paired English/Hebrew formatted rows whose full lengths are
-between 4,080 and 4,096 tokens, runs four batch-4 training microbatches through
-gradient accumulation for one real optimizer update, then runs one explicit
-batch-4 evaluation forward. The model path is the full pinned Nemotron
-checkpoint under NF4/bfloat16 QLoRA, rank 16/alpha 32/dropout 0.05, all seven
-target module families, and non-reentrant gradient checkpointing. The Modal
-function fixes `gpu=L40S`, a four-hour outer timeout, and zero retries. The
-runtime gate requires exactly one visible L40S and rejects any `hf_device_map`
-entry placed on CPU, disk, or a GPU other than CUDA device 0.
-
-`preflight_report.json` records the exact config bytes/resolution, runtime,
-hardware, attached LoRA modules, trainable parameters, observed batch/step
-counts, finite losses, peak allocated/reserved memory, source commit and dirty-
-state digest, plus a manifest of every regular file present when finalization
-runs except the self-referential `preflight_report.json` and
-`artifact_manifest.json`. After a safe run id reserves a new output directory,
-config, provenance, runtime, and training failures—including OOM—write a
-redacted terminal report before propagating. Output is non-resumable; use a new
-run id rather than overwriting a prior attempt.
-
-This is paid resource-fit evidence only. A dirty checkout is recorded rather
-than hidden, but even a clean successful diagnostic is ineligible for dataset,
-accuracy, full-training, cost-saving, or release claims. Run it from the clean
-producer revision for the most useful comparison with the later full run.
-It complements rather than replaces the current-contract paired smoke below:
-the diagnostic uses the exact full rank/sequence/batch shape on synthetic rows
-without provider or dataset I/O, while the paired smoke exercises provider,
-data, and pipeline integration with deliberately reduced training/evaluation
-limits. Neither is full-run evidence.
-
-### Pipeline and translation commands
+### Generic pipeline commands
 
 ```bash
 # bounded smoke run (at most 100/20/20 examples, separate smoke- run namespace)
 uv run modal run remote_pipeline.py \
-  --config examples/config.smoke.yaml --mode smoke --max-rows 2500
+  --config examples/config.smoke.yaml --mode smoke --max-rows 2500 \
+  --run-id smoke-default-001
 
 # English-only v1/default full run (15,000/1,000/1,000)
 SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=86400 \
 uv run modal run --detach remote_pipeline.py \
-  --config examples/config.full.yaml --mode full --max-rows 60000
+  --config examples/config.full.yaml --mode full --max-rows 60000 \
+  --run-id default-full-001
+```
+
+### Hebrew v3 Phase A diagnostics
+
+Choose named IDs once and propagate any fresh retry suffix through later
+commands. Run Phase A from the clean commit whose full config still contains the
+provisional Hebrew revision `main`:
+
+Before creating that commit, a named real human must provide a stable reviewer
+id, canonical comment-free Ed25519 public key, and matching OpenSSH SHA-256
+fingerprint. Put those three public values under
+`semantic_review.reviewer` in `examples/config.v3-he-full.yaml`; do not add a
+reviewer CLI argument. The private key remains solely with the human and must
+never enter the repository, Modal, Sommelier, Codex, or an artifact.
+
+```bash
+export SMOKE_TRANSLATION_RUN_ID=he-v3-translate-smoke-001
+export SMOKE_PIPELINE_RUN_ID=smoke-he-v3-pipeline-001
+export QLORA_PREFLIGHT_RUN_ID=he-v3-l40s-shape-001
+export TRANSLATION_RUN_ID=he-v3-translate-full-001
+export V3_RUN_ID=he-v3-full-001
+export TRANSLATION_SHA="$(git rev-parse --verify HEAD)"
+
+test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+uv run sommelier config validate --config examples/config.v3-he-full.yaml
+uv run python - <<'PY'
+from pathlib import Path
+
+from sommelier.config import load_config
+from sommelier.evaluation.data_provenance import validate_hebrew_v3_translation_config
+
+validate_hebrew_v3_translation_config(
+    load_config(Path("examples/config.v3-he-full.yaml"))
+)
+PY
+test "$(uv run python -c \
+  'from pathlib import Path; from sommelier.config import load_config; print(load_config(Path("examples/config.v3-he-full.yaml")).dataset_for("he").dataset_revision)')" = main
+```
+
+Run the current-contract paid integration smoke before the full-shape
+diagnostic. The explicit pipeline ID already carries its `smoke-` prefix, so the
+requested ID and durable artifact directory are identical:
+
+```bash
 
 # Current-contract Hebrew paired smoke: explicit paid Responses/Flex producer
 # on CPU, with the final 512-token translation limit and current v2 evidence.
 SOMMELIER_TIMEOUT_SECONDS=3600 \
 uv run modal run --detach remote_translate.py \
   --config examples/config.v3-he-smoke.yaml \
-  --run-id he-v3-translate-smoke --mode smoke --max-rows 2500 \
+  --run-id "$SMOKE_TRANSLATION_RUN_ID" --mode smoke --max-rows 2500 \
   --target-language he \
   --model-id gpt-5.5-2026-04-23 \
   --model-revision gpt-5.5-2026-04-23 \
@@ -104,27 +113,71 @@ uv run modal run --detach remote_translate.py \
 SOMMELIER_GPU=A10G SOMMELIER_TIMEOUT_SECONDS=10800 \
 uv run modal run --detach remote_pipeline.py \
   --config examples/config.v3-he-smoke.yaml --mode smoke --max-rows 2500 \
-  --translation-run-id he-v3-translate-smoke
-
-# Hebrew full evidence, only after publishing the audited paired dataset and
-# replacing its `main` revision in config.v3-he-full.yaml with the exact commit
-SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=86400 \
-uv run modal run --detach remote_pipeline.py \
-  --config examples/config.v3-he-full.yaml --mode full --max-rows 60000 \
-  --run-id he-v3-full
+  --run-id "$SMOKE_PIPELINE_RUN_ID" \
+  --translation-run-id "$SMOKE_TRANSLATION_RUN_ID"
 ```
 
-The paired commands are the current-contract paid integration smoke. The
-translation producer uses the final 512-token/provider-evidence-v2 contract;
-the smoke pipeline intentionally uses smaller sequence, LoRA, batch, and
-evaluation limits than the full config. It therefore checks end-to-end wiring,
-not the exact full QLoRA resource shape. Conversely, the L40S diagnostic above
-checks that exact resource shape but is synthetic and not end-to-end. The
-already completed historical 140-row Flex smoke used a 256-token/v1 evidence
-contract and validates neither current check. Do not claim any of these ran
-without its artifact, and do not use their outputs in the full result table.
+Pull the named artifact into a fresh local path. These checks are the smoke
+hard stop; successful console output alone is not evidence that it ran:
 
-Pass `--run-id <name>` to name the run; otherwise an id is generated. Explicit IDs must be one safe path component, and smoke runs always get a `smoke-` prefix so a later full run cannot overwrite them. For a full run, the remote worker resolves that ID once and rejects an existing directory in its mounted volume view before dataset export, paired-source staging, or model work. This check necessarily runs after Modal dispatch, so allocation startup is not a zero-cost remote existence probe. The shared pipeline then claims the absent directory with an atomic filesystem create before writing run evidence. These checks reject sequential reuse; they are not a distributed mutex across concurrent Modal containers, so launching the same full run ID concurrently is unsupported. Full attempts are non-resumable: choose a fresh run id after any success or failure. Run the full pipeline with `--detach` so a dropped local connection does not kill hour three of training; you pull the results off the volume afterwards. The default full config is English-only, so it has no translation artifact to stage or verify.
+```bash
+SMOKE_RUN="artifacts/runs/$SMOKE_PIPELINE_RUN_ID"
+test ! -e "$SMOKE_RUN"
+mkdir -p artifacts/runs
+uv run modal volume get sommelier-artifacts \
+  "artifacts/runs/$SMOKE_PIPELINE_RUN_ID/" artifacts/runs/
+
+jq -e --arg run_id "$SMOKE_PIPELINE_RUN_ID" \
+  '.run_id == $run_id and .status == "succeeded"' \
+  "$SMOKE_RUN/manifest.json"
+jq -e --arg run_id "$SMOKE_PIPELINE_RUN_ID" \
+  '.schema_version == "sommelier.comparison_report.v3" and .run_id == $run_id' \
+  "$SMOKE_RUN/report/comparison_report.json"
+jq -e --arg run_id "$SMOKE_PIPELINE_RUN_ID" --arg sha "$TRANSLATION_SHA" \
+  '.schema_version == "sommelier.runtime_metadata.v1" and
+   .run_id == $run_id and .source_code.git_commit == $sha and
+   .source_code.working_tree_clean == true' \
+  "$SMOKE_RUN/runtime_metadata.json"
+```
+
+Next, exercise the exact v3 resource shape on one L40S without reading either
+experiment dataset or calling the translation provider, then verify the named
+terminal diagnostic artifact:
+
+```bash
+uv run modal run --detach remote_qlora_preflight.py \
+  --config examples/config.v3-he-full.yaml \
+  --run-id "$QLORA_PREFLIGHT_RUN_ID"
+
+QLORA_PARENT=artifacts/diagnostics/qlora-shape-preflight
+QLORA_RUN="$QLORA_PARENT/$QLORA_PREFLIGHT_RUN_ID"
+test ! -e "$QLORA_RUN"
+mkdir -p "$QLORA_PARENT"
+uv run modal volume get sommelier-artifacts \
+  "diagnostics/qlora-shape-preflight/$QLORA_PREFLIGHT_RUN_ID/" \
+  "$QLORA_PARENT/"
+
+jq -e --arg run_id "$QLORA_PREFLIGHT_RUN_ID" --arg sha "$TRANSLATION_SHA" \
+  '.schema_version == "sommelier.qlora_shape_preflight.v1" and
+   .run_id == $run_id and .status == "succeeded" and
+   .diagnostic_only == true and .release_evidence_eligible == false and
+   .source_code.git_commit == $sha and .source_code.working_tree_clean == true' \
+  "$QLORA_RUN/preflight_report.json"
+```
+
+The paired smoke checks provider/data/pipeline integration with reduced
+training and evaluation limits. The L40S diagnostic instead runs four near-
+4096-token batch-4 microbatches, one real gradient-accumulated optimizer update,
+and one batch-4 evaluation forward under the exact full NF4/bfloat16 QLoRA
+module/checkpointing contract. Its report preserves runtime, memory, source, and
+redacted failure evidence. Both are paid diagnostics; neither is eligible for
+dataset, accuracy, full-training, cost-saving, or release claims. The completed
+historical 140-row Flex smoke used the older 256-token/v1 evidence contract and
+satisfies neither hard stop.
+
+The full Phase A provider and semantic-review commands, including the human
+review pause, are in the
+[methodology](../results/hebrew-v3.md#phase-a-full-translation-and-semantic-review).
 
 For a paired **smoke** run, `--translation-run-id` names the completed
 `remote_translate.py` run staged next to the exported root rows. Translation
@@ -138,6 +191,8 @@ a symlink or path alias.
 
 A **paired full** run rejects `--translation-run-id`. Publish the complete
 audited survivor set first, together with `translation_summary.json`,
+the exact Phase-A config as `translation_config.yaml`, the exclusively
+pre-provider-reserved `translation_run_identity.json`,
 `translation_semantic_review_template.json`,
 `translation_semantic_review.json`, and `translation_publication.json`, then
 pin the exact 40- or 64-character Hugging Face dataset commit under
@@ -155,7 +210,7 @@ translation run before any human edits:
 
 ```bash
 SOMMELIER_GPU=A10G uv run modal run remote_semantic_review.py \
-  --translation-run-id he-v3-translate-full
+  --translation-run-id "$TRANSLATION_RUN_ID"
 ```
 
 This producer fails unless it runs from the same clean immutable Git SHA
@@ -183,12 +238,30 @@ zero bytes, then explicitly remove only that path with `modal volume rm` before
 retrying the semantic job. Never remove a nonempty marker or rerun after review
 has started. This closes the mounted-filesystem check/write race but does not
 claim provider-wide locking across separately launched Modal containers, so do
-not launch the same ID concurrently. The pure local builder may still replace
-disposable test fixtures and does not weaken this remote boundary. Keep
+not launch the same ID concurrently. The local builder likewise refuses a
+differing existing file and accepts only an exact validated retry. Keep
 `translation_semantic_review_template.json` untouched, review a distinct copy,
 and write `translation_semantic_review.json` to a third distinct file. The
 finalizer rejects path aliases and hard links as well as identical path names.
-Its exact flags are in the [CLI reference](../reference/cli.md#data-semantic-review-finalize).
+The reviewer id and public key/fingerprint come only from the committed Phase-A
+config, while all 200 decisions must come from that named real human; automation
+may prepare the locked template and validate the completed copy but must not
+impersonate the reviewer or self-certify the judgments. The local create,
+attestation, and finalize commands all require the exact
+`--translation-run-identity`; none accepts a reviewer identity flag. The human
+signs `translation_semantic_review_attestation.json` with:
+
+```bash
+ssh-keygen -Y sign -f <private-key> \
+  -n sommelier-hebrew-v3-semantic-review \
+  translation_semantic_review_attestation.json
+```
+
+The private key stays outside every Sommelier/Modal/Codex boundary. Finalization
+writes fresh `translation_publication.reviewed.json`; copy it into a fresh
+eight-file dataset bundle as canonical `translation_publication.json`, never
+over the producer's stale initial manifest. Exact flags are in the
+[CLI reference](../reference/cli.md#data-semantic-review-attestation-create).
 The review is intentionally labeled non-native; no native-speaker review has
 been completed.
 
@@ -273,12 +346,55 @@ maximum.
 allocation label. The driver rejects a mismatch before doing paid work; keep
 the environment and config values identical.
 
+### Hebrew v3 Phase B full pipeline
+
+Only after the Phase A translation, human review, dataset publication, verified
+receipt parsing, and a committed immutable pin may Phase B begin. Phase B must
+change only the Hebrew dataset revision from `main` to the verified immutable
+commit; every other resolved field, including the reviewer anchor, must remain
+identical to published `translation_config.yaml`. Confirm the new clean source
+identity and the immutable configured dataset revision before the full
+allocation:
+
+```bash
+export PIPELINE_SHA="$(git rev-parse --verify HEAD)"
+DATASET_SHA="$(uv run python -c \
+  'from pathlib import Path; from sommelier.config import load_config; print(load_config(Path("examples/config.v3-he-full.yaml")).dataset_for("he").dataset_revision)')"
+test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+printf '%s\n' "$DATASET_SHA" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'
+
+# Hebrew full evidence, only after publishing the audited paired dataset and
+# committing its exact immutable revision in config.v3-he-full.yaml
+SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=86400 \
+uv run modal run --detach remote_pipeline.py \
+  --config examples/config.v3-he-full.yaml --mode full --max-rows 60000 \
+  --run-id "$V3_RUN_ID"
+```
+
+Pass `--run-id <name>` to name every evidence-bearing run; otherwise an ID is
+generated and later artifact commands cannot address it deterministically.
+Explicit IDs must be one safe path component, and smoke runs always get a
+`smoke-` prefix so a later full run cannot overwrite them. For a full run, the
+remote worker resolves that ID once and rejects an existing directory in its
+mounted volume view before dataset export, paired-source staging, or model work.
+This check necessarily runs after Modal dispatch, so allocation startup is not
+a zero-cost remote existence probe. The shared pipeline then claims the absent
+directory with an atomic filesystem create before writing run evidence. These
+checks reject sequential reuse; they are not a distributed mutex across
+concurrent Modal containers, so launching the same full run ID concurrently is
+unsupported. Full attempts are non-resumable: after any success or failure,
+advance the relevant run-ID variable and use it in every later pull, report, and
+publication command. `--detach` lets the remote app survive a local disconnect;
+while the client remains connected, `modal run` still waits for the local
+entrypoint and prints its returned summary normally. The default full config is
+English-only, so it has no translation artifact to stage or verify.
+
 ## What the wrapper adds
 
 Around the shared stages, the remote function adds six things:
 
 - **In-container dataset export.** It loads the configured dataset at the pinned `dataset_revision`, and when `--max-rows` is below the dataset size it takes a seeded shuffle (`project.seed`) and selects that many rows. Each row is written as a `sommelier.raw_tool_call_row.v1` record, the same input shape `sommelier data prepare` accepts locally, so the remote run starts from the exact artifact contract described in [Data policy](../concepts/data.md).
-- **Fail-closed paired-source provenance.** Smoke runs may stage a matching diagnostic translation. Full runs instead export the paired dataset at its immutable publication revision; Hebrew evidence requires the checksummed translation summary, locked review template, finalized semantic review, and publication manifest before the shared data stage can see those rows.
+- **Fail-closed paired-source provenance.** Smoke runs may stage a matching diagnostic translation. Full runs instead export the paired dataset at its immutable publication revision; Hebrew evidence requires the exact Phase-A config, pre-provider translation identity, checksummed translation summary, locked review template, finalized signed semantic review, and publication manifest before the shared data stage can see those rows.
 - **Persisted tokenization evidence before compute-heavy stages.** The shared `analyze tokenization` stage tokenizes every stored query, prompt, target, and `full_text`, writes p50/p95/p99/max summaries plus exact root↔translation ratios, and raises a `UserInputError` if a configured training row exceeds `train.max_sequence_length`. The [completion-only collator](../concepts/training.md) refuses by design to truncate target tokens, so catching the mistake here avoids spending on evaluation or training first.
 - **GPU memory cleanup between stages.** The chained stages each load an 8B model inside a single process, so the wrapper runs `gc.collect()` and `torch.cuda.empty_cache()` after every stage to release the previous model's CUDA memory before the next load.
 - **A volume commit after every stage.** Partial progress is visible on the volume as it happens. When a run fails at hour three, the earlier stages' checksummed artifacts are already committed and stay useful.
@@ -316,7 +432,14 @@ destination creates an unwanted nested `<run_id>/<run_id>/` layout.
 
 ## The returned summary
 
-An attached run prints a JSON summary when the pipeline finishes. A detached run cannot print it; the metrics and per-stage timings it contains are already on the volume, so read `comparison_report.json` and `runtime_metadata.json` there. The `versions` and `raw_rows` fields exist only in the printed summary.
+An attached run prints a JSON summary when the pipeline finishes. With
+`--detach`, `modal run` still waits and prints that summary while the client
+remains connected; detachment means the remote app survives if the client dies
+or disconnects. After a disconnect, recover progress from `modal app logs` and
+the deterministic volume path instead of expecting the original client to
+print a result. Metrics and per-stage timings are also persisted in
+`comparison_report.json` and `runtime_metadata.json`; the `versions` and
+`raw_rows` fields exist only in the printed summary.
 
 | Key | Contents |
 |-----|----------|

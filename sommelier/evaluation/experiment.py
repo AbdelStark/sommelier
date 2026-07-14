@@ -39,6 +39,11 @@ from sommelier.evaluation.generate import (
 )
 from sommelier.evaluation.metrics import METRIC_NAMES, ScoredRecord, compute_metrics
 from sommelier.evaluation.parse import parse_tool_call
+from sommelier.evaluation.release_evidence import (
+    EvaluationReleaseArm,
+    ensure_fresh_evaluation_release_destination,
+    write_evaluation_release_evidence,
+)
 from sommelier.evaluation.report import (
     EVALUATION_REPORT_SCHEMA,
     REPORT_FILENAME,
@@ -50,6 +55,7 @@ from sommelier.evaluation.report import (
 from sommelier.evaluation.statistics import (
     exact_mcnemar_full_call,
     paired_bootstrap_intervals,
+    stable_bootstrap_seed,
 )
 from sommelier.evaluation.tco import (
     ArtifactEvidence,
@@ -68,7 +74,7 @@ from sommelier.training.metrics import (
     TRAINING_METRIC_SCHEMA,
 )
 
-EXPERIMENT_REPORT_SCHEMA: Final = "sommelier.experiment_report.v1"
+EXPERIMENT_REPORT_SCHEMA: Final = "sommelier.experiment_report.v2"
 EXPERIMENT_REPORT_FILENAME: Final = "experiment_report.json"
 HEBREW_V3_PREREGISTRATION_SCHEMA: Final = "sommelier.hebrew_v3_preregistration.v1"
 HEBREW_V3_ENGLISH_NON_INFERIORITY_MARGIN: Final = 0.01
@@ -95,6 +101,7 @@ class _LoadedArm:
     example_ids: dict[str, list[str]]
     prompt_set_sha256: dict[str, str]
     paired_set_sha256: dict[str, str]
+    paired_reference_indices: dict[str, list[int]]
     artifact_paths: dict[str, Path]
 
 
@@ -127,6 +134,23 @@ def _sequence(value: object, *, context: str) -> list[Any]:
 
 def _ordered_id_digest(example_ids: list[str]) -> str:
     return hashlib.sha256("\n".join(example_ids).encode("utf-8")).hexdigest()
+
+
+def _ordered_index_digest(indices: list[int]) -> str:
+    encoded = json.dumps(indices, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _canonical_json_identity(value: object) -> str:
+    try:
+        return json.dumps(
+            value,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as error:
+        raise EvaluationError("paired gold call is not canonical JSON") from error
 
 
 def _validate_adapter_source(name: str, value: object) -> None:
@@ -243,12 +267,17 @@ def _finalizer_source_identity() -> dict[str, object]:
 def _validate_pair_digest(
     report: dict[str, Any],
     examples: dict[str, list[dict[str, Any]]],
-) -> str:
+) -> tuple[str, list[int]]:
     reference_by_id = {
         _string(example.get("example_id"), context="English example_id"): example
         for example in examples["en"]
     }
+    reference_index_by_id = {
+        _string(example.get("example_id"), context="English example_id"): index
+        for index, example in enumerate(examples["en"])
+    }
     entries: list[dict[str, str]] = []
+    reference_indices: list[int] = []
     seen_roots: set[str] = set()
     for target in examples["he"]:
         target_id = _string(target.get("example_id"), context="Hebrew example_id")
@@ -268,6 +297,7 @@ def _validate_pair_digest(
                 f"Hebrew example {target_id} references missing English root {root_id}",
                 hint="Use the same paired test cohort for every experiment arm.",
             )
+        reference_indices.append(reference_index_by_id[root_id])
         entries.append(
             {
                 "reference_example_id": root_id,
@@ -292,12 +322,17 @@ def _validate_pair_digest(
             "Hebrew paired cohort digest does not match formatted artifacts",
             hint="Regenerate the evaluation report from the stored formatted split.",
         )
-    if hebrew_pair.get("pairs") != len(entries):
+    reported_pairs = hebrew_pair.get("pairs")
+    if (
+        isinstance(reported_pairs, bool)
+        or not isinstance(reported_pairs, int)
+        or reported_pairs != len(entries)
+    ):
         raise EvaluationError(
             "Hebrew paired cohort count does not match formatted artifacts",
             hint="Regenerate the evaluation report from the stored formatted split.",
         )
-    return actual_digest
+    return actual_digest, reference_indices
 
 
 def _load_arm(name: str, eval_dir: Path, *, expected_kind: ModelKind) -> _LoadedArm:
@@ -398,7 +433,12 @@ def _load_arm(name: str, eval_dir: Path, *, expected_kind: ModelKind) -> _Loaded
                 f"{name} {language} prompt digest does not match formatted artifacts",
                 hint="Regenerate the report from the stored formatted test split.",
             )
-        if slice_report.get("examples") != len(language_examples):
+        reported_examples = slice_report.get("examples")
+        if (
+            isinstance(reported_examples, bool)
+            or not isinstance(reported_examples, int)
+            or reported_examples != len(language_examples)
+        ):
             raise EvaluationError(
                 f"{name} {language} example count does not match formatted artifacts"
             )
@@ -467,7 +507,7 @@ def _load_arm(name: str, eval_dir: Path, *, expected_kind: ModelKind) -> _Loaded
         prompt_digests[language] = actual_prompt_digest
         artifact_paths[f"generations.{language}"] = generations_path
 
-    paired_digest = _validate_pair_digest(report, examples)
+    paired_digest, paired_reference_indices = _validate_pair_digest(report, examples)
     return _LoadedArm(
         name=name,
         eval_dir=resolved_eval_dir,
@@ -479,6 +519,7 @@ def _load_arm(name: str, eval_dir: Path, *, expected_kind: ModelKind) -> _Loaded
         example_ids=example_ids,
         prompt_set_sha256=prompt_digests,
         paired_set_sha256={"he": paired_digest},
+        paired_reference_indices={"he": paired_reference_indices},
         artifact_paths=artifact_paths,
     )
 
@@ -527,6 +568,8 @@ def _shared_identity(arms: list[_LoadedArm]) -> dict[str, Any]:
                 raise EvaluationError(f"experiment rejected: mismatched {language} example IDs")
         if arm.paired_set_sha256 != reference.paired_set_sha256:
             raise EvaluationError("experiment rejected: mismatched paired cohort digest")
+        if arm.paired_reference_indices != reference.paired_reference_indices:
+            raise EvaluationError("experiment rejected: mismatched paired cohort index map")
 
     return {
         "model_identity": model_identity,
@@ -546,8 +589,62 @@ def _shared_identity(arms: list[_LoadedArm]) -> dict[str, Any]:
             "he": {
                 "pairs": len(reference.example_ids["he"]),
                 "pair_set_sha256": reference.paired_set_sha256["he"],
+                "reference_row_indices_sha256": _ordered_index_digest(
+                    reference.paired_reference_indices["he"]
+                ),
             }
         },
+    }
+
+
+def _paired_slice_payload(arm: _LoadedArm) -> dict[str, Any]:
+    reference_rows = [arm.scored["en"][index] for index in arm.paired_reference_indices["he"]]
+    target_rows: list[ScoredRecord] = []
+    for reference, target in zip(reference_rows, arm.scored["he"], strict=True):
+        if _canonical_json_identity(reference["gold_call"]) != _canonical_json_identity(
+            target["gold_call"]
+        ):
+            raise EvaluationError(
+                f"{arm.name} paired accuracy cohort changes the matched gold call"
+            )
+        target_rows.append(
+            ScoredRecord(
+                example_id=reference["example_id"],
+                parse_status=target["parse_status"],
+                parsed_call=target["parsed_call"],
+                gold_call=reference["gold_call"],
+            )
+        )
+    if not reference_rows or len(reference_rows) != len(target_rows):
+        raise EvaluationError(f"{arm.name} paired accuracy cohort is empty or misaligned")
+    reference_metrics = compute_metrics(reference_rows)
+    target_metrics = compute_metrics(target_rows)
+    return {
+        "reference_language": "en",
+        "target_language": "he",
+        "pairs": len(target_rows),
+        "coverage": {
+            "paired": len(target_rows),
+            "reference_slice_examples": len(arm.scored["en"]),
+            "target_slice_examples": len(target_rows),
+            "reference_fraction": len(target_rows) / len(arm.scored["en"]),
+        },
+        "pair_set_sha256": arm.paired_set_sha256["he"],
+        "reference": {"metrics": reference_metrics},
+        "target": {"metrics": target_metrics},
+        "gaps": {
+            name: target_metrics[name]["value"] - reference_metrics[name]["value"]
+            for name in METRIC_NAMES
+        },
+        "gap_ci95": paired_bootstrap_intervals(
+            reference_rows,
+            target_rows,
+            seed=stable_bootstrap_seed(
+                HEBREW_V3_BOOTSTRAP_SEED,
+                "language-gap:en:he",
+            ),
+            resamples=HEBREW_V3_BOOTSTRAP_RESAMPLES,
+        ),
     }
 
 
@@ -574,6 +671,7 @@ def _arm_payload(arm: _LoadedArm) -> dict[str, Any]:
                 language: compute_metrics(arm.scored[language]) for language in sorted(arm.scored)
             },
         },
+        "paired_slices": {"he": _paired_slice_payload(arm)},
         "artifacts": {
             key: {
                 "path": portable_path(path),
@@ -1360,6 +1458,7 @@ def write_experiment_report(
     are independently checked before uncertainty or claims are computed.
     """
     _validate_inputs(english_non_inferiority_margin, seed, resamples)
+    ensure_fresh_evaluation_release_destination(out_dir)
     finalizer_source = _finalizer_source_identity()
     base = _load_arm("base", base_eval_dir, expected_kind="base")
     v1 = _load_arm("v1_en", v1_en_eval_dir, expected_kind="adapter")
@@ -1484,5 +1583,24 @@ def write_experiment_report(
         writer,
         kind="experiment_report",
         schema_version=EXPERIMENT_REPORT_SCHEMA,
+    )
+    write_evaluation_release_evidence(
+        out_dir=out_dir,
+        experiment_report_path=output_path,
+        experiment_report=report,
+        arms=tuple(
+            EvaluationReleaseArm(
+                name=arm.name,
+                model_kind=cast("ModelKind", arm.report["model_kind"]),
+                eval_dir=arm.eval_dir,
+                run_dir=arm.run_dir,
+                artifact_root=arm.artifact_root,
+                scored=arm.scored,
+                example_ids=arm.example_ids,
+                prompt_set_sha256=arm.prompt_set_sha256,
+                paired_reference_indices=arm.paired_reference_indices,
+            )
+            for arm in arms
+        ),
     )
     return report

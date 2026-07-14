@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import stat
 import sys
 import traceback
 from pathlib import Path
 
-from sommelier.config import load_config, resolve_config_artifact_root, write_resolved_config
+from sommelier.config import (
+    SommelierConfig,
+    load_config,
+    resolve_config_artifact_root,
+    write_resolved_config,
+)
 from sommelier.data.prepare import (
     prepare_dataset_fixture,
     prepare_dataset_from_file,
@@ -17,7 +25,98 @@ from sommelier.formatting.chat import (
     build_formatted_splits,
     build_formatted_splits_fixture,
 )
+from sommelier.reviewer import ReviewerRequirement
 from sommelier.run_context import ensure_run_context, infer_run_id_from_path
+
+
+def _semantic_review_cli_path(path: Path, *, argument: str) -> Path:
+    """Make a lexical absolute path without hiding symbolic-link components."""
+    if ".." in path.parts:
+        raise UserInputError(
+            f"semantic-review {argument} path must not contain '..': {path}",
+            hint="Use a direct path to the signed review evidence.",
+        )
+    absolute = Path(os.path.abspath(path))
+    current = absolute
+    while True:
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise UserInputError(
+                f"semantic-review {argument} path could not be inspected: {absolute}"
+            ) from error
+        else:
+            if stat.S_ISLNK(metadata.st_mode):
+                raise UserInputError(
+                    f"semantic-review {argument} path must not traverse a symbolic link: "
+                    f"{absolute}",
+                    hint="Use regular files and real directories for signed review evidence.",
+                )
+        if current == current.parent:
+            break
+        current = current.parent
+    return absolute
+
+
+def _load_phase_a_semantic_review_context(
+    config_path: Path,
+    summary_path: Path,
+    run_identity_path: Path,
+) -> tuple[SommelierConfig, dict[str, object], ReviewerRequirement]:
+    """Bind local review work to the exact preregistered Phase-A evidence."""
+    from sommelier.evaluation.data_provenance import validate_hebrew_v3_translation_config
+    from sommelier.hebrew_v3_preregistration import validate_reviewer_anchor_evidence
+    from sommelier.redaction import DuplicateJsonKeyError, loads_unique_json
+
+    try:
+        config_bytes = config_path.read_bytes()
+        summary_payload = loads_unique_json(summary_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as error:
+        raise UserInputError(
+            "semantic-review Phase-A config or translation summary is invalid"
+        ) from error
+    if not isinstance(summary_payload, dict):
+        raise UserInputError("semantic-review translation summary must be a JSON object")
+
+    selection = summary_payload.get("selection")
+    expected_config_sha256 = hashlib.sha256(config_bytes).hexdigest()
+    if not isinstance(selection, dict) or selection.get("config_sha256") != expected_config_sha256:
+        raise UserInputError(
+            "semantic-review translation summary does not bind the exact Phase-A config",
+            hint="Use config.yaml and translation_summary.json from the same translation run.",
+        )
+    config = load_config(config_path)
+    if not isinstance(config, SommelierConfig):  # pragma: no cover - load_config contract
+        raise AssertionError("config loader did not return a SommelierConfig")
+    validate_hebrew_v3_translation_config(config)
+    reviewer_requirement = validate_reviewer_anchor_evidence(
+        config,
+        summary_payload,
+        context="Hebrew v3 semantic review",
+    )
+    from sommelier.data.translate import (
+        validate_hebrew_v3_translation_preregistration,
+        validate_hebrew_v3_translation_run_identity,
+    )
+
+    validate_hebrew_v3_translation_preregistration(
+        summary_payload,
+        config=config,
+        expected_config_sha256=expected_config_sha256,
+    )
+    validate_hebrew_v3_translation_run_identity(
+        run_identity_path,
+        summary=summary_payload,
+        expected_config_sha256=expected_config_sha256,
+    )
+    if not isinstance(
+        reviewer_requirement,
+        ReviewerRequirement,
+    ):  # pragma: no cover - validator contract
+        raise AssertionError("reviewer validator did not return a ReviewerRequirement")
+    return config, summary_payload, reviewer_requirement
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -135,8 +234,23 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_create_parser.add_argument("--root-input", required=True, type=Path)
     semantic_create_parser.add_argument("--paired-input", required=True, type=Path)
     semantic_create_parser.add_argument("--translation-summary", required=True, type=Path)
+    semantic_create_parser.add_argument("--translation-run-identity", required=True, type=Path)
     semantic_create_parser.add_argument("--out", required=True, type=Path)
     semantic_create_parser.set_defaults(handler=cmd_data_semantic_review_create)
+
+    semantic_attestation_parser = data_subparsers.add_parser(
+        "semantic-review-attestation-create",
+        help="Create the canonical 200-decision payload for the named human to sign.",
+    )
+    semantic_attestation_parser.add_argument("--config", required=True, type=Path)
+    semantic_attestation_parser.add_argument("--root-input", required=True, type=Path)
+    semantic_attestation_parser.add_argument("--paired-input", required=True, type=Path)
+    semantic_attestation_parser.add_argument("--translation-summary", required=True, type=Path)
+    semantic_attestation_parser.add_argument("--translation-run-identity", required=True, type=Path)
+    semantic_attestation_parser.add_argument("--template", required=True, type=Path)
+    semantic_attestation_parser.add_argument("--reviewed", required=True, type=Path)
+    semantic_attestation_parser.add_argument("--out", required=True, type=Path)
+    semantic_attestation_parser.set_defaults(handler=cmd_data_semantic_review_attestation_create)
 
     semantic_finalize_parser = data_subparsers.add_parser(
         "semantic-review-finalize",
@@ -146,14 +260,23 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_finalize_parser.add_argument("--root-input", required=True, type=Path)
     semantic_finalize_parser.add_argument("--paired-input", required=True, type=Path)
     semantic_finalize_parser.add_argument("--translation-summary", required=True, type=Path)
+    semantic_finalize_parser.add_argument("--translation-run-identity", required=True, type=Path)
     semantic_finalize_parser.add_argument("--template", required=True, type=Path)
     semantic_finalize_parser.add_argument("--reviewed", required=True, type=Path)
+    semantic_finalize_parser.add_argument("--attestation", required=True, type=Path)
+    semantic_finalize_parser.add_argument(
+        "--attestation-signature",
+        required=True,
+        type=Path,
+    )
     semantic_finalize_parser.add_argument("--out", required=True, type=Path)
-    semantic_finalize_parser.add_argument("--reviewer-id", required=True)
     semantic_finalize_parser.add_argument(
         "--publication-manifest",
         type=Path,
-        help="Output manifest path (default: translation_publication.json beside --out).",
+        help=(
+            "Fresh reviewed manifest path (default: "
+            "translation_publication.reviewed.json beside --out)."
+        ),
     )
     semantic_finalize_parser.set_defaults(handler=cmd_data_semantic_review_finalize)
 
@@ -518,11 +641,6 @@ def cmd_data_translate(args: argparse.Namespace) -> int:
 
 
 def cmd_data_semantic_review_create(args: argparse.Namespace) -> int:
-    import json
-    import platform
-
-    import torch
-
     from sommelier.data.load import load_raw_rows
     from sommelier.data.semantic_review import (
         capture_producer_provenance,
@@ -533,8 +651,28 @@ def cmd_data_semantic_review_create(args: argparse.Namespace) -> int:
     )
     from sommelier.manifests import get_git_commit, get_git_worktree_clean
 
-    config = load_config(args.config.resolve())
-    root_path = args.root_input.resolve()
+    config_path = _semantic_review_cli_path(args.config, argument="--config")
+    root_path = _semantic_review_cli_path(args.root_input, argument="--root-input")
+    paired_path = _semantic_review_cli_path(args.paired_input, argument="--paired-input")
+    summary_path = _semantic_review_cli_path(
+        args.translation_summary,
+        argument="--translation-summary",
+    )
+    run_identity_path = _semantic_review_cli_path(
+        args.translation_run_identity,
+        argument="--translation-run-identity",
+    )
+    output_path = _semantic_review_cli_path(args.out, argument="--out")
+    config, summary_payload, reviewer_requirement = _load_phase_a_semantic_review_context(
+        config_path,
+        summary_path,
+        run_identity_path,
+    )
+
+    import platform
+
+    import torch
+
     root_rows = load_raw_rows(root_path)
     hardware = (
         torch.cuda.get_device_name(0)
@@ -548,61 +686,130 @@ def cmd_data_semantic_review_create(args: argparse.Namespace) -> int:
         provider="local",
         hardware=hardware,
     )
-    summary_path = args.translation_summary.resolve()
     validate_producer_provenance(
         producer_provenance,
-        translation_summary=json.loads(summary_path.read_text(encoding="utf-8")),
+        translation_summary=summary_payload,
     )
     output = create_semantic_review_template(
         root_rows_path=root_path,
-        paired_rows_path=args.paired_input.resolve(),
+        paired_rows_path=paired_path,
         translation_summary_path=summary_path,
         root_split_by_id=root_split_assignments(config, root_rows),
-        output_path=args.out.resolve(),
+        output_path=output_path,
         backtranslator=load_transformers_backtranslator(),
         seed=config.project.seed,
         producer_provenance=producer_provenance,
+        reviewer_requirement=reviewer_requirement,
     )
     print(f"semantic review template ok: {output}")
+    return 0
+
+
+def cmd_data_semantic_review_attestation_create(args: argparse.Namespace) -> int:
+    from sommelier.data.load import load_raw_rows
+    from sommelier.data.semantic_review import (
+        SEMANTIC_REVIEW_ATTESTATION_FILENAME,
+        create_semantic_review_attestation,
+        root_split_assignments,
+    )
+
+    config_path = _semantic_review_cli_path(args.config, argument="--config")
+    root_path = _semantic_review_cli_path(args.root_input, argument="--root-input")
+    paired_path = _semantic_review_cli_path(args.paired_input, argument="--paired-input")
+    summary_path = _semantic_review_cli_path(
+        args.translation_summary,
+        argument="--translation-summary",
+    )
+    run_identity_path = _semantic_review_cli_path(
+        args.translation_run_identity,
+        argument="--translation-run-identity",
+    )
+    template_path = _semantic_review_cli_path(args.template, argument="--template")
+    reviewed_path = _semantic_review_cli_path(args.reviewed, argument="--reviewed")
+    output_path = _semantic_review_cli_path(args.out, argument="--out")
+    config, _summary_payload, reviewer_requirement = _load_phase_a_semantic_review_context(
+        config_path,
+        summary_path,
+        run_identity_path,
+    )
+    root_rows = load_raw_rows(root_path)
+    if output_path.name != SEMANTIC_REVIEW_ATTESTATION_FILENAME:
+        raise UserInputError(
+            f"semantic review attestation must be named {SEMANTIC_REVIEW_ATTESTATION_FILENAME!r}"
+        )
+    attestation = create_semantic_review_attestation(
+        reviewed_path,
+        output_path,
+        template_path=template_path,
+        root_rows_path=root_path,
+        paired_rows_path=paired_path,
+        translation_summary_path=summary_path,
+        root_split_by_id=root_split_assignments(config, root_rows),
+        expected_seed=config.project.seed,
+        expected_reviewer_requirement=reviewer_requirement,
+    )
+    print(f"semantic review attestation ready for human signature: {attestation}")
     return 0
 
 
 def cmd_data_semantic_review_finalize(args: argparse.Namespace) -> int:
     from sommelier.data.load import load_raw_rows
     from sommelier.data.semantic_review import (
+        REVIEWED_PUBLICATION_MANIFEST_FILENAME,
         SEMANTIC_REVIEW_FILENAME,
         finalize_semantic_review,
         root_split_assignments,
     )
-    from sommelier.data.translate import (
-        PUBLICATION_MANIFEST_FILENAME,
-        write_translation_publication_manifest,
-    )
+    from sommelier.data.translate import write_translation_publication_manifest
 
-    config = load_config(args.config.resolve())
-    root_path = args.root_input.resolve()
-    paired_path = args.paired_input.resolve()
-    summary_path = args.translation_summary.resolve()
-    template_path = args.template.resolve()
+    config_path = _semantic_review_cli_path(args.config, argument="--config")
+    root_path = _semantic_review_cli_path(args.root_input, argument="--root-input")
+    paired_path = _semantic_review_cli_path(args.paired_input, argument="--paired-input")
+    summary_path = _semantic_review_cli_path(
+        args.translation_summary,
+        argument="--translation-summary",
+    )
+    run_identity_path = _semantic_review_cli_path(
+        args.translation_run_identity,
+        argument="--translation-run-identity",
+    )
+    template_path = _semantic_review_cli_path(args.template, argument="--template")
+    reviewed_path = _semantic_review_cli_path(args.reviewed, argument="--reviewed")
+    attestation_path = _semantic_review_cli_path(
+        args.attestation,
+        argument="--attestation",
+    )
+    signature_path = _semantic_review_cli_path(
+        args.attestation_signature,
+        argument="--attestation-signature",
+    )
+    output_path = _semantic_review_cli_path(args.out, argument="--out")
+    publication_path = _semantic_review_cli_path(
+        args.publication_manifest
+        if args.publication_manifest is not None
+        else output_path.parent / REVIEWED_PUBLICATION_MANIFEST_FILENAME,
+        argument="--publication-manifest",
+    )
+    config, _summary_payload, reviewer_requirement = _load_phase_a_semantic_review_context(
+        config_path,
+        summary_path,
+        run_identity_path,
+    )
     root_rows = load_raw_rows(root_path)
-    output_path = args.out.resolve()
     if output_path.name != SEMANTIC_REVIEW_FILENAME:
         raise UserInputError(f"final semantic review must be named {SEMANTIC_REVIEW_FILENAME!r}")
     final = finalize_semantic_review(
-        args.reviewed.resolve(),
+        reviewed_path,
         output_path,
         template_path=template_path,
-        reviewer_id=args.reviewer_id,
+        attestation_path=attestation_path,
+        signature_path=signature_path,
         root_rows_path=root_path,
         paired_rows_path=paired_path,
         translation_summary_path=summary_path,
         root_split_by_id=root_split_assignments(config, root_rows),
         expected_seed=config.project.seed,
-    )
-    publication_path = (
-        args.publication_manifest.resolve()
-        if args.publication_manifest is not None
-        else output_path.parent / PUBLICATION_MANIFEST_FILENAME
+        expected_reviewer_requirement=reviewer_requirement,
     )
     write_translation_publication_manifest(
         publication_path,
@@ -611,6 +818,7 @@ def cmd_data_semantic_review_finalize(args: argparse.Namespace) -> int:
         target_language="he",
         semantic_review_path=final,
         semantic_review_template_path=template_path,
+        replace_existing=False,
     )
     print(f"semantic review final ok: review={final} publication={publication_path}")
     return 0
@@ -772,9 +980,18 @@ def cmd_eval_run(args: argparse.Namespace) -> int:
 
 
 def cmd_train_run(args: argparse.Namespace) -> int:
+    from sommelier.training.authorization import requires_full_paired_input_validation
     from sommelier.training.qlora import train_adapter
 
     config = load_config(args.config)
+    if requires_full_paired_input_validation(config):
+        raise UserInputError(
+            "standalone train run is disabled for Hebrew v3 full training",
+            hint=(
+                "Use sommelier pipeline run --mode full so the complete paired-input, "
+                "publication, and semantic-review gate runs before training."
+            ),
+        )
     run_id = args.run_id or infer_run_id_from_path(args.data.resolve())
     context = ensure_run_context(
         config,

@@ -13,6 +13,7 @@ import sommelier.data.export as export_module
 import sommelier.data.load as load_module
 import sommelier.data.split as split_module
 import sommelier.data.translate as translate_module
+import sommelier.hebrew_v3_preregistration as preregistration_module
 from sommelier.data.translate import (
     HEBREW_V3_FORWARD_TRANSLATOR_INTERFACE,
     HEBREW_V3_FORWARD_TRANSLATOR_MAX_MODEL_LEN,
@@ -31,8 +32,40 @@ from sommelier.remote.images import (
     OPENAI_TRANSLATION_RUNTIME_VERSIONS,
     SEQ2SEQ_TRANSLATION_RUNTIME_VERSIONS,
 )
+from sommelier.reviewer import (
+    canonical_reviewer_requirement,
+    reviewer_preregistration_payload,
+    reviewer_preregistration_sha256,
+)
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
+REVIEWER_PUBLIC_KEY = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f"
+)
+REVIEWER_REQUIREMENT = canonical_reviewer_requirement(
+    "fixture-reviewer",
+    REVIEWER_PUBLIC_KEY,
+)
+
+
+def _full_hebrew_config_yaml() -> str:
+    config_yaml = (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8")
+    return (
+        config_yaml
+        + "\nsemantic_review:\n"
+        + "  reviewer:\n"
+        + f"    reviewer_id: {REVIEWER_REQUIREMENT.reviewer_id}\n"
+        + f"    ssh_public_key: {REVIEWER_REQUIREMENT.ssh_public_key}\n"
+        + (f"    public_key_fingerprint: {REVIEWER_REQUIREMENT.public_key_fingerprint}\n")
+    )
+
+
+def _allow_test_config_at_fake_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        preregistration_module,
+        "require_committed_config_bytes",
+        lambda config_path, **_kwargs: Path(config_path).read_bytes(),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -280,7 +313,7 @@ def test_local_full_hebrew_config_rejects_before_modal_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config_yaml = (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8")
+    config_yaml = _full_hebrew_config_yaml()
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         config_yaml.replace("  seed: 42", "  seed: 43"),
@@ -302,6 +335,7 @@ def test_local_full_hebrew_config_rejects_before_modal_dispatch(
         "_local_source_identity",
         lambda: ("a" * 40, True),
     )
+    _allow_test_config_at_fake_revision(monkeypatch)
 
     with pytest.raises(UserInputError, match="preregistered seed 42"):
         remote_translate.main.info.raw_f(
@@ -328,8 +362,11 @@ def test_local_full_hebrew_config_rejects_before_modal_dispatch(
 
 
 def test_local_full_hebrew_price_ceiling_rejects_before_modal_dispatch(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(_full_hebrew_config_yaml(), encoding="utf-8")
     reached: list[str] = []
 
     def unexpected_remote(*_args: object) -> str:
@@ -346,10 +383,11 @@ def test_local_full_hebrew_price_ceiling_rejects_before_modal_dispatch(
         "_local_source_identity",
         lambda: ("a" * 40, True),
     )
+    _allow_test_config_at_fake_revision(monkeypatch)
 
     with pytest.raises(UserInputError, match="list_price_limit_usd='1000.00'"):
         remote_translate.main.info.raw_f(
-            config=str(EXAMPLES_DIR / "config.v3-he-full.yaml"),
+            config=str(config_path),
             run_id="hebrew-v3-preflight",
             mode="full",
             max_rows=HEBREW_V3_TRANSLATION_MAX_ROWS,
@@ -380,14 +418,17 @@ def test_local_full_hebrew_price_ceiling_rejects_before_modal_dispatch(
     ],
 )
 def test_local_full_hebrew_request_rejects_before_modal_dispatch(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     field: str,
     value: object,
     message: str,
 ) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(_full_hebrew_config_yaml(), encoding="utf-8")
     reached: list[str] = []
     kwargs: dict[str, object] = {
-        "config": str(EXAMPLES_DIR / "config.v3-he-full.yaml"),
+        "config": str(config_path),
         "run_id": "hebrew-v3-preflight",
         "mode": "full",
         "max_rows": HEBREW_V3_TRANSLATION_MAX_ROWS,
@@ -421,6 +462,7 @@ def test_local_full_hebrew_request_rejects_before_modal_dispatch(
         "_local_source_identity",
         lambda: ("a" * 40, True),
     )
+    _allow_test_config_at_fake_revision(monkeypatch)
 
     with pytest.raises(UserInputError, match=message):
         remote_translate.main.info.raw_f(**kwargs)
@@ -433,10 +475,13 @@ def test_local_full_hebrew_request_rejects_before_modal_dispatch(
     [("main", True), ("a" * 40, False), ("unknown", None)],
 )
 def test_local_full_hebrew_unpublishable_source_rejects_before_modal_dispatch(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     revision: str,
     clean: bool | None,
 ) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(_full_hebrew_config_yaml(), encoding="utf-8")
     reached: list[str] = []
 
     def unexpected_remote(*_args: object) -> str:
@@ -453,10 +498,11 @@ def test_local_full_hebrew_unpublishable_source_rejects_before_modal_dispatch(
         "_local_source_identity",
         lambda: (revision, clean),
     )
+    _allow_test_config_at_fake_revision(monkeypatch)
 
     with pytest.raises(UserInputError, match="clean, immutable local Git revision"):
         remote_translate.main.info.raw_f(
-            config=str(EXAMPLES_DIR / "config.v3-he-full.yaml"),
+            config=str(config_path),
             run_id="hebrew-v3-preflight",
             mode="full",
             max_rows=HEBREW_V3_TRANSLATION_MAX_ROWS,
@@ -501,7 +547,7 @@ def test_full_hebrew_remote_preflight_rejects_before_export_or_model_load(
     value: object,
     message: str,
 ) -> None:
-    config_yaml = (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8")
+    config_yaml = _full_hebrew_config_yaml()
     args = _full_hebrew_args(config_yaml)
     if field == "seed":
         args["config_yaml"] = config_yaml.replace("  seed: 42", f"  seed: {value}")
@@ -554,7 +600,7 @@ def test_full_hebrew_config_contract_rejects_before_export_or_model_load(
     new: str,
     message: str,
 ) -> None:
-    config_yaml = (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8")
+    config_yaml = _full_hebrew_config_yaml()
     assert old in config_yaml
     args = _full_hebrew_args(config_yaml.replace(old, new, 1))
     reached: list[str] = []
@@ -584,7 +630,7 @@ def test_full_hebrew_completed_run_is_immutable_before_provider_load(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config_yaml = (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8")
+    config_yaml = _full_hebrew_config_yaml()
     args = _full_hebrew_args(config_yaml)
     work = tmp_path / "translation" / str(args["run_id"])
     work.mkdir(parents=True)
@@ -620,14 +666,14 @@ def test_full_hebrew_completed_run_is_immutable_before_provider_load(
 
     assert reached == []
     assert {path: path.read_bytes() for path in before} == before
-    assert not (work / remote_translate.TRANSLATION_RUN_IDENTITY_FILENAME).exists()
+    assert not (work / translate_module.TRANSLATION_RUN_IDENTITY_FILENAME).exists()
 
 
 def test_full_hebrew_incomplete_run_resumes_only_with_matching_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config_yaml = (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8")
+    config_yaml = _full_hebrew_config_yaml()
     args = _full_hebrew_args(config_yaml)
     export_calls: list[str] = []
 
@@ -654,11 +700,17 @@ def test_full_hebrew_incomplete_run_resumes_only_with_matching_identity(
 
     assert export_calls == ["export", "export"]
     work = tmp_path / "translation" / str(args["run_id"])
-    identity_path = work / remote_translate.TRANSLATION_RUN_IDENTITY_FILENAME
+    identity_path = work / translate_module.TRANSLATION_RUN_IDENTITY_FILENAME
     assert identity_path.is_file()
     assert (work / "config.yaml").read_text(encoding="utf-8") == config_yaml
 
     observed = json.loads(identity_path.read_text(encoding="utf-8"))
+    assert observed["reviewer_preregistration"] == reviewer_preregistration_payload(
+        REVIEWER_REQUIREMENT
+    )
+    assert observed["reviewer_preregistration_sha256"] == reviewer_preregistration_sha256(
+        REVIEWER_REQUIREMENT
+    )
     observed["unexpected"] = True
     identity_path.write_text(json.dumps(observed), encoding="utf-8")
     with pytest.raises(UserInputError, match="different identity"):
@@ -795,7 +847,7 @@ def test_full_hebrew_runtime_drift_fails_before_export_or_model_load(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config_yaml = (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8")
+    config_yaml = _full_hebrew_config_yaml()
     args = _full_hebrew_args(config_yaml)
     reached: list[str] = []
     drifted = dict(OPENAI_TRANSLATION_RUNTIME_VERSIONS)
@@ -827,7 +879,7 @@ def test_hebrew_v3_preflight_does_not_block_diagnostics_or_other_languages(
     monkeypatch: pytest.MonkeyPatch,
     scope: str,
 ) -> None:
-    config_yaml = (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8")
+    config_yaml = _full_hebrew_config_yaml()
     args = _full_hebrew_args(config_yaml)
     args.update(
         {

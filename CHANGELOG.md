@@ -69,14 +69,24 @@ change; releases move them under a version heading with a date.
   conservative pre-batch admission and post-response stop guards without
   claiming to be an invoice or provider-side account/project spend cap.
 - A preregistered 200-row semantic-review gate with a pinned independent
-  Hebrew-to-English back-translator, immutable machine template, separately
-  finalized reviewer decisions, zero-critical-error release criterion, and
-  exact template/review/publication digests
-  (`sommelier.translation_semantic_review_template.v1` and
+  Hebrew-to-English back-translator, immutable machine template, and one named
+  human reviewer's stable id plus canonical Ed25519 public key/fingerprint
+  committed before Phase-A translation. The canonical decision attestation is
+  signed under the dedicated OpenSSH namespace; finalization verifies that
+  signature, recomputes the locked back-translations, enforces the
+  zero-critical-error release criterion, and binds exact
+  template/review/publication digests
+  (`sommelier.translation_semantic_review_template.v1`,
+  `sommelier.translation_semantic_review_attestation.v1`, and
   `sommelier.translation_semantic_review.v1`).
+  Reviewer identity cannot be supplied through the semantic-review CLI, and
+  the private key never enters the repository, Modal, Sommelier, or Codex.
 - `sommelier analyze tokenization` and the tokenizer-tax record/report schemas,
   measuring exact query/prompt/target/full tokens, matched English-Hebrew
   ratios, sequence-budget failures, and projected non-padding training tokens.
+  Hebrew en+he evidence now separates an English-only arithmetic counterfactual,
+  the additive Hebrew examples/token tax, and the actual combined workload,
+  with raw-record-derived Hebrew ratios and combined-vs-English multipliers.
 - Matched-pair evaluation and deterministic paired-bootstrap intervals;
   per-call inference telemetry; separate base/adapter evaluation manifests;
   `sommelier.evaluation_report.v3`; `sommelier.comparison_report.v3`; and the
@@ -84,6 +94,14 @@ change; releases move them under a version heading with a date.
   `sommelier.sovereign_tco_evidence.v1` keeps measured QLoRA runtime, memory,
   storage, and inference hardware-time distinct from projections and from
   unavailable currency billing.
+- `report experiment` now emits `sommelier.experiment_report.v2` plus a fresh,
+  deterministic
+  `evaluation_evidence/` subbundle with privacy-minimized per-row metric
+  components plus allowlisted eval manifests and telemetry. Adapter
+  publication requires the exact tree and recomputes every reported metric,
+  delta, seeded paired-bootstrap interval, and McNemar result from those rows;
+  regenerate the experiment output and copy the report and evidence directory
+  together.
 - Hebrew v3 remote execution gates: immutable published paired-source loading,
   exact data-provenance traversal, clean source-revision binding, pinned v1
   baseline identity, outer-timeout admission evidence, and a dedicated
@@ -117,6 +135,17 @@ will execute a Hub publication.
 
 ### Security
 
+- Hebrew v3 adapter publication now closed-validates the final experiment
+  report, re-derives both claim gates from the fixed paired-bootstrap bounds,
+  and requires the model card's claim section to match the deterministic
+  renderer exactly. Minimal or edited reports, inconsistent approved-claim
+  lists, missing TCO/provenance sections, and hand-written or unapproved card
+  claims fail before Hub access. Nested TCO validation also binds paired-scope
+  counts to the observed cohorts, rejects negative or inconsistent training and
+  inference measurements, and verifies artifact source paths, hashes, schemas,
+  and storage totals. Migration: regenerate the report with the current
+  `sommelier report experiment` command and replace the adapter-card claim
+  placeholder with `render_hebrew_v3_claim_section(...)` output.
 - Atomic artifact writes now use a private random staging directory, exclusive
   no-follow regular files, descriptor-bound copying, mutation checks, fsync,
   and atomic replacement. Release preflight v2 likewise scans and hashes one
@@ -136,6 +165,13 @@ will execute a Hub publication.
 
 ### Changed
 
+- Canonical full-sized Hebrew v3 training now requires
+  `pipeline run --mode full`. The complete paired-input/publication/semantic-review validator issues
+  a process-local, config-bound, single-use capability to the train stage only
+  after it passes; standalone `train run` and direct `train_adapter` calls fail
+  before model or adapter work. Migration: launch Hebrew v3 full training
+  through the full pipeline. Ordinary, v1, v2, and bounded diagnostic training
+  remain unchanged.
 - Full `pipeline run` attempts now accept only safe single-component run IDs,
   require the same grammar for paired-smoke `--translation-run-id`, and
   reject aliased translation directories before export. Full runs atomically
@@ -143,11 +179,14 @@ will execute a Hub publication.
   while smoke IDs remain reusable. Migration: choose a new `--run-id` for every
   full attempt and replace path-like legacy IDs.
 - The full Hebrew `remote_translate.py` producer now records
-  `sommelier.translation_run_identity.v1`, permits progress-only resume only
-  when the exact config, selection, translator, provider, source, and resource
+  `sommelier.translation_run_identity.v1` through an exclusive reservation
+  before dataset or provider access, permits progress-only resume only when the
+  exact config, reviewer, selection, translator, provider, source, and resource
   identity still match, and permanently rejects a run ID after terminal output
-  appears. Migration: preserve old identity-less or finalized directories and
-  continue with a new safe run ID.
+  appears. Dataset publication now requires that identity and the exact
+  Phase-A config bytes as `translation_run_identity.json` and
+  `translation_config.yaml`. Migration: preserve old identity-less or
+  finalized directories and continue with a new safe run ID.
 - The remote Hebrew semantic-review producer now reserves its final template
   path exclusively before input or model work. Caught failures release only
   the same still-empty reservation; a replaced, nonempty, or hard-crash marker

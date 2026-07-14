@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import inspect
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
 from typing import Self, cast
 
 import pytest
+import yaml
 
 import remote_semantic_review as remote_semantic_review_module
 import sommelier.remote.images as image_module
@@ -21,6 +23,17 @@ from sommelier.remote.images import (
     SEMANTIC_REVIEW_PACKAGES,
     SEMANTIC_REVIEW_PYTHON_VERSION,
 )
+from sommelier.reviewer import validated_reviewer_requirement
+from tests.hebrew_v3_translation_evidence import (
+    self_rehash_translation_contract_drift,
+    write_phase_a_translation_evidence,
+)
+
+REVIEWER_ID = "fixture-reviewer"
+REVIEWER_PUBLIC_KEY = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f"
+)
+REVIEWER_REQUIREMENT = validated_reviewer_requirement(REVIEWER_ID, REVIEWER_PUBLIC_KEY)
 
 
 class _FakeImage:
@@ -42,6 +55,240 @@ def test_remote_dispatch_passes_local_source_identity_explicitly() -> None:
         "allocated_gpu",
         "allocated_timeout_seconds",
     ]
+    assert list(inspect.signature(remote_semantic_review_module.main.info.raw_f).parameters) == [
+        "translation_run_id"
+    ]
+
+
+def _write_phase_a_config(path: Path) -> bytes:
+    payload = yaml.safe_load(Path("examples/config.v3-he-full.yaml").read_text(encoding="utf-8"))
+    payload["semantic_review"] = {
+        "reviewer": {
+            "reviewer_id": REVIEWER_REQUIREMENT.reviewer_id,
+            "ssh_public_key": REVIEWER_REQUIREMENT.ssh_public_key,
+            "public_key_fingerprint": REVIEWER_REQUIREMENT.public_key_fingerprint,
+        }
+    }
+    encoded = yaml.safe_dump(payload, sort_keys=False).encode("utf-8")
+    path.write_bytes(encoded)
+    return encoded
+
+
+def _write_phase_a_run_evidence(run_dir: Path, config_bytes: bytes) -> dict[str, object]:
+    assert config_bytes == (run_dir / "config.yaml").read_bytes()
+    summary_path, _identity_path = write_phase_a_translation_evidence(
+        run_dir,
+        config_path=run_dir / "config.yaml",
+        run_id="he-v3-translate-full",
+        source_boundary="Synthetic remote semantic-review producer identity.",
+    )
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        ("config_sha256", "does not bind the exact Phase-A config"),
+        ("reviewer_payload", "reviewer preregistration does not match"),
+        ("reviewer_sha256", "reviewer preregistration digest is invalid"),
+        ("run_identity_sha256", "does not bind its pre-provider run identity"),
+    ],
+)
+def test_remote_dispatch_rejects_unbound_phase_a_evidence_before_model_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+    message: str,
+) -> None:
+    translation_root = tmp_path / "translation"
+    run_dir = translation_root / "he-v3-translate-full"
+    run_dir.mkdir(parents=True)
+    config_bytes = _write_phase_a_config(run_dir / "config.yaml")
+    (run_dir / "rows.en.jsonl").write_text("\n", encoding="utf-8")
+    (run_dir / "rows.he.jsonl").write_text("\n", encoding="utf-8")
+    summary = _write_phase_a_run_evidence(run_dir, config_bytes)
+    if tamper == "config_sha256":
+        selection = summary["selection"]
+        assert isinstance(selection, dict)
+        selection["config_sha256"] = "0" * 64
+    elif tamper == "reviewer_payload":
+        reviewer = summary["reviewer_preregistration"]
+        assert isinstance(reviewer, dict)
+        reviewer["reviewer_id"] = "post-hoc-reviewer"
+    elif tamper == "reviewer_sha256":
+        summary["reviewer_preregistration_sha256"] = "0" * 64
+    else:
+        summary["translation_run_identity_sha256"] = "0" * 64
+    (run_dir / "translation_summary.json").write_text(
+        json.dumps(summary),
+        encoding="utf-8",
+    )
+    real_path = Path
+
+    class StubVolume:
+        def commit(self) -> None:
+            return None
+
+    def remapped_path(value: str) -> Path:
+        if value == "/artifacts/translation":
+            return translation_root
+        return real_path(value)
+
+    def unexpected_model_load() -> object:
+        raise AssertionError("unbound Phase-A evidence must fail before model loading")
+
+    monkeypatch.setattr(remote_semantic_review_module, "Path", remapped_path)
+    monkeypatch.setattr(remote_semantic_review_module, "artifacts_volume", StubVolume())
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.load_transformers_backtranslator",
+        unexpected_model_load,
+    )
+
+    with pytest.raises(UserInputError, match=message):
+        run_remote_semantic_review.get_raw_f()(
+            "he-v3-translate-full",
+            "a" * 40,
+            True,
+            "A10G",
+            14_400,
+        )
+
+    assert not (run_dir / "translation_semantic_review_template.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "message"),
+    [
+        ("translator", "request_sha256", "4" * 64, "forward translator request_sha256"),
+        ("runtime", "translation_chunk_size", 31, "runtime translation_chunk_size"),
+    ],
+)
+def test_remote_dispatch_rejects_self_rehashed_translation_contract_drift_before_model_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    section: str,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    translation_root = tmp_path / "translation"
+    run_dir = translation_root / "he-v3-translate-full"
+    run_dir.mkdir(parents=True)
+    config_bytes = _write_phase_a_config(run_dir / "config.yaml")
+    (run_dir / "rows.en.jsonl").write_text("\n", encoding="utf-8")
+    (run_dir / "rows.he.jsonl").write_text("\n", encoding="utf-8")
+    _write_phase_a_run_evidence(run_dir, config_bytes)
+    self_rehash_translation_contract_drift(
+        run_dir / "translation_summary.json",
+        run_dir / "translation_run_identity.json",
+        section=section,
+        field=field,
+        value=value,
+    )
+    real_path = Path
+
+    class StubVolume:
+        def commit(self) -> None:
+            return None
+
+    def remapped_path(value: str) -> Path:
+        if value == "/artifacts/translation":
+            return translation_root
+        return real_path(value)
+
+    def unexpected_model_load() -> object:
+        raise AssertionError("translation contract drift must fail before model loading")
+
+    monkeypatch.setattr(remote_semantic_review_module, "Path", remapped_path)
+    monkeypatch.setattr(remote_semantic_review_module, "artifacts_volume", StubVolume())
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.load_transformers_backtranslator",
+        unexpected_model_load,
+    )
+
+    with pytest.raises(UserInputError, match=message):
+        run_remote_semantic_review.get_raw_f()(
+            "he-v3-translate-full",
+            "a" * 40,
+            True,
+            "A10G",
+            14_400,
+        )
+
+    assert not (run_dir / "translation_semantic_review_template.json").exists()
+
+
+def test_remote_dispatch_derives_template_reviewer_from_bound_phase_a_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    translation_root = tmp_path / "translation"
+    run_dir = translation_root / "he-v3-translate-full"
+    run_dir.mkdir(parents=True)
+    config_bytes = _write_phase_a_config(run_dir / "config.yaml")
+    (run_dir / "rows.en.jsonl").write_text("\n", encoding="utf-8")
+    (run_dir / "rows.he.jsonl").write_text("\n", encoding="utf-8")
+    summary = _write_phase_a_run_evidence(run_dir, config_bytes)
+    (run_dir / "translation_summary.json").write_text(
+        json.dumps(summary),
+        encoding="utf-8",
+    )
+    real_path = Path
+    received: dict[str, object] = {}
+
+    class StubVolume:
+        def commit(self) -> None:
+            return None
+
+    def remapped_path(value: str) -> Path:
+        if value == "/artifacts/translation":
+            return translation_root
+        return real_path(value)
+
+    def fake_create_template(**kwargs: object) -> Path:
+        received.update(kwargs)
+        output_path = kwargs["output_path"]
+        assert isinstance(output_path, Path)
+        output_path.write_text("locked template\n", encoding="utf-8")
+        return output_path
+
+    monkeypatch.setattr(remote_semantic_review_module, "Path", remapped_path)
+    monkeypatch.setattr(remote_semantic_review_module, "artifacts_volume", StubVolume())
+    monkeypatch.setattr(remote_semantic_review_module, "hf_cache_volume", StubVolume())
+    monkeypatch.setattr("sommelier.data.load.load_raw_rows", lambda _path: [])
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.root_split_assignments",
+        lambda _config, _rows: {},
+    )
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.capture_producer_provenance",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.validate_producer_provenance",
+        lambda _producer, *, translation_summary: None,
+    )
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.load_transformers_backtranslator",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.create_semantic_review_template",
+        fake_create_template,
+    )
+
+    result = run_remote_semantic_review.get_raw_f()(
+        "he-v3-translate-full",
+        "a" * 40,
+        True,
+        "A10G",
+        14_400,
+    )
+
+    assert result == str(run_dir / "translation_semantic_review_template.json")
+    assert received["reviewer_requirement"] == REVIEWER_REQUIREMENT
 
 
 def test_local_entrypoint_rejects_unsafe_run_id_before_identity_or_remote_dispatch(
@@ -64,7 +311,9 @@ def test_local_entrypoint_rejects_unsafe_run_id_before_identity_or_remote_dispat
     monkeypatch.setattr(run_remote_semantic_review, "remote", unexpected_remote)
 
     with pytest.raises(UserInputError, match="invalid semantic-review translation run id"):
-        remote_semantic_review_module.main.info.raw_f(translation_run_id="../escape")
+        remote_semantic_review_module.main.info.raw_f(
+            translation_run_id="../escape",
+        )
 
     assert dispatched == []
 
@@ -92,7 +341,9 @@ def test_local_entrypoint_rejects_unpublishable_source_before_remote_dispatch(
     monkeypatch.setattr(run_remote_semantic_review, "remote", unexpected_remote)
 
     with pytest.raises(UserInputError, match="clean immutable source revision"):
-        remote_semantic_review_module.main.info.raw_f(translation_run_id="he-v3-translate-full")
+        remote_semantic_review_module.main.info.raw_f(
+            translation_run_id="he-v3-translate-full",
+        )
 
     assert dispatched == []
 

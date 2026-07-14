@@ -10,8 +10,16 @@ from sommelier.config import (
     write_resolved_config,
 )
 from sommelier.errors import ConfigError
+from sommelier.reviewer import canonical_reviewer_requirement
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
+REVIEWER_PUBLIC_KEY = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f"
+)
+REVIEWER_REQUIREMENT = canonical_reviewer_requirement(
+    "fixture-reviewer",
+    REVIEWER_PUBLIC_KEY,
+)
 
 
 def test_smoke_example_loads() -> None:
@@ -73,6 +81,16 @@ def _load_modified(tmp_path: Path, mutate: Callable[[dict[str, Any]], None]) -> 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     load_config(config_path)
+
+
+def _reviewer_section() -> dict[str, object]:
+    return {
+        "reviewer": {
+            "reviewer_id": REVIEWER_REQUIREMENT.reviewer_id,
+            "ssh_public_key": REVIEWER_REQUIREMENT.ssh_public_key,
+            "public_key_fingerprint": REVIEWER_REQUIREMENT.public_key_fingerprint,
+        }
+    }
 
 
 def _french_source(raw: dict[str, Any]) -> dict[str, Any]:
@@ -261,6 +279,85 @@ def test_digest_stability(tmp_path: Path) -> None:
     _, digest_one = write_resolved_config(config, tmp_path / "run-a")
     _, digest_two = write_resolved_config(config, tmp_path / "run-b")
     assert digest_one == digest_two
+
+
+def test_optional_reviewer_section_does_not_change_existing_resolved_digest(
+    tmp_path: Path,
+) -> None:
+    config = load_config(EXAMPLES_DIR / "config.smoke.yaml")
+    resolved_path, digest = write_resolved_config(config, tmp_path)
+
+    assert config.semantic_review is None
+    assert "semantic_review" not in config.model_dump(mode="json")
+    assert "semantic_review" not in yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
+    assert digest == "3540686daed169af6ac6e893032f8fba49a5865b2edeb9f947e8ca1f840d2583"
+
+
+def test_canonical_reviewer_preregistration_round_trips_in_resolved_config(
+    tmp_path: Path,
+) -> None:
+    raw = yaml.safe_load((EXAMPLES_DIR / "config.smoke.yaml").read_text(encoding="utf-8"))
+    raw["semantic_review"] = _reviewer_section()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    config = load_config(config_path)
+    assert config.semantic_review is not None
+    assert config.semantic_review.reviewer.to_requirement() == REVIEWER_REQUIREMENT
+
+    resolved_path, _digest = write_resolved_config(config, tmp_path / "resolved")
+    resolved = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
+    assert resolved["semantic_review"] == _reviewer_section()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("reviewer_id", "reviewer name", "safe stable reviewer id"),
+        (
+            "ssh_public_key",
+            REVIEWER_PUBLIC_KEY + " reviewer@example.test",
+            "canonical comment-free",
+        ),
+        (
+            "ssh_public_key",
+            "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7",
+            "OpenSSH Ed25519",
+        ),
+        ("public_key_fingerprint", "SHA256:not-the-key", "does not match"),
+    ],
+)
+def test_reviewer_preregistration_rejects_noncanonical_identity(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    raw = yaml.safe_load((EXAMPLES_DIR / "config.smoke.yaml").read_text(encoding="utf-8"))
+    section = _reviewer_section()
+    reviewer = section["reviewer"]
+    assert isinstance(reviewer, dict)
+    reviewer[field] = value
+    raw["semantic_review"] = section
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(config_path)
+
+
+def test_reviewer_preregistration_rejects_unknown_fields(tmp_path: Path) -> None:
+    raw = yaml.safe_load((EXAMPLES_DIR / "config.smoke.yaml").read_text(encoding="utf-8"))
+    section = _reviewer_section()
+    reviewer = section["reviewer"]
+    assert isinstance(reviewer, dict)
+    reviewer["private_key"] = "forbidden"
+    raw["semantic_review"] = section
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="private_key"):
+        load_config(config_path)
 
 
 def test_resolved_config_contains_relative_artifact_root(tmp_path: Path) -> None:

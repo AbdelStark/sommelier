@@ -5,9 +5,11 @@ Usage:
     SOMMELIER_GPU=A10G uv run modal run remote_semantic_review.py \
         --translation-run-id he-v3-translate-full
 
-The named full translation run must already contain ``config.yaml``, the
+The named full translation run must already contain the preregistered
+``config.yaml``, its pre-provider ``translation_run_identity.json``, the
 exported English root rows, accepted Hebrew paired rows, and
-``translation_summary.json``.  This job deterministically selects 200 rows,
+``translation_summary.json``. This job verifies those bindings before model
+loading, then deterministically selects 200 rows,
 backtranslates them with the pinned independent Helsinki-NLP Hebrew-to-English
 OPUS-MT checkpoint, and writes the immutable machine template beside the
 translation artifacts.  A full run is one-shot: the producer exclusively
@@ -26,6 +28,7 @@ manifest binds both the untouched template and the final review artifact.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -217,8 +220,17 @@ def run_remote_semantic_review(
         root_split_assignments,
         validate_producer_provenance,
     )
-    from sommelier.data.translate import SUMMARY_FILENAME, rows_filename
+    from sommelier.data.translate import (
+        SUMMARY_FILENAME,
+        TRANSLATION_RUN_IDENTITY_FILENAME,
+        rows_filename,
+        validate_hebrew_v3_translation_preregistration,
+        validate_hebrew_v3_translation_run_identity,
+    )
     from sommelier.errors import UserInputError
+    from sommelier.evaluation.data_provenance import validate_hebrew_v3_translation_config
+    from sommelier.hebrew_v3_preregistration import validate_reviewer_anchor_evidence
+    from sommelier.redaction import DuplicateJsonKeyError, loads_unique_json
 
     work = Path("/artifacts/translation") / translation_run_id
     if work.is_symlink() or not work.is_dir():
@@ -229,16 +241,57 @@ def run_remote_semantic_review(
     output_path = work / SEMANTIC_REVIEW_TEMPLATE_FILENAME
     with _semantic_review_template_reservation(output_path) as reservation:
         config_path = work / "config.yaml"
+        if config_path.is_symlink():
+            raise UserInputError(
+                f"semantic-review Phase-A config must not be a symlink: {config_path}"
+            )
         config = load_config(config_path)
         root_rows_path = work / f"rows.{config.root_dataset.language}.jsonl"
         paired_rows_path = work / rows_filename("he")
         summary_path = work / SUMMARY_FILENAME
-        for path in (root_rows_path, paired_rows_path, summary_path):
-            if not path.exists():
+        run_identity_path = work / TRANSLATION_RUN_IDENTITY_FILENAME
+        for path in (
+            config_path,
+            root_rows_path,
+            paired_rows_path,
+            summary_path,
+            run_identity_path,
+        ):
+            if path.is_symlink() or not path.is_file():
                 raise UserInputError(
-                    f"semantic-review source artifact not found: {path}",
+                    f"semantic-review source artifact is not a regular file: {path}",
                     hint="Name a completed full Hebrew translation run.",
                 )
+
+        try:
+            summary_payload = loads_unique_json(summary_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as error:
+            raise UserInputError("semantic-review translation summary is invalid") from error
+        if not isinstance(summary_payload, dict):
+            raise UserInputError("semantic-review translation summary must be a JSON object")
+        selection = summary_payload.get("selection")
+        config_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
+        if not isinstance(selection, dict) or selection.get("config_sha256") != config_sha256:
+            raise UserInputError(
+                "semantic-review translation summary does not bind the exact Phase-A config",
+                hint="Use config.yaml and translation_summary.json from the same translation run.",
+            )
+        validate_hebrew_v3_translation_config(config)
+        reviewer_requirement = validate_reviewer_anchor_evidence(
+            config,
+            summary_payload,
+            context="Hebrew v3 semantic review",
+        )
+        validate_hebrew_v3_translation_preregistration(
+            summary_payload,
+            config=config,
+            expected_config_sha256=config_sha256,
+        )
+        validate_hebrew_v3_translation_run_identity(
+            run_identity_path,
+            summary=summary_payload,
+            expected_config_sha256=config_sha256,
+        )
 
         root_rows = load_raw_rows(root_rows_path)
         split_by_id = root_split_assignments(config, root_rows)
@@ -250,7 +303,6 @@ def run_remote_semantic_review(
             hardware=allocated_gpu,
             allocation_timeout_seconds=allocated_timeout_seconds,
         )
-        summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
         validate_producer_provenance(
             producer_provenance,
             translation_summary=summary_payload,
@@ -265,6 +317,8 @@ def run_remote_semantic_review(
             backtranslator=backtranslator,
             seed=config.project.seed,
             producer_provenance=producer_provenance,
+            reviewer_requirement=reviewer_requirement,
+            output_reservation=reservation,
         )
         _validate_finalized_reservation(output_path, reservation)
         artifacts_volume.commit()

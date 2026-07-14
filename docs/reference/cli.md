@@ -8,6 +8,7 @@ The `sommelier` command is the entire public interface. The package deliberately
 | [`data prepare`](#data-prepare) | Validate, filter, dedupe, and split raw rows |
 | [`data translate`](#data-translate) | Build an audited French or Hebrew paired dataset |
 | [`data semantic-review-create`](#data-semantic-review-create) | Lock and back-translate the 200-row Hebrew review sample |
+| [`data semantic-review-attestation-create`](#data-semantic-review-attestation-create) | Create the canonical human-signature payload from all 200 decisions |
 | [`data semantic-review-finalize`](#data-semantic-review-finalize) | Validate human decisions and bind the publication manifest |
 | [`data validate-fixtures`](#data-validate-fixtures) | Schema-check the synthetic fixture files |
 | [`format build`](#format-build) | Render prepared splits through the chat template |
@@ -117,7 +118,7 @@ sommelier data translate --input <jsonl> --out <dir> --model-id <hf-id>
 | `--select-from` | no | | Prepared data directory; only rows selected into its splits are translated |
 | `--limit` | no | all | Translate only the first N rows (smoke runs) |
 
-Builds a paired French or Hebrew dataset from the root source's raw rows. Only the query is translated: `tools` and `answers` are copied byte for byte. Protected literals include gold argument values found verbatim at identifier boundaries in the English query, present boundary-delimited components of comma-delimited gold strings, a gold function name written as explicit code/call syntax, and balanced list/dict spans that can be proven equivalent to a gold structure (including exact `HH:MM` to decimal-hour equivalence). Every output is audited for those exact source byte sequences. Chat translators mask only the same boundary-matched occurrences before generation; the raw seq2seq path relies on the same post-generation audit. Instruction-chat requests also receive deterministic semantic disambiguation metadata for the uniquely exact-name-matched gold-selected tool: its name and description plus sorted parameter names, types, and descriptions. Gold argument values, defaults, examples, enums, non-selected tools, and all other schema fields are excluded. The canonical ASCII-JSON context is delimiter-escaped and marked inert, non-output, and non-executable; a missing/ambiguous tool, malformed projection, or context over 8,192 characters is checkpointed as `invalid_row`, never truncated or guessed. TranslateGemma and MADLAD receive no semantic context, preserving their structured and raw-source request formats. The Hebrew target policy requires Hebrew coverage, permits conventional Latin technical text, rejects alphabetic text from unrelated scripts outside protected spans, and rejects unsafe bidi override controls. All targets reject the Unicode replacement character U+FFFD as corrupt output. Chat translators may retry up to twice. The retained MADLAD local path makes one deterministic attempt; the preregistered Hebrew v3 provider path makes exactly three audited attempts. A failed row is dropped with a counted reason, making the result a machine-translated survivor corpus. Output rows carry `source_example_id` naming the root row, ready for [`data prepare`](#data-prepare)'s paired-source path. Progress checkpoints bind the complete source row (including `tools` and `answers`), target, model and implementation revisions, request/context/postprocessing contracts, protected-placeholder schema, and audit version; reused output is re-audited. Provider progress also records `accepted_attempt` or `final_attempt`, while every raw v2 provider-journal event carries its source id and attempt. The initial publication manifest binds the accepted rows and summary; Hebrew full finalization regenerates it with the untouched machine-template and finalized-review digests.
+Builds a paired French or Hebrew dataset from the root source's raw rows. Only the query is translated: `tools` and `answers` are copied byte for byte. Protected literals include gold argument values found verbatim at identifier boundaries in the English query, present boundary-delimited components of comma-delimited gold strings, a gold function name written as explicit code/call syntax, and balanced list/dict spans that can be proven equivalent to a gold structure (including exact `HH:MM` to decimal-hour equivalence). Every output is audited for those exact source byte sequences. Chat translators mask only the same boundary-matched occurrences before generation; the raw seq2seq path relies on the same post-generation audit. Instruction-chat requests also receive deterministic semantic disambiguation metadata for the uniquely exact-name-matched gold-selected tool: its name and description plus sorted parameter names, types, and descriptions. Gold argument values, defaults, examples, enums, non-selected tools, and all other schema fields are excluded. The canonical ASCII-JSON context is delimiter-escaped and marked inert, non-output, and non-executable; a missing/ambiguous tool, malformed projection, or context over 8,192 characters is checkpointed as `invalid_row`, never truncated or guessed. TranslateGemma and MADLAD receive no semantic context, preserving their structured and raw-source request formats. The Hebrew target policy requires Hebrew coverage, permits conventional Latin technical text, rejects alphabetic text from unrelated scripts outside protected spans, and rejects unsafe bidi override controls. All targets reject the Unicode replacement character U+FFFD as corrupt output. Chat translators may retry up to twice. The retained MADLAD local path makes one deterministic attempt; the preregistered Hebrew v3 provider path makes exactly three audited attempts. A failed row is dropped with a counted reason, making the result a machine-translated survivor corpus. Output rows carry `source_example_id` naming the root row, ready for [`data prepare`](#data-prepare)'s paired-source path. Progress checkpoints bind the complete source row (including `tools` and `answers`), target, model and implementation revisions, request/context/postprocessing contracts, protected-placeholder schema, and audit version; reused output is re-audited. Provider progress also records `accepted_attempt` or `final_attempt`, while every raw v2 provider-journal event carries its source id and attempt. The initial publication manifest binds the accepted rows and summary; Hebrew full finalization writes a distinct `translation_publication.reviewed.json` with the untouched machine-template and finalized signed-review digests.
 
 This CLI command loads a local Hugging Face translator and therefore needs its
 model runtime. The selected Hebrew v3 teacher is intentionally available only
@@ -143,6 +144,7 @@ provider. The exact command and cost/privacy boundaries are in the
 sommelier data semantic-review-create --config <yaml>
   --root-input <rows.en.jsonl> --paired-input <rows.he.jsonl>
   --translation-summary <translation_summary.json>
+  --translation-run-identity <translation_run_identity.json>
   --out <translation_semantic_review_template.json>
 ```
 
@@ -166,11 +168,48 @@ failure removes it only when the producer can prove it is the exact unchanged
 empty inode; replaced or nonempty markers stay fail-closed. A hard crash leaves
 the empty marker for explicit operator inspection and recovery. This is a
 mounted-filesystem no-replace boundary, not a claim of cross-container Modal
-locking, so concurrent launches for one ID are unsupported. The pure local
-command intentionally retains ordinary fixture output behavior. The
+locking, so concurrent launches for one ID are unsupported. The local command
+also refuses to replace a differing file; an exact validated retry is
+idempotent. The config must contain the named human reviewer's stable id,
+canonical comment-free Ed25519 public key, and matching OpenSSH fingerprint
+committed before Phase-A translation. It accepts no post-hoc reviewer flag.
+`--translation-run-identity` must match that exact config and summary. The
 Marian request uses raw Hebrew input without a language prefix, disables
 sampling, fixes one beam, caps batches at eight, and rejects rather than
 truncates a source above 512 tokens.
+
+## data semantic-review-attestation-create
+
+```text
+sommelier data semantic-review-attestation-create --config <yaml>
+  --root-input <rows.en.jsonl> --paired-input <rows.he.jsonl>
+  --translation-summary <translation_summary.json>
+  --translation-run-identity <translation_run_identity.json>
+  --template <translation_semantic_review_template.json>
+  --reviewed <reviewer-edited-copy.json>
+  --out <translation_semantic_review_attestation.json>
+```
+
+After the named human completes every rubric and decision in a distinct review
+copy, this command revalidates the Phase-A config, summary, pre-provider run
+identity, untouched template, rows, and configured reviewer. It recomputes the
+pinned back-translations and writes the canonical
+`sommelier.translation_semantic_review_attestation.v1` payload. The output name
+is fixed to `translation_semantic_review_attestation.json` and is created
+without replacing an existing artifact.
+
+The named human signs those exact bytes outside Sommelier:
+
+```bash
+ssh-keygen -Y sign -f <private-key> \
+  -n sommelier-hebrew-v3-semantic-review \
+  translation_semantic_review_attestation.json
+```
+
+The command writes `translation_semantic_review_attestation.json.sig`. The
+private key must remain solely with the named human and must never enter the
+repository, Modal, Sommelier, or Codex. Only the public key and its fingerprint
+belong in the committed config.
 
 ## data semantic-review-finalize
 
@@ -178,23 +217,30 @@ truncates a source above 512 tokens.
 sommelier data semantic-review-finalize --config <yaml>
   --root-input <rows.en.jsonl> --paired-input <rows.he.jsonl>
   --translation-summary <translation_summary.json>
+  --translation-run-identity <translation_run_identity.json>
   --template <translation_semantic_review_template.json>
   --reviewed <reviewer-edited-copy.json>
-  --out <translation_semantic_review.json> --reviewer-id <stable-id>
-  [--publication-manifest <translation_publication.json>]
+  --attestation <translation_semantic_review_attestation.json>
+  --attestation-signature <translation_semantic_review_attestation.json.sig>
+  --out <translation_semantic_review.json>
+  [--publication-manifest <translation_publication.reviewed.json>]
 ```
 
-The reviewer may fill only the rubric, critical/pass decision, notes, and the
-separately supplied reviewer id in a copy of the template. Finalization rejects
-any changed sample, source/paired row, request, back-translation, or other
-machine-locked field. All 200 decisions must be complete and internally
-consistent; one critical error fails the entire publication rather than
-dropping the row. A successful command writes the finalized
-`sommelier.translation_semantic_review.v1` artifact and regenerates
-`translation_publication.json` (or `--publication-manifest`) so it binds both
-the untouched template and final review by SHA-256. `--template`, `--reviewed`,
-and `--out` must name three distinct files; path aliases and hard links are
-rejected so the machine template cannot be overwritten in place.
+The reviewer may fill only the rubric, critical/pass decision, and notes in a
+copy of the template. Reviewer identity comes exclusively from the exact
+Phase-A config; no semantic-review command accepts reviewer identity arguments.
+Finalization rejects any changed sample, source/paired row, request,
+back-translation, reviewer, or other machine-locked field, and verifies the
+detached OpenSSH signature under the dedicated namespace. All 200 decisions
+must be complete and internally consistent; one critical error fails the entire
+publication rather than dropping the row. A successful command writes the
+finalized `sommelier.translation_semantic_review.v1` artifact and a fresh
+`translation_publication.reviewed.json` (or the fresh path supplied through
+`--publication-manifest`) so it binds both the untouched template and final
+review by SHA-256. It never overwrites the initial
+`translation_publication.json`. Copy the reviewed manifest into a new dataset
+bundle under that canonical filename. All input and output paths must be
+distinct regular files; aliases and hard links are rejected.
 
 ## data validate-fixtures
 
@@ -250,7 +296,7 @@ sommelier analyze tokenization --config <yaml> --data <formatted-dir> --out <dir
 | `--out` | yes | | Directory for `tokenizer_tax_records.jsonl` and `tokenizer_tax_report.json` |
 | `--run-id` | no | inferred from `--data` | Run identifier |
 
-Tokenizes the exact query, prompt, target, and full text consumed downstream. For each paired language it joins rows to exact roots, records coverage and per-example ratios, summarizes p50/p95/p99/max counts, and projects non-padding training tokens across configured epochs. The analysis is tied to the configured tokenizer id and revision. `pipeline run` additionally treats any over-budget configured training row as a hard gate before evaluation or training.
+Tokenizes the exact query, prompt, target, and full text consumed downstream. For each paired language it joins rows to exact roots, records coverage and per-example ratios, summarizes p50/p95/p99/max counts, and projects non-padding training tokens across configured epochs. Hebrew en+he reports retain the actual combined workload and add an English-only workload counterfactual, the additive Hebrew examples/tokens, ratios of that increment to English, and combined-vs-English data/token multipliers. These are deterministic projections from the same formatted rows and epoch count, not measurements from a separately trained English-only run. The analysis is tied to the configured tokenizer id and revision. `pipeline run` additionally treats any over-budget configured training row as a hard gate before evaluation or training.
 
 ```bash
 sommelier analyze tokenization \
@@ -302,6 +348,15 @@ sommelier train run --config <yaml> --data <dir> --out <dir> [--run-id <id>]
 
 Trains the QLoRA adapter on the formatted train split with completion-only loss and saves the adapter and tokenizer files into `--out`. Training metrics go to `training_metrics.jsonl` in the parent of `--out`, so the conventional layout is `--out .../train/adapter` with metrics at `.../train/training_metrics.jsonl`. The stage manifest is `train_manifest.json` in the run directory. Hyperparameters come from the config and are never adjusted to fit hardware: an out-of-memory failure surfaces as a [resource error](errors.md) whose hint names the exact fields to change.
 
+The canonical full-sized Hebrew v3 configuration cannot use this standalone
+command. Run it through `sommelier pipeline run --mode full`: that orchestrator
+validates the complete paired rows, translation publication, locked semantic
+template, and finalized review before it creates a run, then passes the train
+stage a process-local, config-bound, single-use capability. The capability is
+not an artifact or command-line flag and cannot be reused to authorize another
+training call. Standalone training for ordinary, v1, v2, and bounded diagnostic
+configurations is unchanged.
+
 ```bash
 sommelier train run \
   --config examples/config.full.yaml \
@@ -339,7 +394,7 @@ sommelier report experiment --base <eval-dir> --v1-en <eval-dir>
                             --seed <int> --resamples <int>
 ```
 
-Builds `sommelier.experiment_report.v1` from three independently checksummed
+Builds `sommelier.experiment_report.v2` from three independently checksummed
 evaluation runs. Before reading outcomes, the finalizer requires a clean
 immutable checkout at the exact source revision recorded by all three runs. It
 then traverses the v3 root/publication/semantic-review inputs through succeeded
@@ -352,7 +407,27 @@ English and Hebrew example order, prompt cohorts, pair-set digest, parser, and
 decoding. V1 and v3 training config digests remain distinct arm provenance,
 while the v3 config itself must match the committed Hebrew full-run contract.
 
+Version 2 preserves both the marginal language slices and the exact matched
+English rows used by each Hebrew row. It binds the target-row-to-reference-row
+mapping by digest and records per-arm matched reference/target metrics, gaps,
+coverage, and deterministic paired-bootstrap intervals. Historical
+`sommelier.experiment_report.v1` artifacts remain generically readable, but are
+not accepted by the current finalizer's release/publication path.
+
 The report compares v3 against v1 with paired-bootstrap intervals. It approves the Hebrew uplift statement only when the full-call interval's lower bound is above zero, and approves English non-inferiority only when the lower bound is at least the negative predeclared margin. Failed gates retain estimates and criteria but omit their claim statement.
+
+The same command atomically creates `evaluation_evidence/` beside
+`experiment_report.json`; that directory must not already exist. Its closed
+manifest allowlists per-arm English/Hebrew metric-component rows, the exact
+evaluation-stage manifests, and inference telemetry. Rows contain only an
+index plus additive numerators/denominators—no example IDs, prompts, targets,
+gold calls, parsed calls, or generated text. Ordered cohort digests bind the
+indices to the evaluated order; the closed manifest additionally carries the
+type/range/uniqueness-checked Hebrew-row to matched-English-row index map.
+Adapter publication rehashes this tree and
+recomputes every arm/slice/overall metric, v3-vs-v1 delta, deterministic
+paired-bootstrap interval, exact matched Hebrew-minus-English gap, and exact
+McNemar result from the released rows.
 
 The same report embeds `sommelier.sovereign_tco_evidence.v1`. It joins the v3
 tokenizer report, training metrics/runtime and adapter tree, plus the
@@ -392,7 +467,7 @@ sommelier pipeline run --config <yaml> --mode {smoke,full} [--input <jsonl>] [--
 
 Runs the seven stages in order (data → format → tokenization → eval-base → train → eval-adapter → compare) inside one run directory, with per-stage wall clock recorded in `runtime_metadata.json` and, after training, peak GPU memory read from the training metrics. Base and adapter evaluation write `eval-base_manifest.json` and `eval-adapter_manifest.json` respectively, so neither arm overwrites the other's evidence. The tokenization stage is the pre-compute sequence-budget gate and writes the matched-pair cost evidence used by multilingual runs. Stage failures propagate with their exit codes; nothing is retried. The command fails up front if `--input` does not exist. Explicit run IDs must be 1–128 ASCII letters, digits, dots, underscores, or hyphens, beginning with an alphanumeric character; path separators, traversal, and absolute paths fail as user input before artifact mutation. Full mode also atomically rejects an existing run directory in the current filesystem view before writing its resolved config or manifest; a failed or completed full attempt must be followed by a fresh `--run-id`. Smoke mode keeps its diagnostic rerun behavior. With `--adapter-id` the run takes the baseline shape: nothing is trained, the adapter evaluation loads the referenced published adapter, and the comparison measures that adapter against the base model on the same prompts.
 
-Smoke mode caps the splits at 100 train, 20 validation, and 20 test examples (taking the minimum with the configured counts) and prefixes the run ID with `smoke-` so a later full run can never overwrite smoke artifacts. The remote driver may stage a matching completed translation run in smoke mode. Full remote mode rejects that staging override: each paired source must be an immutable published dataset revision; Hebrew evidence carries rows plus the digest-bound translation summary, locked semantic-review template, finalized review, and publication manifest. See the [remote driver](../guides/remote-execution.md) for that publication boundary and the outer-timeout admission floor derived from non-enforced stage planning estimates.
+Smoke mode caps the splits at 100 train, 20 validation, and 20 test examples (taking the minimum with the configured counts) and prefixes the run ID with `smoke-` so a later full run can never overwrite smoke artifacts. The remote driver may stage a matching completed translation run in smoke mode. Full remote mode rejects that staging override: each paired source must be an immutable published dataset revision; Hebrew evidence carries rows plus the exact Phase-A config, pre-provider run identity, digest-bound translation summary, locked semantic-review template, finalized signed review, and publication manifest. See the [remote driver](../guides/remote-execution.md) for that publication boundary and the outer-timeout admission floor derived from non-enforced stage planning estimates.
 
 ```bash
 sommelier pipeline run \
@@ -460,17 +535,22 @@ preregistered Hebrew v3 publisher, not a generic dataset uploader:
 `abdelstark/sommelier-xlam-single-call-splits-he`, matching the configured
 dataset identity. Any other well-formed repository ID is rejected before Hub
 access. The bundle must contain exactly `README.md`, `rows.he.jsonl`,
-`translation_summary.json`,
-`translation_publication.json`, `translation_semantic_review_template.json`,
-and `translation_semantic_review.json`. The tracked
+`translation_summary.json`, `translation_publication.json`,
+`translation_semantic_review_template.json`,
+`translation_semantic_review.json`, `translation_config.yaml`, and
+`translation_run_identity.json`. `translation_config.yaml` must be the exact
+committed Phase-A config bytes, and the canonical publication manifest must be
+copied from the finalizer's fresh `translation_publication.reviewed.json`, not
+from the stale initial manifest. The tracked
 [Hebrew dataset card](../release/hebrew-v3-dataset-card.md) is the release
 template. Replace its pending-evidence block and remove
 `REPLACE_FROM_VERIFIED_DATASET_BUNDLE` only after filling it from the audited
 bundle; validation rejects the unresolved marker. The card must declare CC-BY-4.0,
 Salesforce attribution, machine translation, and Hebrew. `--root-input` is not
 uploaded: it lets the validator reconstruct the English/Hebrew pairing and run
-the same full publication, semantic-review, provider-evidence, and immutable
-producer checks consumed by the full pipeline. A raw
+the same full publication, preregistered signed semantic-review,
+provider-evidence, pre-provider identity, Phase-A/Phase-B transition, and
+immutable producer checks consumed by the full pipeline. A raw
 `openai_responses_provider.jsonl` journal, a symlink, an unexpected file, a
 secret-like value, or an incomplete provenance chain fails before network I/O.
 
@@ -539,12 +619,15 @@ a public model card and
 `LICENSE-LLAMA-3.1.txt`, and `NOTICE`; canonical PEFT LoRA config and
 safetensors (plus only the declared tokenizer sidecars); the resolved config;
 succeeded root/train manifests; final claim-gated `experiment_report.json`;
-and a passing `release_preflight.json`. Validation rejects base-model tensors,
+the complete allowlisted `evaluation_evidence/` row/telemetry/manifest
+subbundle; and a passing `release_preflight.json`. Validation rejects base-model tensors,
 incomplete LoRA A/B pairs, mismatched file digests, an adapter/config/model
-mismatch, a dirty or mutable producer identity, incomplete release gates,
-invalid Hugging Face YAML license metadata, unresolved card markers, or a
-model card that omits the base/data/source revisions, adapter tree digest,
-experiment digest, license terms, or the prominent `Built with Llama` notice.
+mismatch, a dirty or mutable producer identity, incomplete release gates, an
+internally inconsistent experiment claim/TCO contract, invalid Hugging Face
+YAML license metadata, unresolved card markers, or a model card whose exact
+machine-rendered claim section or base/data/source revisions, adapter tree
+digest, experiment digest, license terms, or prominent `Built with Llama`
+notice are missing.
 Start from the tracked
 [adapter card template](../release/hebrew-v3-adapter-card-template.md), replace
 every marker from the verified bundle, and let the publisher re-derive the
@@ -568,7 +651,8 @@ For the canonical Hebrew run, the exact source mapping is documented in the
 `artifacts/runs/he-v3-full/`; the required PEFT files and optional allowlisted
 tokenizer sidecars come from its `train/adapter/`; and
 `experiment_report.json` comes from
-`artifacts/experiments/he-v3/experiment_report.json`. Copy the tracked card,
+`artifacts/experiments/he-v3/experiment_report.json`, with
+`evaluation_evidence/` copied from the same fresh experiment directory. Copy the tracked card,
 `THIRD_PARTY.md`, and exact license/notice files into the bundle, fill the card
 from derived bundle identities, and publish before any tracked result edits.
 

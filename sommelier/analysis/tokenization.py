@@ -496,6 +496,85 @@ def analyze_tokenizer_tax(
         schema_version=TOKENIZER_TAX_RECORD_SCHEMA,
     )
 
+    training_examples = [
+        example
+        for example in analyzed
+        if example.split == "train" and example.language in config.train.languages
+    ]
+    tokens_per_epoch = sum(example.counts["full_tokens"] for example in training_examples)
+    training_workload: dict[str, object] = {
+        "languages": list(config.train.languages),
+        "examples_per_epoch": len(training_examples),
+        "non_padding_full_tokens_per_epoch": tokens_per_epoch,
+        "epochs": config.train.epochs,
+        "projected_non_padding_full_tokens": tokens_per_epoch * config.train.epochs,
+        "boundary": (
+            "Excludes dynamic padding and is a deterministic lower bound on tokens "
+            "processed by training."
+        ),
+    }
+    if root_language == "en" and "he" in config.train.languages:
+        english_examples = [
+            example for example in analyzed if example.split == "train" and example.language == "en"
+        ]
+        hebrew_examples = [
+            example for example in analyzed if example.split == "train" and example.language == "he"
+        ]
+        english_tokens = sum(example.counts["full_tokens"] for example in english_examples)
+        hebrew_tokens = sum(example.counts["full_tokens"] for example in hebrew_examples)
+        english_projected_tokens = english_tokens * config.train.epochs
+        hebrew_projected_tokens = hebrew_tokens * config.train.epochs
+        training_workload.update(
+            {
+                "english_only_counterfactual": {
+                    "language": "en",
+                    "examples_per_epoch": len(english_examples),
+                    "non_padding_full_tokens_per_epoch": english_tokens,
+                    "epochs": config.train.epochs,
+                    "projected_non_padding_full_tokens": english_projected_tokens,
+                },
+                "hebrew_increment": {
+                    "language": "he",
+                    "examples_per_epoch": len(hebrew_examples),
+                    "examples_per_epoch_ratio_to_english_only": _finite_ratio(
+                        len(hebrew_examples),
+                        len(english_examples),
+                        context="Hebrew/English training examples",
+                    ),
+                    "non_padding_full_tokens_per_epoch": hebrew_tokens,
+                    "non_padding_full_tokens_per_epoch_ratio_to_english_only": _finite_ratio(
+                        hebrew_tokens,
+                        english_tokens,
+                        context="Hebrew/English non-padding training tokens",
+                    ),
+                    "epochs": config.train.epochs,
+                    "projected_non_padding_full_tokens": hebrew_projected_tokens,
+                    "projected_non_padding_full_tokens_ratio_to_english_only": _finite_ratio(
+                        hebrew_projected_tokens,
+                        english_projected_tokens,
+                        context="projected Hebrew/English non-padding training tokens",
+                    ),
+                },
+                "combined_vs_english_only": {
+                    "examples_per_epoch_multiplier": _finite_ratio(
+                        len(training_examples),
+                        len(english_examples),
+                        context="combined/English training examples",
+                    ),
+                    "non_padding_full_tokens_per_epoch_multiplier": _finite_ratio(
+                        tokens_per_epoch,
+                        english_tokens,
+                        context="combined/English non-padding training tokens",
+                    ),
+                    "projected_non_padding_full_tokens_multiplier": _finite_ratio(
+                        tokens_per_epoch * config.train.epochs,
+                        english_projected_tokens,
+                        context="projected combined/English non-padding training tokens",
+                    ),
+                },
+            }
+        )
+
     report: dict[str, object] = {
         "schema_version": TOKENIZER_TAX_REPORT_SCHEMA,
         "run_id": context.run_id,
@@ -522,30 +601,7 @@ def analyze_tokenizer_tax(
         "root_language": root_language,
         "languages": languages,
         "pairing": pairing,
-        "training_workload": {
-            "languages": list(config.train.languages),
-            "examples_per_epoch": sum(
-                1
-                for example in analyzed
-                if example.split == "train" and example.language in config.train.languages
-            ),
-            "non_padding_full_tokens_per_epoch": sum(
-                example.counts["full_tokens"]
-                for example in analyzed
-                if example.split == "train" and example.language in config.train.languages
-            ),
-            "epochs": config.train.epochs,
-            "projected_non_padding_full_tokens": sum(
-                example.counts["full_tokens"]
-                for example in analyzed
-                if example.split == "train" and example.language in config.train.languages
-            )
-            * config.train.epochs,
-            "boundary": (
-                "Excludes dynamic padding and is a deterministic lower bound on tokens "
-                "processed by training."
-            ),
-        },
+        "training_workload": training_workload,
     }
     validate_no_secrets(report, context="tokenizer-tax report")
     report_path = out_dir / TOKENIZER_TAX_REPORT_FILENAME

@@ -20,9 +20,10 @@ datasets:
     answers_column: answers
   # PROVISIONAL: this publication name is reserved for the audited Hebrew
   # translation. Before a full evidence run, publish the paired rows together
-  # with translation_summary.json, translation_semantic_review_template.json,
-  # translation_semantic_review.json, and translation_publication.json, then
-  # pin that exact dataset commit here.
+  # with translation_config.yaml, translation_run_identity.json,
+  # translation_summary.json, translation_semantic_review_template.json,
+  # translation_semantic_review.json, and the reviewed canonical
+  # translation_publication.json, then pin that exact dataset commit here.
   - language: he
     dataset_id: abdelstark/sommelier-xlam-single-call-splits-he
     dataset_revision: main
@@ -30,6 +31,16 @@ datasets:
     tools_column: tools
     answers_column: answers
     source_id_column: source_example_id
+
+# REQUIRED BEFORE PHASE-A TRANSLATION: uncomment this section and replace all
+# three values with one real named human reviewer's public identity. Commit the
+# exact config before launch. Never put the private key in this file, the repo,
+# Modal, or Sommelier.
+# semantic_review:
+#   reviewer:
+#     reviewer_id: stable-human-id
+#     ssh_public_key: ssh-ed25519 BASE64_PUBLIC_KEY_ONLY
+#     public_key_fingerprint: SHA256:OPENSSH_FINGERPRINT
 
 data:
   n_train: 15000

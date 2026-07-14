@@ -17,6 +17,27 @@ SAFE_KEY_SUFFIXES = frozenset(
         "answers_column",
         "redact_fields",
         "target_modules",
+        # Closed, typed translation-evidence fields. These describe tokenizer
+        # settings, bounded token counts, or public list-price arithmetic; they
+        # are not credential slots. Publication validators independently
+        # enforce their exact schemas and scalar types.
+        "cached_input_tokens",
+        "client_tokenizer_budget",
+        "eos_token_id",
+        "input_token_overhead_per_request",
+        "input_tokens",
+        "long_context_threshold_input_tokens",
+        "max_new_tokens",
+        "max_output_tokens",
+        "max_response_input_tokens",
+        "max_source_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "standard_usd_per_million_tokens",
+        "token_budget",
+        "tokenizer_adapter",
+        "tokenizer_required",
+        "total_tokens",
     }
 )
 

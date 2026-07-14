@@ -8,12 +8,23 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 
 from sommelier.artifacts import write_artifact_atomic
 from sommelier.errors import ConfigError, SecurityPolicyError
+from sommelier.reviewer import (
+    ReviewerRequirement,
+    ReviewerRequirementValidationError,
+    canonical_reviewer_requirement,
+)
 from sommelier.security import validate_no_secrets
 
 RESOLVED_CONFIG_NAME = "config.resolved.yaml"
@@ -185,6 +196,49 @@ class TrackingConfig(BaseModel):
     project: str = "sommelier"
 
 
+class HumanReviewerConfig(BaseModel):
+    """Public identity preregistered to sign one semantic review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reviewer_id: str
+    ssh_public_key: str
+    public_key_fingerprint: str
+
+    @model_validator(mode="after")
+    def validate_canonical_identity(self) -> HumanReviewerConfig:
+        try:
+            requirement = canonical_reviewer_requirement(
+                self.reviewer_id,
+                self.ssh_public_key,
+            )
+        except ReviewerRequirementValidationError as error:
+            raise ValueError(str(error)) from error
+        if self.ssh_public_key != requirement.ssh_public_key:
+            raise ValueError("ssh_public_key must use canonical comment-free OpenSSH Ed25519 form")
+        if self.public_key_fingerprint != requirement.public_key_fingerprint:
+            raise ValueError(
+                "public_key_fingerprint does not match the configured Ed25519 public key"
+            )
+        return self
+
+    def to_requirement(self) -> ReviewerRequirement:
+        """Return the already validated immutable reviewer identity."""
+        return ReviewerRequirement(
+            reviewer_id=self.reviewer_id,
+            ssh_public_key=self.ssh_public_key,
+            public_key_fingerprint=self.public_key_fingerprint,
+        )
+
+
+class SemanticReviewConfig(BaseModel):
+    """Optional semantic-review configuration for experiments that require it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reviewer: HumanReviewerConfig
+
+
 class SommelierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -199,6 +253,10 @@ class SommelierConfig(BaseModel):
     remote: RemoteConfig
     report: ReportConfig
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
+    semantic_review: SemanticReviewConfig | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def validate_remote_code_reason(self) -> SommelierConfig:
@@ -305,6 +363,10 @@ def upgrade_v1_document(raw: dict[str, Any]) -> dict[str, Any]:
 def _dump_resolved_config(config: SommelierConfig) -> str:
     payload = config.model_dump(mode="json")
     payload["project"]["artifact_root"] = config.project.artifact_root.as_posix()
+    # Keep resolved bytes and config digests stable for every existing config.
+    # The section is serialized only when an experiment explicitly opts in.
+    if config.semantic_review is None:
+        payload.pop("semantic_review", None)
     return yaml.safe_dump(payload, sort_keys=False)
 
 

@@ -307,6 +307,8 @@ def _tokenizer_evidence(
         )
     if identity.train_languages is None or identity.train_epochs is None:
         raise _error("tokenizer-tax evidence exists but resolved training config is missing")
+    if identity.train_languages != ("en", "he"):
+        raise _error("Hebrew v3 tokenizer-tax evidence requires en+he training languages")
 
     report = dict(source.report)
     if report.get("schema_version") != TOKENIZER_TAX_REPORT_SCHEMA:
@@ -514,24 +516,54 @@ def _tokenizer_evidence(
         }
 
     workload = _mapping(report.get("training_workload"), context="training workload")
+    if set(workload) != {
+        "languages",
+        "examples_per_epoch",
+        "non_padding_full_tokens_per_epoch",
+        "epochs",
+        "projected_non_padding_full_tokens",
+        "english_only_counterfactual",
+        "hebrew_increment",
+        "combined_vs_english_only",
+        "boundary",
+    }:
+        raise _error("tokenizer-tax training workload has unexpected or missing fields")
     if tuple(workload.get("languages", ())) != identity.train_languages:
         raise _error("tokenizer-tax training languages do not match resolved config")
     epochs = _integer(workload.get("epochs"), context="training workload epochs", minimum=1)
     if epochs != identity.train_epochs:
         raise _error("tokenizer-tax epochs do not match resolved config")
+    english_train = [record for record in root_records.values() if record.get("split") == "train"]
+    hebrew_train = [record for record in target_records if record.get("split") == "train"]
     selected = [
         record
         for record in (*root_records.values(), *target_records)
         if record.get("split") == "train" and record.get("language") in identity.train_languages
     ]
-    tokens_per_epoch = sum(
-        _integer(
-            _mapping(record.get("counts"), context="training record counts").get("full_tokens"),
-            context="training record full_tokens",
+
+    def full_token_total(records: Sequence[Mapping[str, Any]], *, context: str) -> int:
+        return sum(
+            _integer(
+                _mapping(record.get("counts"), context=f"{context} record counts").get(
+                    "full_tokens"
+                ),
+                context=f"{context} record full_tokens",
+            )
+            for record in records
         )
-        for record in selected
+
+    tokens_per_epoch = full_token_total(selected, context="combined training")
+    english_tokens_per_epoch = full_token_total(
+        english_train,
+        context="English-only training",
+    )
+    hebrew_tokens_per_epoch = full_token_total(
+        hebrew_train,
+        context="Hebrew incremental training",
     )
     projected_tokens = tokens_per_epoch * epochs
+    english_projected_tokens = english_tokens_per_epoch * epochs
+    hebrew_projected_tokens = hebrew_tokens_per_epoch * epochs
     expected_workload = {
         "languages": list(identity.train_languages),
         "examples_per_epoch": len(selected),
@@ -539,9 +571,119 @@ def _tokenizer_evidence(
         "epochs": epochs,
         "projected_non_padding_full_tokens": projected_tokens,
     }
-    for field, expected in expected_workload.items():
-        if workload.get(field) != expected:
+    for field in (
+        "examples_per_epoch",
+        "non_padding_full_tokens_per_epoch",
+        "projected_non_padding_full_tokens",
+    ):
+        actual = _integer(workload.get(field), context=f"training workload {field}")
+        if actual != expected_workload[field]:
             raise _error(f"training workload {field} does not match tokenizer records")
+
+    expected_english_counterfactual = {
+        "language": "en",
+        "examples_per_epoch": len(english_train),
+        "non_padding_full_tokens_per_epoch": english_tokens_per_epoch,
+        "epochs": epochs,
+        "projected_non_padding_full_tokens": english_projected_tokens,
+    }
+    english_counterfactual = _mapping(
+        workload.get("english_only_counterfactual"),
+        context="English-only counterfactual",
+    )
+    if set(english_counterfactual) != set(expected_english_counterfactual):
+        raise _error("English-only counterfactual has unexpected or missing fields")
+    for field, expected in expected_english_counterfactual.items():
+        if field == "language":
+            if english_counterfactual.get(field) != expected:
+                raise _error("English-only counterfactual language is inconsistent")
+            continue
+        actual = _integer(
+            english_counterfactual.get(field),
+            context=f"English-only counterfactual {field}",
+        )
+        if actual != expected:
+            raise _error(f"English-only counterfactual {field} does not match tokenizer records")
+
+    expected_hebrew_increment = {
+        "language": "he",
+        "examples_per_epoch": len(hebrew_train),
+        "examples_per_epoch_ratio_to_english_only": _ratio(
+            len(hebrew_train),
+            len(english_train),
+            context="Hebrew increment examples/English-only examples",
+        ),
+        "non_padding_full_tokens_per_epoch": hebrew_tokens_per_epoch,
+        "non_padding_full_tokens_per_epoch_ratio_to_english_only": _ratio(
+            hebrew_tokens_per_epoch,
+            english_tokens_per_epoch,
+            context="Hebrew increment tokens/English-only tokens",
+        ),
+        "epochs": epochs,
+        "projected_non_padding_full_tokens": hebrew_projected_tokens,
+        "projected_non_padding_full_tokens_ratio_to_english_only": _ratio(
+            hebrew_projected_tokens,
+            english_projected_tokens,
+            context="projected Hebrew increment/English-only tokens",
+        ),
+    }
+    hebrew_increment = _mapping(
+        workload.get("hebrew_increment"),
+        context="Hebrew increment",
+    )
+    if set(hebrew_increment) != set(expected_hebrew_increment):
+        raise _error("Hebrew increment has unexpected or missing fields")
+    for field in (
+        "examples_per_epoch",
+        "non_padding_full_tokens_per_epoch",
+        "epochs",
+        "projected_non_padding_full_tokens",
+    ):
+        actual = _integer(hebrew_increment.get(field), context=f"Hebrew increment {field}")
+        if actual != expected_hebrew_increment[field]:
+            raise _error(f"Hebrew increment {field} does not match tokenizer records")
+    if hebrew_increment.get("language") != "he":
+        raise _error("Hebrew increment language is inconsistent")
+    for field in (
+        "examples_per_epoch_ratio_to_english_only",
+        "non_padding_full_tokens_per_epoch_ratio_to_english_only",
+        "projected_non_padding_full_tokens_ratio_to_english_only",
+    ):
+        _same_number(
+            hebrew_increment.get(field),
+            cast("float | None", expected_hebrew_increment[field]),
+            context=f"Hebrew increment {field}",
+        )
+
+    expected_combined_multipliers = {
+        "examples_per_epoch_multiplier": _ratio(
+            len(selected),
+            len(english_train),
+            context="combined/English-only examples",
+        ),
+        "non_padding_full_tokens_per_epoch_multiplier": _ratio(
+            tokens_per_epoch,
+            english_tokens_per_epoch,
+            context="combined/English-only tokens",
+        ),
+        "projected_non_padding_full_tokens_multiplier": _ratio(
+            projected_tokens,
+            english_projected_tokens,
+            context="projected combined/English-only tokens",
+        ),
+    }
+    combined_multipliers = _mapping(
+        workload.get("combined_vs_english_only"),
+        context="combined-vs-English multipliers",
+    )
+    if set(combined_multipliers) != set(expected_combined_multipliers):
+        raise _error("combined-vs-English multipliers have unexpected or missing fields")
+    for field, expected in expected_combined_multipliers.items():
+        _same_number(
+            combined_multipliers.get(field),
+            expected,
+            context=f"combined-vs-English {field}",
+        )
     boundary = _string(workload.get("boundary"), context="training workload boundary")
 
     sources = {
@@ -559,6 +701,9 @@ def _tokenizer_evidence(
             "paired_scopes": scopes,
             "projected_training_workload": {
                 **expected_workload,
+                "english_only_counterfactual": expected_english_counterfactual,
+                "hebrew_increment": expected_hebrew_increment,
+                "combined_vs_english_only": expected_combined_multipliers,
                 "evidence_kind": "deterministic_projection",
                 "boundary": boundary,
             },

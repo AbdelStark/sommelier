@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import platform
 from pathlib import Path
@@ -15,12 +16,45 @@ import sommelier.data.openai_evidence as openai_evidence_module
 import sommelier.data.openai_translate as openai_translate_module
 import sommelier.data.split as split_module
 import sommelier.data.translate as translate_module
+import sommelier.hebrew_v3_preregistration as preregistration_module
 from sommelier.data.translate import HEBREW_V3_TRANSLATION_LIST_PRICE_LIMIT_USD
 from sommelier.errors import UserInputError
 from sommelier.remote.images import OPENAI_TRANSLATION_RUNTIME_VERSIONS
+from sommelier.reviewer import (
+    canonical_reviewer_requirement,
+    reviewer_preregistration_payload,
+    reviewer_preregistration_sha256,
+)
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
 MODEL_SNAPSHOT = "gpt-5.5-2026-04-23"
+REVIEWER_PUBLIC_KEY = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f"
+)
+REVIEWER_REQUIREMENT = canonical_reviewer_requirement(
+    "fixture-reviewer",
+    REVIEWER_PUBLIC_KEY,
+)
+
+
+def _full_hebrew_config_yaml() -> str:
+    config_yaml = (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8")
+    return (
+        config_yaml
+        + "\nsemantic_review:\n"
+        + "  reviewer:\n"
+        + f"    reviewer_id: {REVIEWER_REQUIREMENT.reviewer_id}\n"
+        + f"    ssh_public_key: {REVIEWER_REQUIREMENT.ssh_public_key}\n"
+        + (f"    public_key_fingerprint: {REVIEWER_REQUIREMENT.public_key_fingerprint}\n")
+    )
+
+
+def _allow_test_config_at_fake_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        preregistration_module,
+        "require_committed_config_bytes",
+        lambda config_path, **_kwargs: Path(config_path).read_bytes(),
+    )
 
 
 def _openai_args(config_yaml: str, *, mode: str = "smoke") -> dict[str, Any]:
@@ -304,6 +338,7 @@ def test_local_entrypoint_requires_explicit_instruction_chat_for_openai_transpor
     with pytest.raises(UserInputError, match="explicit instruction_chat"):
         remote_translate.main.info.raw_f(
             config=str(config_path),
+            mode="smoke",
             model_id=MODEL_SNAPSHOT,
             model_revision=MODEL_SNAPSHOT,
             translator_interface="auto",
@@ -313,6 +348,7 @@ def test_local_entrypoint_requires_explicit_instruction_chat_for_openai_transpor
     with pytest.raises(UserInputError, match="explicit instruction_chat"):
         remote_translate.main.info.raw_f(
             config=str(config_path),
+            mode="smoke",
             model_id=MODEL_SNAPSHOT,
             model_revision=MODEL_SNAPSHOT,
             translator_interface="madlad_seq2seq",
@@ -339,6 +375,7 @@ def test_local_entrypoint_rejects_unregistered_openai_service_tier_before_dispat
     with pytest.raises(UserInputError, match="service tier"):
         remote_translate.main.info.raw_f(
             config=str(config_path),
+            mode="smoke",
             model_id=MODEL_SNAPSHOT,
             model_revision=MODEL_SNAPSHOT,
             translator_interface="instruction_chat",
@@ -404,9 +441,12 @@ def test_local_entrypoint_dispatches_openai_without_gpu_allocation(
 
 
 def test_local_entrypoint_dispatches_only_the_exact_full_hebrew_contract(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(_full_hebrew_config_yaml(), encoding="utf-8")
     captured: list[object] = []
 
     def fake_remote(*args: object) -> str:
@@ -423,9 +463,10 @@ def test_local_entrypoint_dispatches_only_the_exact_full_hebrew_contract(
         "_local_source_identity",
         lambda: ("a" * 40, True),
     )
+    _allow_test_config_at_fake_revision(monkeypatch)
 
     remote_translate.main.info.raw_f(
-        config=str(EXAMPLES_DIR / "config.v3-he-full.yaml"),
+        config=str(config_path),
         run_id="he-v3-full-dispatch",
         mode="full",
         max_rows=translate_module.HEBREW_V3_TRANSLATION_MAX_ROWS,
@@ -599,7 +640,7 @@ def test_full_hebrew_openai_backend_passes_exact_preregistration_before_export(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     args = _openai_args(
-        (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8"),
+        _full_hebrew_config_yaml(),
         mode="full",
     )
     args["max_rows"] = 60_000
@@ -643,6 +684,19 @@ def test_full_hebrew_openai_backend_passes_exact_preregistration_before_export(
         remote_translate.run_remote_openai_translation.get_raw_f()(**args)
 
     assert reached == ["export"]
+    identity_path = (
+        tmp_path
+        / "translation"
+        / str(args["run_id"])
+        / translate_module.TRANSLATION_RUN_IDENTITY_FILENAME
+    )
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    assert identity["reviewer_preregistration"] == reviewer_preregistration_payload(
+        REVIEWER_REQUIREMENT
+    )
+    assert identity["reviewer_preregistration_sha256"] == reviewer_preregistration_sha256(
+        REVIEWER_REQUIREMENT
+    )
 
 
 @pytest.mark.parametrize(
@@ -661,7 +715,7 @@ def test_full_hebrew_provider_selection_rejects_before_export_or_factory(
     message: str,
 ) -> None:
     args = _openai_args(
-        (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8"),
+        _full_hebrew_config_yaml(),
         mode="full",
     )
     args.update(

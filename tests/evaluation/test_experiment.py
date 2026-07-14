@@ -24,6 +24,12 @@ from sommelier.evaluation.generate import (
     inference_timed_call_contract,
     inference_warmup_contract,
 )
+from sommelier.evaluation.release_evidence import (
+    EVALUATION_RELEASE_EVIDENCE_DIRNAME,
+    _validate_telemetry,
+    validate_evaluation_release_evidence,
+)
+from sommelier.reviewer import canonical_reviewer_requirement
 
 SCHEMA = "sommelier.evaluation_report.v3"
 GENERATION_SCHEMA = "sommelier.generation.v2"
@@ -34,8 +40,12 @@ MODEL_IDENTITY = {
     "tokenizer_id": "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
     "tokenizer_revision": "54641c1611fcff44fa4865626462445e0a153fc7",
 }
+REVIEWER_REQUIREMENT = canonical_reviewer_requirement(
+    "fixture-reviewer",
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
+)
 DECODING = {"temperature": 0.0, "do_sample": False, "max_new_tokens": 512}
-GOLD_CALL = {"name": "lookup", "arguments": {"value": "x"}}
+GOLD_CALL: dict[str, object] = {"name": "lookup", "arguments": {"value": "x"}}
 _REAL_VALIDATE_OBSERVED_COHORTS = data_provenance._validate_observed_cohorts
 
 
@@ -55,6 +65,10 @@ def _stub_semantic_publication_validation(monkeypatch: pytest.MonkeyPatch) -> No
                     "translation_semantic_review_template.he.json"
                 ),
                 "semantic_review": root_rows_path.with_name("translation_semantic_review.he.json"),
+                "translation_config": root_rows_path.with_name("translation_config.he.yaml"),
+                "translation_run_identity": root_rows_path.with_name(
+                    "translation_run_identity.he.json"
+                ),
             }
         }
 
@@ -102,6 +116,10 @@ def _pair_set_digest(entries: list[dict[str, str]]) -> str:
         json.dumps(entry, separators=(",", ":"), sort_keys=True) for entry in entries
     )
     return _sha256(payload.encode())
+
+
+def _index_map_digest(indices: list[int]) -> str:
+    return _sha256(json.dumps(indices, separators=(",", ":")).encode())
 
 
 def _metric(numerator: int, denominator: int) -> dict[str, float | int]:
@@ -227,6 +245,13 @@ def _write_test_config(run_dir: Path, *, run_id: str, marker: str) -> str:
             "provider": "wandb",
             "project": "sommelier",
         },
+        "semantic_review": {
+            "reviewer": {
+                "reviewer_id": REVIEWER_REQUIREMENT.reviewer_id,
+                "ssh_public_key": REVIEWER_REQUIREMENT.ssh_public_key,
+                "public_key_fingerprint": REVIEWER_REQUIREMENT.public_key_fingerprint,
+            }
+        },
     }
     config = SommelierConfig.model_validate(payload)
     _, digest = write_resolved_config(config, run_dir)
@@ -241,6 +266,11 @@ def _write_eval_run(
     config_sha256: str,
     en_correct: bool,
     he_correct: bool,
+    paired_reference_indices: tuple[int, ...] = (0, 1, 2, 3),
+    en_correct_by_index: tuple[bool, ...] | None = None,
+    he_correct_by_index: tuple[bool, ...] | None = None,
+    en_gold_by_index: tuple[dict[str, object], ...] | None = None,
+    he_gold_by_index: tuple[dict[str, object], ...] | None = None,
 ) -> Path:
     run_dir = root / "artifacts" / "runs" / run_id
     config_sha256 = _write_test_config(
@@ -279,13 +309,36 @@ def _write_eval_run(
         encoding="utf-8",
     )
     eval_dir = run_dir / "eval" / model_kind
-    formatted: list[dict[str, object]] = []
+    if len(set(paired_reference_indices)) != len(paired_reference_indices) or any(
+        not 0 <= index < 4 for index in paired_reference_indices
+    ):
+        raise AssertionError("fixture pair map must contain unique English row indices")
+    en_correctness = en_correct_by_index if en_correct_by_index is not None else (en_correct,) * 4
+    he_correctness = (
+        he_correct_by_index
+        if he_correct_by_index is not None
+        else (he_correct,) * len(paired_reference_indices)
+    )
+    english_golds = en_gold_by_index if en_gold_by_index is not None else (GOLD_CALL,) * 4
+    hebrew_golds = (
+        he_gold_by_index
+        if he_gold_by_index is not None
+        else (GOLD_CALL,) * len(paired_reference_indices)
+    )
+    if len(en_correctness) != 4:
+        raise AssertionError("fixture English outcomes must contain four rows")
+    if len(he_correctness) != len(paired_reference_indices):
+        raise AssertionError("fixture Hebrew outcomes must match the pair map")
+    if len(english_golds) != 4:
+        raise AssertionError("fixture English gold calls must contain four rows")
+    if len(hebrew_golds) != len(paired_reference_indices):
+        raise AssertionError("fixture Hebrew gold calls must match the pair map")
+
     per_language: dict[str, list[dict[str, object]]] = {"en": [], "he": []}
     pair_entries: list[dict[str, str]] = []
     for index in range(4):
         root_id = f"example-{index}"
         en_prompt = _prompt_digest("en", index)
-        he_prompt = _prompt_digest("he", index)
         en: dict[str, object] = {
             "schema_version": FORMATTED_SCHEMA,
             "example_id": root_id,
@@ -293,21 +346,28 @@ def _write_eval_run(
             "language": "en",
             "source_example_id": None,
             "prompt_text": f"en prompt {index}",
-            "target_text": json.dumps([GOLD_CALL], separators=(",", ":"), sort_keys=True),
+            "target_text": json.dumps(
+                [english_golds[index]], separators=(",", ":"), sort_keys=True
+            ),
             "prompt_sha256": en_prompt,
         }
+        per_language["en"].append(en)
+    for target_index, reference_index in enumerate(paired_reference_indices):
+        root_id = f"example-{reference_index}"
+        en_prompt = _prompt_digest("en", reference_index)
+        he_prompt = _prompt_digest("he", reference_index)
         he: dict[str, object] = {
             "schema_version": FORMATTED_SCHEMA,
             "example_id": f"{root_id}:he",
             "split": "test",
             "language": "he",
             "source_example_id": root_id,
-            "prompt_text": f"he prompt {index}",
-            "target_text": json.dumps([GOLD_CALL], separators=(",", ":"), sort_keys=True),
+            "prompt_text": f"he prompt {reference_index}",
+            "target_text": json.dumps(
+                [hebrew_golds[target_index]], separators=(",", ":"), sort_keys=True
+            ),
             "prompt_sha256": he_prompt,
         }
-        formatted.extend((en, he))
-        per_language["en"].append(en)
         per_language["he"].append(he)
         pair_entries.append(
             {
@@ -317,15 +377,17 @@ def _write_eval_run(
                 "target_prompt_sha256": he_prompt,
             }
         )
+    formatted = [*per_language["en"], *per_language["he"]]
     formatted_path = run_dir / "formatted" / "test.jsonl"
     _write_jsonl(formatted_path, formatted)
 
-    correctness = {"en": en_correct, "he": he_correct}
+    correctness = {"en": en_correctness, "he": he_correctness}
     slices: dict[str, Any] = {}
     for language in ("en", "he"):
         generations: list[dict[str, object]] = []
-        for example in per_language[language]:
-            correct = correctness[language]
+        for index, example in enumerate(per_language[language]):
+            correct = correctness[language][index]
+            gold_call = english_golds[index] if language == "en" else hebrew_golds[index]
             generations.append(
                 {
                     "schema_version": GENERATION_SCHEMA,
@@ -333,17 +395,19 @@ def _write_eval_run(
                     "model_kind": model_kind,
                     "language": language,
                     "prompt_sha256": example["prompt_sha256"],
-                    "raw_text": json.dumps(GOLD_CALL) if correct else "no call",
-                    "parsed_call": GOLD_CALL if correct else None,
+                    "raw_text": json.dumps(gold_call) if correct else "no call",
+                    "parsed_call": gold_call if correct else None,
                     "parse_status": "ok" if correct else "no_json",
                     "decoding": DECODING,
                 }
             )
         generations_path = eval_dir / f"generations.{language}.jsonl"
         _write_jsonl(generations_path, generations)
+        examples = len(per_language[language])
+        correct_examples = sum(correctness[language])
         slices[language] = {
-            "metrics": _metrics(4 if correctness[language] else 0, 4),
-            "examples": 4,
+            "metrics": _metrics(correct_examples, examples),
+            "examples": examples,
             "prompt_set_sha256": _prompt_set_digest(
                 [str(example["prompt_sha256"]) for example in per_language[language]]
             ),
@@ -364,11 +428,14 @@ def _write_eval_run(
             "he": {
                 "reference_language": "en",
                 "target_language": "he",
-                "pairs": 4,
+                "pairs": len(paired_reference_indices),
                 "pair_set_sha256": _pair_set_digest(pair_entries),
             }
         },
-        "metrics": _metrics((4 if en_correct else 0) + (4 if he_correct else 0), 8),
+        "metrics": _metrics(
+            sum(en_correctness) + sum(he_correctness),
+            len(en_correctness) + len(he_correctness),
+        ),
         "adapter_source": (
             None
             if model_kind == "base"
@@ -509,16 +576,22 @@ def _add_inference_efficiency(eval_dir: Path) -> None:
         "example_order": "formatted_test_order_within_slice",
     }
     hardware = {"gpu_label": "L40S", "gpu_count": 1, "source": "config.remote.gpu"}
-    elapsed = {"en": 4.0, "he": 8.0}
+    slice_examples = {
+        language: int(report["slices"][language]["examples"]) for language in ("en", "he")
+    }
+    elapsed = {
+        "en": float(slice_examples["en"]),
+        "he": float(2 * slice_examples["he"]),
+    }
     telemetry_slices: dict[str, Any] = {}
     efficiency_slices: dict[str, Any] = {}
     for language in ("en", "he"):
         generation_path = eval_dir / f"generations.{language}.jsonl"
         generation_ref = artifact_ref(generation_path, "generations", "sommelier.generation.v2")
         raw = {
-            "examples": 4,
+            "examples": slice_examples[language],
             "elapsed_seconds": elapsed[language],
-            "seconds_per_example": elapsed[language] / 4,
+            "seconds_per_example": elapsed[language] / slice_examples[language],
             "generation_artifact": generation_ref,
         }
         successes = report["slices"][language]["metrics"]["full_call_exact_match"]["numerator"]
@@ -537,10 +610,16 @@ def _add_inference_efficiency(eval_dir: Path) -> None:
         }
 
     total_successes = report["metrics"]["full_call_exact_match"]["numerator"]
-    total = {"examples": 8, "elapsed_seconds": 12.0, "seconds_per_example": 1.5}
+    total_examples = sum(slice_examples.values())
+    total_elapsed = sum(elapsed.values())
+    total = {
+        "examples": total_examples,
+        "elapsed_seconds": total_elapsed,
+        "seconds_per_example": total_elapsed / total_examples,
+    }
     overall_ratio = {
         "available": total_successes > 0,
-        "value": round(12.0 / total_successes, 6) if total_successes else None,
+        "value": round(total_elapsed / total_successes, 6) if total_successes else None,
         "reason": None if total_successes else "zero_full_call_exact_successes",
         "unit": "gpu_seconds_per_full_call_exact_success",
         "full_call_exact_successes": total_successes,
@@ -622,6 +701,12 @@ def _add_v3_data_contract(v3_dir: Path) -> None:
             "translation_semantic_review.he.json",
             "translation_semantic_review",
             "sommelier.translation_semantic_review.v1",
+        ),
+        ("translation_config.he.yaml", "config", "sommelier.config.v2"),
+        (
+            "translation_run_identity.he.json",
+            "translation_run_identity",
+            "sommelier.translation_run_identity.v1",
         ),
     )
     source_refs: list[dict[str, object]] = []
@@ -795,6 +880,28 @@ def _add_v3_data_contract(v3_dir: Path) -> None:
             "non_padding_full_tokens_per_epoch": 33,
             "epochs": 2,
             "projected_non_padding_full_tokens": 66,
+            "english_only_counterfactual": {
+                "language": "en",
+                "examples_per_epoch": 1,
+                "non_padding_full_tokens_per_epoch": 15,
+                "epochs": 2,
+                "projected_non_padding_full_tokens": 30,
+            },
+            "hebrew_increment": {
+                "language": "he",
+                "examples_per_epoch": 1,
+                "examples_per_epoch_ratio_to_english_only": 1.0,
+                "non_padding_full_tokens_per_epoch": 18,
+                "non_padding_full_tokens_per_epoch_ratio_to_english_only": 1.2,
+                "epochs": 2,
+                "projected_non_padding_full_tokens": 36,
+                "projected_non_padding_full_tokens_ratio_to_english_only": 1.2,
+            },
+            "combined_vs_english_only": {
+                "examples_per_epoch_multiplier": 2.0,
+                "non_padding_full_tokens_per_epoch_multiplier": 2.2,
+                "projected_non_padding_full_tokens_multiplier": 2.2,
+            },
             "boundary": "Excludes dynamic padding.",
         },
     }
@@ -841,6 +948,8 @@ def _write_three_arm_runs(
     v1_he_correct: bool = False,
     v3_en_correct: bool = True,
     v3_he_correct: bool = True,
+    en_gold_by_index: tuple[dict[str, object], ...] | None = None,
+    he_gold_by_index: tuple[dict[str, object], ...] | None = None,
 ) -> tuple[Path, Path, Path]:
     base_dir = _write_eval_run(
         tmp_path,
@@ -849,6 +958,8 @@ def _write_three_arm_runs(
         config_sha256="1" * 64,
         en_correct=False,
         he_correct=False,
+        en_gold_by_index=en_gold_by_index,
+        he_gold_by_index=he_gold_by_index,
     )
     v1_dir = _write_eval_run(
         tmp_path,
@@ -857,6 +968,8 @@ def _write_three_arm_runs(
         config_sha256="2" * 64,
         en_correct=v1_en_correct,
         he_correct=v1_he_correct,
+        en_gold_by_index=en_gold_by_index,
+        he_gold_by_index=he_gold_by_index,
     )
     v3_dir = _write_eval_run(
         tmp_path,
@@ -865,6 +978,51 @@ def _write_three_arm_runs(
         config_sha256="3" * 64,
         en_correct=v3_en_correct,
         he_correct=v3_he_correct,
+        en_gold_by_index=en_gold_by_index,
+        he_gold_by_index=he_gold_by_index,
+    )
+    for eval_dir in (base_dir, v1_dir, v3_dir):
+        _add_inference_efficiency(eval_dir)
+    _add_v3_data_contract(v3_dir)
+    _add_preregistered_adapter_contract(v1_dir, v3_dir)
+    return base_dir, v1_dir, v3_dir
+
+
+def _write_permuted_three_arm_runs(tmp_path: Path) -> tuple[Path, Path, Path]:
+    paired_reference_indices = (2, 0, 3)
+    english_outcomes = (True, True, False, False)
+    base_dir = _write_eval_run(
+        tmp_path,
+        run_id="base-run",
+        model_kind="base",
+        config_sha256="1" * 64,
+        en_correct=False,
+        he_correct=False,
+        paired_reference_indices=paired_reference_indices,
+        en_correct_by_index=english_outcomes,
+        he_correct_by_index=(False, False, False),
+    )
+    v1_dir = _write_eval_run(
+        tmp_path,
+        run_id="v1-run",
+        model_kind="adapter",
+        config_sha256="2" * 64,
+        en_correct=False,
+        he_correct=False,
+        paired_reference_indices=paired_reference_indices,
+        en_correct_by_index=english_outcomes,
+        he_correct_by_index=(False, False, False),
+    )
+    v3_dir = _write_eval_run(
+        tmp_path,
+        run_id="v3-run",
+        model_kind="adapter",
+        config_sha256="3" * 64,
+        en_correct=False,
+        he_correct=False,
+        paired_reference_indices=paired_reference_indices,
+        en_correct_by_index=english_outcomes,
+        he_correct_by_index=(True, True, True),
     )
     for eval_dir in (base_dir, v1_dir, v3_dir):
         _add_inference_efficiency(eval_dir)
@@ -1154,6 +1312,68 @@ def test_preregistered_adapter_contract_rejects_unbound_training_artifact(
         _validate_fixture_adapter_contract(v1_dir, v3_dir)
 
 
+def _finalize_three_arm_experiment(tmp_path: Path) -> tuple[dict[str, Any], Path]:
+    base_dir, v1_dir, v3_dir = _write_three_arm_runs(tmp_path)
+    output = tmp_path / "experiment"
+    report = write_experiment_report(
+        base_dir,
+        v1_dir,
+        v3_dir,
+        output,
+        english_non_inferiority_margin=0.01,
+        seed=42,
+        resamples=2000,
+    )
+    return report, output
+
+
+def _finalize_permuted_three_arm_experiment(tmp_path: Path) -> tuple[dict[str, Any], Path]:
+    base_dir, v1_dir, v3_dir = _write_permuted_three_arm_runs(tmp_path)
+    output = tmp_path / "experiment"
+    report = write_experiment_report(
+        base_dir,
+        v1_dir,
+        v3_dir,
+        output,
+        english_non_inferiority_margin=0.01,
+        seed=42,
+        resamples=2000,
+    )
+    return report, output
+
+
+def _rebind_experiment_report(output: Path, report: dict[str, Any]) -> None:
+    report_path = output / "experiment_report.json"
+    report_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    manifest_path = output / EVALUATION_RELEASE_EVIDENCE_DIRNAME / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["experiment_report"]["sha256"] = _sha256(report_path.read_bytes())
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _rebind_released_file(output: Path, relative: str) -> None:
+    evidence = output / EVALUATION_RELEASE_EVIDENCE_DIRNAME
+    released_path = evidence / relative
+    manifest_path = evidence / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][relative].update(
+        {
+            "sha256": _sha256(released_path.read_bytes()),
+            "bytes": released_path.stat().st_size,
+        }
+    )
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_experiment_report_gates_three_arms_from_recomputed_evidence(
     tmp_path: Path,
 ) -> None:
@@ -1169,7 +1389,7 @@ def test_experiment_report_gates_three_arms_from_recomputed_evidence(
         resamples=2000,
     )
 
-    assert report["schema_version"] == "sommelier.experiment_report.v1"
+    assert report["schema_version"] == "sommelier.experiment_report.v2"
     assert set(report["arms"]) == {"base", "v1_en", "v3_en_he"}
     assert report["arms"]["v1_en"]["config_sha256"] == report["arms"]["v3_en_he"]["config_sha256"]
     for arm in report["arms"].values():
@@ -1226,6 +1446,12 @@ def test_experiment_report_gates_three_arms_from_recomputed_evidence(
         ]
         == 2.0
     )
+    workload = tco["paired_tokenization"]["projected_training_workload"]
+    assert workload["english_only_counterfactual"]["projected_non_padding_full_tokens"] == 30
+    assert workload["hebrew_increment"]["projected_non_padding_full_tokens"] == 36
+    assert (
+        workload["combined_vs_english_only"]["projected_non_padding_full_tokens_multiplier"] == 2.2
+    )
     assert tco["qlora_training"]["currency_cost"]["available"] is False
     assert tco["qlora_training"]["full_finetune_savings"]["available"] is False
     assert report["data_provenance"]["contract"]["semantic_review"] == {
@@ -1233,14 +1459,522 @@ def test_experiment_report_gates_three_arms_from_recomputed_evidence(
         "required_critical_errors": 0,
         "status": "validated",
     }
+    provenance_sources = report["data_provenance"]["sources"]
+    assert provenance_sources["he_translation_config"] == {
+        "path": "runs/v3-run/data/source_inputs/translation_config.he.yaml",
+        "kind": "config",
+        "schema_version": "sommelier.config.v2",
+        "sha256": _sha256(b"{}\n"),
+        "bytes": 3,
+    }
+    assert provenance_sources["he_translation_run_identity"] == {
+        "path": "runs/v3-run/data/source_inputs/translation_run_identity.he.json",
+        "kind": "translation_run_identity",
+        "schema_version": "sommelier.translation_run_identity.v1",
+        "sha256": _sha256(b"{}\n"),
+        "bytes": 3,
+    }
     assert (
         tco["sources"]["data_provenance"]["he_semantic_review"]["sha256"]
-        == (report["data_provenance"]["sources"]["he_semantic_review"]["sha256"])
+        == provenance_sources["he_semantic_review"]["sha256"]
     )
     assert (
         json.loads((tmp_path / "experiment" / "experiment_report.json").read_text(encoding="utf-8"))
         == report
     )
+
+
+def test_experiment_report_preserves_permuted_unequal_matched_accuracy_cohort(
+    tmp_path: Path,
+) -> None:
+    report, output = _finalize_permuted_three_arm_experiment(tmp_path)
+    expected_indices = [2, 0, 3]
+    expected_index_digest = _index_map_digest(expected_indices)
+    expected_pair_digest = _pair_set_digest(
+        [
+            {
+                "reference_example_id": f"example-{index}",
+                "target_example_id": f"example-{index}:he",
+                "reference_prompt_sha256": _prompt_digest("en", index),
+                "target_prompt_sha256": _prompt_digest("he", index),
+            }
+            for index in expected_indices
+        ]
+    )
+    shared = report["shared_evaluation_identity"]
+
+    assert shared["slices"]["en"]["examples"] == 4
+    assert shared["slices"]["he"]["examples"] == 3
+    assert shared["paired_cohorts"]["he"] == {
+        "pairs": 3,
+        "pair_set_sha256": expected_pair_digest,
+        "reference_row_indices_sha256": expected_index_digest,
+    }
+    for arm_name, target_correct in (("base", 0), ("v1_en", 0), ("v3_en_he", 3)):
+        arm = report["arms"][arm_name]
+        paired = arm["paired_slices"]["he"]
+        assert arm["metrics"]["slices"]["en"]["full_call_exact_match"] == _metric(2, 4)
+        assert paired["pairs"] == 3
+        assert paired["coverage"] == {
+            "paired": 3,
+            "reference_slice_examples": 4,
+            "target_slice_examples": 3,
+            "reference_fraction": 0.75,
+        }
+        assert paired["reference"]["metrics"]["full_call_exact_match"] == _metric(1, 3)
+        assert paired["target"]["metrics"]["full_call_exact_match"] == _metric(target_correct, 3)
+        assert paired["gaps"]["full_call_exact_match"] == pytest.approx((target_correct - 1) / 3)
+        assert paired["gap_ci95"]["method"] == "sommelier.paired_bootstrap.v1"
+        assert paired["gap_ci95"]["resamples"] == 2000
+
+    evidence = output / EVALUATION_RELEASE_EVIDENCE_DIRNAME
+    manifest = json.loads((evidence / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["privacy"]["pairing"] == ("opaque_target_row_to_reference_row_index_map")
+    assert manifest["pairing"] == {
+        "he": {
+            "reference_language": "en",
+            "target_language": "he",
+            "pairs": 3,
+            "pair_set_sha256": expected_pair_digest,
+            "reference_row_indices": expected_indices,
+            "reference_row_indices_sha256": expected_index_digest,
+        }
+    }
+    validate_evaluation_release_evidence(
+        bundle_dir=output,
+        experiment_report=report,
+    )
+
+
+def test_evaluation_release_evidence_recomputes_checksum_rebound_pair_map(
+    tmp_path: Path,
+) -> None:
+    report, output = _finalize_permuted_three_arm_experiment(tmp_path)
+    evidence = output / EVALUATION_RELEASE_EVIDENCE_DIRNAME
+    manifest_path = evidence / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    tampered_indices = [0, 1, 3]
+    tampered_digest = _index_map_digest(tampered_indices)
+    manifest["pairing"]["he"].update(
+        {
+            "reference_row_indices": tampered_indices,
+            "reference_row_indices_sha256": tampered_digest,
+        }
+    )
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    report["shared_evaluation_identity"]["paired_cohorts"]["he"]["reference_row_indices_sha256"] = (
+        tampered_digest
+    )
+    _rebind_experiment_report(output, report)
+
+    with pytest.raises(
+        UserInputError,
+        match="matched English metrics.*not backed by released rows",
+    ):
+        validate_evaluation_release_evidence(
+            bundle_dir=output,
+            experiment_report=report,
+        )
+
+
+def test_evaluation_release_evidence_rejects_unbound_supplied_report_mapping(
+    tmp_path: Path,
+) -> None:
+    report, output = _finalize_permuted_three_arm_experiment(tmp_path)
+    supplied = json.loads(json.dumps(report))
+    supplied["arms"]["base"]["paired_slices"]["he"]["pairs"] = 2
+
+    with pytest.raises(UserInputError, match="differs from the bound file"):
+        validate_evaluation_release_evidence(
+            bundle_dir=output,
+            experiment_report=supplied,
+        )
+
+
+def test_evaluation_release_evidence_rejects_float_shared_pair_count(
+    tmp_path: Path,
+) -> None:
+    report, output = _finalize_permuted_three_arm_experiment(tmp_path)
+    report["shared_evaluation_identity"]["paired_cohorts"]["he"]["pairs"] = 3.0
+    _rebind_experiment_report(output, report)
+
+    with pytest.raises(UserInputError, match="row counts or index types drifted"):
+        validate_evaluation_release_evidence(
+            bundle_dir=output,
+            experiment_report=report,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    (
+        ("reference", "matched English metrics.*not backed by released rows"),
+        ("target", "matched Hebrew metrics.*not backed by released rows"),
+        ("gaps", "matched Hebrew gaps are not backed by released rows"),
+        ("intervals", "matched Hebrew intervals are not backed by released rows"),
+    ),
+)
+def test_evaluation_release_evidence_recomputes_paired_accuracy_payload(
+    tmp_path: Path,
+    mutation: str,
+    expected: str,
+) -> None:
+    report, output = _finalize_permuted_three_arm_experiment(tmp_path)
+    paired = report["arms"]["v3_en_he"]["paired_slices"]["he"]
+    if mutation == "reference":
+        paired["reference"]["metrics"]["full_call_exact_match"] = _metric(0, 3)
+    elif mutation == "target":
+        paired["target"]["metrics"]["full_call_exact_match"] = _metric(2, 3)
+    elif mutation == "gaps":
+        paired["gaps"]["full_call_exact_match"] = 0.0
+    else:
+        paired["gap_ci95"]["intervals"]["full_call_exact_match"]["lower"] = -1.0
+    _rebind_experiment_report(output, report)
+
+    with pytest.raises(UserInputError, match=expected):
+        validate_evaluation_release_evidence(
+            bundle_dir=output,
+            experiment_report=report,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    (
+        ("gap", "matched Hebrew gaps are not backed by released rows"),
+        ("interval", "matched Hebrew intervals are not backed by released rows"),
+    ),
+)
+def test_evaluation_release_evidence_rejects_false_substituted_for_zero_statistic(
+    tmp_path: Path,
+    mutation: str,
+    expected: str,
+) -> None:
+    report, output = _finalize_three_arm_experiment(tmp_path)
+    paired = report["arms"]["base"]["paired_slices"]["he"]
+    if mutation == "gap":
+        statistics = paired["gaps"]
+        key = "full_call_exact_match"
+    else:
+        statistics = paired["gap_ci95"]["intervals"]["full_call_exact_match"]
+        key = "lower"
+    assert statistics[key] == 0.0
+    assert statistics[key] is not False
+    statistics[key] = False
+    _rebind_experiment_report(output, report)
+
+    with pytest.raises(UserInputError, match=expected):
+        validate_evaluation_release_evidence(
+            bundle_dir=output,
+            experiment_report=report,
+        )
+
+
+def test_experiment_report_rejects_paired_gold_call_drift(tmp_path: Path) -> None:
+    mismatched_gold: dict[str, object] = {
+        "name": "different_lookup",
+        "arguments": {"value": "x"},
+    }
+    base_dir, v1_dir, v3_dir = _write_three_arm_runs(
+        tmp_path,
+        he_gold_by_index=(mismatched_gold, GOLD_CALL, GOLD_CALL, GOLD_CALL),
+    )
+
+    with pytest.raises(
+        EvaluationError, match="paired accuracy cohort changes the matched gold call"
+    ):
+        write_experiment_report(
+            base_dir,
+            v1_dir,
+            v3_dir,
+            tmp_path / "experiment",
+            english_non_inferiority_margin=0.01,
+            seed=42,
+            resamples=2000,
+        )
+
+
+def test_experiment_report_rejects_bool_for_integer_in_paired_gold_call(
+    tmp_path: Path,
+) -> None:
+    integer_gold: dict[str, object] = {
+        "name": "lookup",
+        "arguments": {"value": 1},
+    }
+    boolean_gold: dict[str, object] = {
+        "name": "lookup",
+        "arguments": {"value": True},
+    }
+    assert integer_gold == boolean_gold  # Python conflates bool and int equality.
+    base_dir, v1_dir, v3_dir = _write_three_arm_runs(
+        tmp_path,
+        en_gold_by_index=(integer_gold, GOLD_CALL, GOLD_CALL, GOLD_CALL),
+        he_gold_by_index=(boolean_gold, GOLD_CALL, GOLD_CALL, GOLD_CALL),
+    )
+
+    with pytest.raises(
+        EvaluationError, match="paired accuracy cohort changes the matched gold call"
+    ):
+        write_experiment_report(
+            base_dir,
+            v1_dir,
+            v3_dir,
+            tmp_path / "experiment",
+            english_non_inferiority_margin=0.01,
+            seed=42,
+            resamples=2000,
+        )
+
+
+def test_experiment_report_emits_privacy_minimized_verifiable_row_evidence(
+    tmp_path: Path,
+) -> None:
+    report, output = _finalize_three_arm_experiment(tmp_path)
+    evidence = output / EVALUATION_RELEASE_EVIDENCE_DIRNAME
+
+    validate_evaluation_release_evidence(
+        bundle_dir=output,
+        experiment_report=report,
+    )
+
+    manifest = json.loads((evidence / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["privacy"]["row_payload"] == "additive_metric_components_only"
+    for arm in ("base", "v1_en", "v3_en_he"):
+        for language in ("en", "he"):
+            path = evidence / arm / f"correctness.{language}.jsonl"
+            text = path.read_text(encoding="utf-8")
+            rows = [json.loads(line) for line in text.splitlines()]
+            assert [row["row_index"] for row in rows] == list(range(4))
+            assert all(set(row) == {"schema_version", "row_index", "metrics"} for row in rows)
+            assert "root-" not in text
+            assert "prompt_text" not in text
+            assert "raw_text" not in text
+            assert "gold_call" not in text
+
+
+def test_evaluation_release_evidence_rejects_float_row_index(tmp_path: Path) -> None:
+    report, output = _finalize_three_arm_experiment(tmp_path)
+    relative = "base/correctness.en.jsonl"
+    path = output / EVALUATION_RELEASE_EVIDENCE_DIRNAME / relative
+    lines = path.read_text(encoding="utf-8").splitlines()
+    first = json.loads(lines[0])
+    first["row_index"] = 0.0
+    lines[0] = json.dumps(first, separators=(",", ":"), sort_keys=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _rebind_released_file(output, relative)
+
+    with pytest.raises(UserInputError, match="row index or schema drifted"):
+        validate_evaluation_release_evidence(
+            bundle_dir=output,
+            experiment_report=report,
+        )
+
+
+def test_evaluation_release_evidence_rejects_float_manifest_slice_rows(
+    tmp_path: Path,
+) -> None:
+    report, output = _finalize_three_arm_experiment(tmp_path)
+    manifest_path = output / EVALUATION_RELEASE_EVIDENCE_DIRNAME / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["arms"]["base"]["slices"]["en"]["rows"] = 4.0
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(UserInputError, match="base en cohort binding drifted"):
+        validate_evaluation_release_evidence(
+            bundle_dir=output,
+            experiment_report=report,
+        )
+
+
+def test_evaluation_release_evidence_binds_released_telemetry_to_tco_source(
+    tmp_path: Path,
+) -> None:
+    report, output = _finalize_three_arm_experiment(tmp_path)
+    relative = "base/inference_telemetry.json"
+    path = output / EVALUATION_RELEASE_EVIDENCE_DIRNAME / relative
+    telemetry = json.loads(path.read_text(encoding="utf-8"))
+    telemetry["slices"]["en"]["elapsed_seconds"] = 999.0
+    path.write_text(json.dumps(telemetry, indent=2, sort_keys=True), encoding="utf-8")
+    _rebind_released_file(output, relative)
+
+    with pytest.raises(UserInputError, match="base inference_telemetry is stale or not TCO-bound"):
+        validate_evaluation_release_evidence(
+            bundle_dir=output,
+            experiment_report=report,
+        )
+
+
+def test_evaluation_release_evidence_binds_released_manifest_to_tco_source(
+    tmp_path: Path,
+) -> None:
+    report, output = _finalize_three_arm_experiment(tmp_path)
+    relative = "base/evaluation_manifest.json"
+    path = output / EVALUATION_RELEASE_EVIDENCE_DIRNAME / relative
+    manifest_copy = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(
+        json.dumps(manifest_copy, separators=(",", ":"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    _rebind_released_file(output, relative)
+
+    with pytest.raises(UserInputError, match="base evaluation_manifest is stale or not TCO-bound"):
+        validate_evaluation_release_evidence(
+            bundle_dir=output,
+            experiment_report=report,
+        )
+
+
+@pytest.mark.parametrize("mutation", ("measurement", "slice_timing", "total_timing"))
+def test_released_inference_telemetry_revalidates_measurement_and_timing_contract(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    report, output = _finalize_three_arm_experiment(tmp_path)
+    evidence = output / EVALUATION_RELEASE_EVIDENCE_DIRNAME
+    path = evidence / "base" / "inference_telemetry.json"
+    telemetry = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "measurement":
+        telemetry["measurement"]["clock"] = "process_time"
+        expected = "measurement contract drifted"
+    elif mutation == "slice_timing":
+        telemetry["slices"]["en"]["seconds_per_example"] = 999.0
+        expected = "en timing is inconsistent"
+    else:
+        telemetry["total"]["elapsed_seconds"] = 999.0
+        expected = "total timing is inconsistent"
+    path.write_text(json.dumps(telemetry, indent=2, sort_keys=True), encoding="utf-8")
+
+    manifest = json.loads((evidence / "manifest.json").read_text(encoding="utf-8"))
+    arm = manifest["arms"]["base"]
+    with pytest.raises(UserInputError, match=expected):
+        _validate_telemetry(
+            path,
+            arm="base",
+            run_id=arm["run_id"],
+            model_kind=arm["model_kind"],
+            shared=report["shared_evaluation_identity"],
+            source_artifacts=arm["source_artifacts"],
+        )
+
+
+def test_experiment_report_requires_a_fresh_evidence_destination(tmp_path: Path) -> None:
+    base_dir, v1_dir, v3_dir = _write_three_arm_runs(tmp_path)
+    output = tmp_path / "experiment"
+    write_experiment_report(
+        base_dir,
+        v1_dir,
+        v3_dir,
+        output,
+        english_non_inferiority_margin=0.01,
+        seed=42,
+        resamples=2000,
+    )
+    report_bytes = (output / "experiment_report.json").read_bytes()
+
+    with pytest.raises(EvaluationError, match="destination already exists"):
+        write_experiment_report(
+            base_dir,
+            v1_dir,
+            v3_dir,
+            output,
+            english_non_inferiority_margin=0.01,
+            seed=42,
+            resamples=2000,
+        )
+
+    assert (output / "experiment_report.json").read_bytes() == report_bytes
+
+
+@pytest.mark.parametrize("mutation", ("omission", "extra", "tampered_rows", "stale_report"))
+def test_evaluation_release_evidence_rejects_adversarial_bundle_mutations(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    report, output = _finalize_three_arm_experiment(tmp_path)
+    evidence = output / EVALUATION_RELEASE_EVIDENCE_DIRNAME
+    rows_relative = "v3_en_he/correctness.he.jsonl"
+    rows_path = evidence / rows_relative
+
+    if mutation == "omission":
+        rows_path.unlink()
+    elif mutation == "extra":
+        (evidence / "v3_en_he" / "notes.txt").write_text(
+            "not allowlisted\n",
+            encoding="utf-8",
+        )
+    elif mutation == "tampered_rows":
+        lines = rows_path.read_text(encoding="utf-8").splitlines()
+        first = json.loads(lines[0])
+        for component in first["metrics"].values():
+            component["numerator"] = 0
+        lines[0] = json.dumps(first, separators=(",", ":"), sort_keys=True)
+        rows_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        manifest_path = evidence / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"][rows_relative]["sha256"] = _sha256(rows_path.read_bytes())
+        manifest["files"][rows_relative]["bytes"] = rows_path.stat().st_size
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        report_path = output / "experiment_report.json"
+        report_path.write_text(
+            report_path.read_text(encoding="utf-8") + "\n",
+            encoding="utf-8",
+        )
+
+    with pytest.raises(UserInputError, match="evaluation release evidence"):
+        validate_evaluation_release_evidence(
+            bundle_dir=output,
+            experiment_report=report,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("arm_metric", "delta", "paired_bootstrap", "mcnemar"),
+)
+def test_evaluation_release_evidence_recomputes_every_reported_outcome_statistic(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    report, output = _finalize_three_arm_experiment(tmp_path)
+    if mutation == "arm_metric":
+        metric = report["arms"]["v3_en_he"]["metrics"]["slices"]["he"]["full_call_exact_match"]
+        metric.update({"value": 0.75, "numerator": 3})
+    elif mutation == "delta":
+        report["comparisons"]["v3_vs_v1"]["he"]["deltas"]["full_call_exact_match"] = 0.5
+    elif mutation == "paired_bootstrap":
+        report["comparisons"]["v3_vs_v1"]["he"]["ci95"]["intervals"]["full_call_exact_match"][
+            "lower"
+        ] = 0.5
+    else:
+        report["comparisons"]["v3_vs_v1"]["he"]["mcnemar"] = {
+            "method": "sommelier.exact_mcnemar.v1",
+            "metric": "full_call_exact_match",
+            "alternative": "two-sided",
+            "pairs": 4,
+            "discordant_pairs": 0,
+            "discordant_counts": {
+                "reference_correct_candidate_incorrect": 0,
+                "reference_incorrect_candidate_correct": 0,
+            },
+            "p_value": 1.0,
+        }
+    _rebind_experiment_report(output, report)
+
+    with pytest.raises(UserInputError, match="not backed by released rows"):
+        validate_evaluation_release_evidence(
+            bundle_dir=output,
+            experiment_report=report,
+        )
 
 
 def test_experiment_report_propagates_semantic_publication_rejection(

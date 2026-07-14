@@ -20,6 +20,10 @@ from sommelier.manifests import (
 )
 from sommelier.run_context import RunContext, read_jsonl_records
 from sommelier.tracking import track_stage_metrics
+from sommelier.training.authorization import (
+    FullPairedInputValidationCapability,
+    consume_full_paired_input_validation,
+)
 from sommelier.training.collators import CompletionOnlyCollator
 from sommelier.training.metrics import (
     METRICS_FILENAME,
@@ -344,6 +348,7 @@ def train_adapter(
     context: RunContext,
     command: list[str],
     trainer: AdapterTrainer | None = None,
+    full_paired_input_validation: FullPairedInputValidationCapability | None = None,
 ) -> StageManifest:
     """Trains the LoRA adapter on the formatted train split.
 
@@ -353,6 +358,12 @@ def train_adapter(
     split digests. Validation data is used for eval loss only; the test
     split is never read here (INV-DATA-003).
     """
+    consume_full_paired_input_validation(
+        config,
+        full_paired_input_validation,
+        context=context,
+        formatted_dir=formatted_dir,
+    )
     train_examples, train_counts = _select_training_languages(
         _read_split(formatted_dir, "train"),
         config.train.languages,

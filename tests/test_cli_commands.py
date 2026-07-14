@@ -1,11 +1,25 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pytest
+import yaml
 
+import sommelier.cli as cli_module
 from sommelier.cli import build_parser, main
+from sommelier.config import load_config
+from sommelier.reviewer import validated_reviewer_requirement
+from tests.hebrew_v3_translation_evidence import (
+    self_rehash_translation_contract_drift,
+    write_phase_a_translation_evidence,
+)
+
+REVIEWER_PUBLIC_KEY = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f"
+)
+REVIEWER_REQUIREMENT = validated_reviewer_requirement("fixture-reviewer", REVIEWER_PUBLIC_KEY)
 
 SPEC_COMMANDS: list[list[str]] = [
     ["config", "validate", "--config", "config.yaml"],
@@ -22,8 +36,30 @@ SPEC_COMMANDS: list[list[str]] = [
         "rows.he.jsonl",
         "--translation-summary",
         "translation_summary.json",
+        "--translation-run-identity",
+        "translation_run_identity.json",
         "--out",
         "translation_semantic_review_template.json",
+    ],
+    [
+        "data",
+        "semantic-review-attestation-create",
+        "--config",
+        "config.yaml",
+        "--root-input",
+        "rows.en.jsonl",
+        "--paired-input",
+        "rows.he.jsonl",
+        "--translation-summary",
+        "translation_summary.json",
+        "--translation-run-identity",
+        "translation_run_identity.json",
+        "--template",
+        "translation_semantic_review_template.json",
+        "--reviewed",
+        "reviewed.json",
+        "--out",
+        "translation_semantic_review_attestation.json",
     ],
     [
         "data",
@@ -36,14 +72,18 @@ SPEC_COMMANDS: list[list[str]] = [
         "rows.he.jsonl",
         "--translation-summary",
         "translation_summary.json",
+        "--translation-run-identity",
+        "translation_run_identity.json",
         "--template",
         "translation_semantic_review_template.json",
         "--reviewed",
         "reviewed.json",
+        "--attestation",
+        "translation_semantic_review_attestation.json",
+        "--attestation-signature",
+        "translation_semantic_review_attestation.json.sig",
         "--out",
         "translation_semantic_review.json",
-        "--reviewer-id",
-        "reviewer-1",
     ],
     [
         "format",
@@ -157,6 +197,374 @@ def test_spec_command_shapes_parse(argv: list[str]) -> None:
     assert callable(args.handler)
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        command
+        for command in SPEC_COMMANDS
+        if tuple(command[:2])
+        in {
+            ("data", "semantic-review-create"),
+            ("data", "semantic-review-attestation-create"),
+            ("data", "semantic-review-finalize"),
+        }
+    ],
+    ids=lambda argv: argv[1],
+)
+def test_semantic_review_commands_require_pre_provider_run_identity(
+    argv: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    without_identity = list(argv)
+    identity_index = without_identity.index("--translation-run-identity")
+    del without_identity[identity_index : identity_index + 2]
+
+    with pytest.raises(SystemExit) as captured:
+        build_parser().parse_args(without_identity)
+
+    assert captured.value.code == 2
+    assert "--translation-run-identity" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--reviewer-id", "post-hoc-reviewer"),
+        ("--reviewer-public-key-file", "post-hoc-reviewer.pub"),
+    ],
+)
+def test_semantic_review_create_has_no_post_hoc_reviewer_arguments(
+    capsys: pytest.CaptureFixture[str],
+    flag: str,
+    value: str,
+) -> None:
+    argv = next(
+        command for command in SPEC_COMMANDS if command[:2] == ["data", "semantic-review-create"]
+    )
+    with pytest.raises(SystemExit) as captured:
+        build_parser().parse_args([*argv, flag, value])
+    assert captured.value.code == 2
+    assert f"unrecognized arguments: {flag}" in capsys.readouterr().err
+
+
+def _write_phase_a_semantic_inputs(root: Path) -> tuple[Path, Path, Path]:
+    config_path = root / "config.yaml"
+    payload = yaml.safe_load(Path("examples/config.v3-he-full.yaml").read_text(encoding="utf-8"))
+    payload["semantic_review"] = {
+        "reviewer": {
+            "reviewer_id": REVIEWER_REQUIREMENT.reviewer_id,
+            "ssh_public_key": REVIEWER_REQUIREMENT.ssh_public_key,
+            "public_key_fingerprint": REVIEWER_REQUIREMENT.public_key_fingerprint,
+        }
+    }
+    config_bytes = yaml.safe_dump(payload, sort_keys=False).encode("utf-8")
+    config_path.write_bytes(config_bytes)
+    summary_path, run_identity_path = write_phase_a_translation_evidence(
+        root,
+        config_path=config_path,
+        run_id="fixture-hebrew-v3-full",
+        source_boundary="Synthetic CLI Phase-A producer identity.",
+    )
+    return config_path, summary_path, run_identity_path
+
+
+def test_semantic_review_create_rejects_config_digest_drift_before_model_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path, summary_path, run_identity_path = _write_phase_a_semantic_inputs(tmp_path)
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["selection"]["config_sha256"] = "0" * 64
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    def unexpected_model_load() -> object:
+        raise AssertionError("config drift must fail before loading the backtranslation model")
+
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.load_transformers_backtranslator",
+        unexpected_model_load,
+    )
+    exit_code = main(
+        [
+            "data",
+            "semantic-review-create",
+            "--config",
+            str(config_path),
+            "--root-input",
+            str(tmp_path / "rows.en.jsonl"),
+            "--paired-input",
+            str(tmp_path / "rows.he.jsonl"),
+            "--translation-summary",
+            str(summary_path),
+            "--translation-run-identity",
+            str(run_identity_path),
+            "--out",
+            str(tmp_path / "translation_semantic_review_template.json"),
+        ]
+    )
+
+    assert exit_code == 2
+    assert "does not bind the exact Phase-A config" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "message"),
+    [
+        ("translator", "request_sha256", "4" * 64, "forward translator request_sha256"),
+        ("runtime", "translation_chunk_size", 31, "runtime translation_chunk_size"),
+    ],
+)
+def test_semantic_review_create_rejects_self_rehashed_translation_contract_drift_before_model_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    section: str,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    config_path, summary_path, run_identity_path = _write_phase_a_semantic_inputs(tmp_path)
+    self_rehash_translation_contract_drift(
+        summary_path,
+        run_identity_path,
+        section=section,
+        field=field,
+        value=value,
+    )
+
+    def unexpected_model_load() -> object:
+        raise AssertionError("translation contract drift must fail before model loading")
+
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.load_transformers_backtranslator",
+        unexpected_model_load,
+    )
+    exit_code = main(
+        [
+            "data",
+            "semantic-review-create",
+            "--config",
+            str(config_path),
+            "--root-input",
+            str(tmp_path / "rows.en.jsonl"),
+            "--paired-input",
+            str(tmp_path / "rows.he.jsonl"),
+            "--translation-summary",
+            str(summary_path),
+            "--translation-run-identity",
+            str(run_identity_path),
+            "--out",
+            str(tmp_path / "translation_semantic_review_template.json"),
+        ]
+    )
+
+    assert exit_code == 2
+    assert message in capsys.readouterr().err
+
+
+def test_semantic_review_create_rejects_dangling_output_symlink_before_model_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path, summary_path, run_identity_path = _write_phase_a_semantic_inputs(tmp_path)
+    escaped_target = tmp_path / "escaped-template.json"
+    output_path = tmp_path / "translation_semantic_review_template.json"
+    output_path.symlink_to(escaped_target)
+
+    def unexpected_model_load() -> object:
+        raise AssertionError("an unsafe output path must fail before model loading")
+
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.load_transformers_backtranslator",
+        unexpected_model_load,
+    )
+    exit_code = main(
+        [
+            "data",
+            "semantic-review-create",
+            "--config",
+            str(config_path),
+            "--root-input",
+            str(tmp_path / "rows.en.jsonl"),
+            "--paired-input",
+            str(tmp_path / "rows.he.jsonl"),
+            "--translation-summary",
+            str(summary_path),
+            "--translation-run-identity",
+            str(run_identity_path),
+            "--out",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 2
+    assert "--out path must not traverse a symbolic link" in capsys.readouterr().err
+    assert output_path.is_symlink()
+    assert not escaped_target.exists()
+
+
+def test_semantic_review_create_rejects_symlink_input_before_phase_a_or_model_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path, summary_path, run_identity_path = _write_phase_a_semantic_inputs(tmp_path)
+    paired_target = tmp_path / "rows.he.real.jsonl"
+    paired_target.write_text("\n", encoding="utf-8")
+    paired_path = tmp_path / "rows.he.jsonl"
+    paired_path.unlink()
+    paired_path.symlink_to(paired_target)
+
+    def unexpected_phase_a(*_args: object) -> object:
+        raise AssertionError("an unsafe input path must fail before Phase-A evidence parsing")
+
+    def unexpected_model_load() -> object:
+        raise AssertionError("an unsafe input path must fail before model loading")
+
+    monkeypatch.setattr(cli_module, "_load_phase_a_semantic_review_context", unexpected_phase_a)
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.load_transformers_backtranslator",
+        unexpected_model_load,
+    )
+    exit_code = main(
+        [
+            "data",
+            "semantic-review-create",
+            "--config",
+            str(config_path),
+            "--root-input",
+            str(tmp_path / "rows.en.jsonl"),
+            "--paired-input",
+            str(paired_path),
+            "--translation-summary",
+            str(summary_path),
+            "--translation-run-identity",
+            str(run_identity_path),
+            "--out",
+            str(tmp_path / "translation_semantic_review_template.json"),
+        ]
+    )
+
+    assert exit_code == 2
+    assert "--paired-input path must not traverse a symbolic link" in capsys.readouterr().err
+
+
+def test_attestation_command_passes_configured_reviewer_requirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: dict[str, object] = {}
+    config = load_config(Path("examples/config.smoke.yaml"))
+
+    monkeypatch.setattr(
+        cli_module,
+        "_load_phase_a_semantic_review_context",
+        lambda _config, _summary, _identity: (config, {}, REVIEWER_REQUIREMENT),
+    )
+    monkeypatch.setattr("sommelier.data.load.load_raw_rows", lambda _path: [])
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.root_split_assignments",
+        lambda _config, _rows: {},
+    )
+
+    def fake_create(_input: Path, output: Path, **kwargs: object) -> Path:
+        received.update(kwargs)
+        return output
+
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.create_semantic_review_attestation",
+        fake_create,
+    )
+    exit_code = main(
+        [
+            "data",
+            "semantic-review-attestation-create",
+            "--config",
+            str(tmp_path / "config.yaml"),
+            "--root-input",
+            str(tmp_path / "rows.en.jsonl"),
+            "--paired-input",
+            str(tmp_path / "rows.he.jsonl"),
+            "--translation-summary",
+            str(tmp_path / "translation_summary.json"),
+            "--translation-run-identity",
+            str(tmp_path / "translation_run_identity.json"),
+            "--template",
+            str(tmp_path / "translation_semantic_review_template.json"),
+            "--reviewed",
+            str(tmp_path / "reviewed.json"),
+            "--out",
+            str(tmp_path / "translation_semantic_review_attestation.json"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert received["expected_reviewer_requirement"] == REVIEWER_REQUIREMENT
+
+
+def test_finalize_command_passes_configured_reviewer_requirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: dict[str, object] = {}
+    config = load_config(Path("examples/config.smoke.yaml"))
+
+    monkeypatch.setattr(
+        cli_module,
+        "_load_phase_a_semantic_review_context",
+        lambda _config, _summary, _identity: (config, {}, REVIEWER_REQUIREMENT),
+    )
+    monkeypatch.setattr("sommelier.data.load.load_raw_rows", lambda _path: [])
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.root_split_assignments",
+        lambda _config, _rows: {},
+    )
+
+    def fake_finalize(_input: Path, output: Path, **kwargs: object) -> Path:
+        received.update(kwargs)
+        return output
+
+    monkeypatch.setattr(
+        "sommelier.data.semantic_review.finalize_semantic_review",
+        fake_finalize,
+    )
+    monkeypatch.setattr(
+        "sommelier.data.translate.write_translation_publication_manifest",
+        lambda *_args, **_kwargs: tmp_path / "translation_publication.reviewed.json",
+    )
+    exit_code = main(
+        [
+            "data",
+            "semantic-review-finalize",
+            "--config",
+            str(tmp_path / "config.yaml"),
+            "--root-input",
+            str(tmp_path / "rows.en.jsonl"),
+            "--paired-input",
+            str(tmp_path / "rows.he.jsonl"),
+            "--translation-summary",
+            str(tmp_path / "translation_summary.json"),
+            "--translation-run-identity",
+            str(tmp_path / "translation_run_identity.json"),
+            "--template",
+            str(tmp_path / "translation_semantic_review_template.json"),
+            "--reviewed",
+            str(tmp_path / "reviewed.json"),
+            "--attestation",
+            str(tmp_path / "translation_semantic_review_attestation.json"),
+            "--attestation-signature",
+            str(tmp_path / "translation_semantic_review_attestation.json.sig"),
+            "--out",
+            str(tmp_path / "translation_semantic_review.json"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert received["expected_reviewer_requirement"] == REVIEWER_REQUIREMENT
+
+
 def test_top_level_help_lists_all_command_groups(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as excinfo:
         build_parser().parse_args(["--help"])
@@ -249,6 +657,37 @@ def test_eval_base_rejects_adapter_path(capsys: pytest.CaptureFixture[str]) -> N
     )
     assert exit_code == 2
     assert "--adapter is only valid" in capsys.readouterr().err
+
+
+def test_train_run_rejects_hebrew_v3_full_before_run_creation(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        Path("examples/config.v3-he-full.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "train",
+            "run",
+            "--config",
+            str(config_path),
+            "--data",
+            str(tmp_path / "formatted"),
+            "--out",
+            str(tmp_path / "adapter"),
+            "--run-id",
+            "blocked-direct-v3",
+        ]
+    )
+
+    assert exit_code == 2
+    error = capsys.readouterr().err
+    assert "pipeline run --mode full" in error
+    assert not (tmp_path / "artifacts" / "runs" / "blocked-direct-v3").exists()
 
 
 def test_config_validate_returns_zero() -> None:

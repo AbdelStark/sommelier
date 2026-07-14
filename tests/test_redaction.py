@@ -47,6 +47,36 @@ def test_scanner_flags_sensitive_key_in_json(tmp_path: Path) -> None:
     assert findings[0]["kind"] == "sensitive_key"
 
 
+def test_scanner_allows_closed_public_token_accounting_keys(tmp_path: Path) -> None:
+    manifest = tmp_path / "translation_summary.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "usage": {"input_tokens": 128, "output_tokens": 32},
+                "pricing": {
+                    "input_token_overhead_per_request": 4096,
+                    "long_context_threshold_input_tokens": 272_000,
+                    "standard_usd_per_million_tokens": {"input": "5"},
+                },
+                "request": {"max_output_tokens": 512},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert scan_artifact_file(manifest, base_dir=tmp_path) == []
+
+
+@pytest.mark.parametrize("key", ("api_token", "access_token", "token", "secret_token"))
+def test_scanner_still_rejects_credential_token_keys(tmp_path: Path, key: str) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({key: "opaque-value"}), encoding="utf-8")
+
+    findings = scan_artifact_file(manifest, base_dir=tmp_path)
+
+    assert [finding["kind"] for finding in findings] == ["sensitive_key"]
+
+
 def test_scanner_flags_token_shaped_json_key(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({FAKE_TOKEN: "metadata"}), encoding="utf-8")

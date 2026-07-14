@@ -22,30 +22,45 @@ import json
 import os
 import platform
 import re
+import shutil
+import stat
+import subprocess
+import tempfile
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Final, Literal, Protocol, cast
 
-from sommelier.artifacts import sha256_file
+from sommelier.artifacts import sha256_file, write_artifact_atomic
 from sommelier.config import SommelierConfig
 from sommelier.data.load import load_raw_rows
 from sommelier.data.split import all_examples, prepare_split_result
 from sommelier.data.translate import PUBLICATION_CANONICAL_FIELDS, protected_spans
 from sommelier.data.types import RawToolCallRow, SplitName, ToolCall
 from sommelier.data.validate import parse_gold_calls
-from sommelier.errors import ExternalDependencyError, UserInputError
+from sommelier.errors import ExternalDependencyError, SchemaValidationError, UserInputError
+from sommelier.redaction import DuplicateJsonKeyError, loads_unique_json
+from sommelier.reviewer import ReviewerRequirement, validated_reviewer_requirement
 
 SEMANTIC_REVIEW_SCHEMA: Final = "sommelier.translation_semantic_review.v1"
 SEMANTIC_REVIEW_TEMPLATE_SCHEMA: Final = "sommelier.translation_semantic_review_template.v1"
+SEMANTIC_REVIEW_ATTESTATION_SCHEMA: Final = "sommelier.translation_semantic_review_attestation.v1"
+SEMANTIC_REVIEWER_REQUIREMENT_SCHEMA: Final = "sommelier.human_reviewer_requirement.v1"
+SEMANTIC_BACKTRANSLATION_VERIFICATION_SCHEMA: Final = (
+    "sommelier.semantic_backtranslation_verification.v1"
+)
 SEMANTIC_SELECTION_SCHEMA: Final = "sommelier.semantic_review_selection.v1"
 BACKTRANSLATION_REQUEST_SCHEMA: Final = "sommelier.marian_backtranslation_request.v1"
 BACKTRANSLATION_BACKEND_SCHEMA: Final = "sommelier.transformers_marian_backtranslator.v1"
 SEMANTIC_REVIEW_FILENAME: Final = "translation_semantic_review.json"
 SEMANTIC_REVIEW_TEMPLATE_FILENAME: Final = "translation_semantic_review_template.json"
+SEMANTIC_REVIEW_ATTESTATION_FILENAME: Final = "translation_semantic_review_attestation.json"
+SEMANTIC_REVIEW_SIGNATURE_FILENAME: Final = "translation_semantic_review_attestation.json.sig"
+REVIEWED_PUBLICATION_MANIFEST_FILENAME: Final = "translation_publication.reviewed.json"
+SEMANTIC_REVIEW_SIGNATURE_NAMESPACE: Final = "sommelier-hebrew-v3-semantic-review"
 SEMANTIC_REVIEW_SAMPLE_SIZE: Final = 200
 HIGH_RISK_SAMPLE_QUOTA: Final = 40
 
@@ -88,11 +103,51 @@ RUBRIC_FIELDS: Final = (
 )
 REQUIRED_RUBRIC_FIELDS: Final = frozenset({"action_tool_intent", "omissions_additions"})
 RUBRIC_VALUES: Final = frozenset({"pass", "fail", "not_applicable"})
+REVIEW_FIELDS: Final = frozenset({"rubric", "critical_error", "passes_review", "notes"})
+TEMPLATE_REVIEWER_FIELDS: Final = frozenset({"status", "attestation", "signature"})
+FINAL_REVIEWER_FIELDS: Final = TEMPLATE_REVIEWER_FIELDS
+GATE_FIELDS: Final = frozenset(
+    {
+        "status",
+        "complete_decisions",
+        "critical_errors",
+        "review_decisions_sha256",
+        "failure_scope",
+        "row_cherry_picking_allowed",
+    }
+)
+_TEMPLATE_TOP_LEVEL_FIELDS: Final = frozenset(
+    {
+        "schema_version",
+        "created_at",
+        "language",
+        "translation_summary_sha256",
+        "root_rows_sha256",
+        "paired_rows",
+        "forward_translator",
+        "back_translator",
+        "selection",
+        "reviewer_requirement",
+        "reviewer",
+        "records",
+        "gate",
+        "producer",
+    }
+)
+_FINAL_TOP_LEVEL_FIELDS: Final = _TEMPLATE_TOP_LEVEL_FIELDS | {
+    "finalized_at",
+    "machine_template",
+}
 
 NON_NATIVE_REVIEWER_BOUNDARY: Final = (
     "A non-native Hebrew reviewer compares the English source, Hebrew translation, "
     "and independently generated English backtranslation. This gate can detect "
     "material semantic regressions but is not native-speaker linguistic validation."
+)
+HUMAN_REVIEWER_ATTESTATION: Final = (
+    "I attest that I am the named human reviewer and personally completed all "
+    "200 semantic-review decisions without delegating their judgment or "
+    "certification to an automated system."
 )
 
 # These verbs are preregistered because a literal translation can plausibly
@@ -213,6 +268,305 @@ def _sha256_json(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
 
 
+def _reviewer_requirement_payload(requirement: ReviewerRequirement) -> dict[str, object]:
+    return {
+        "schema_version": SEMANTIC_REVIEWER_REQUIREMENT_SCHEMA,
+        "reviewer_id": requirement.reviewer_id,
+        "ssh_public_key": requirement.ssh_public_key,
+        "public_key_fingerprint": requirement.public_key_fingerprint,
+        "signature_namespace": SEMANTIC_REVIEW_SIGNATURE_NAMESPACE,
+        "attestation_schema": SEMANTIC_REVIEW_ATTESTATION_SCHEMA,
+        "native_hebrew_reviewer": False,
+        "boundary": NON_NATIVE_REVIEWER_BOUNDARY,
+    }
+
+
+def _reviewer_requirement_from_payload(payload: object) -> ReviewerRequirement:
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema_version",
+        "reviewer_id",
+        "ssh_public_key",
+        "public_key_fingerprint",
+        "signature_namespace",
+        "attestation_schema",
+        "native_hebrew_reviewer",
+        "boundary",
+    }:
+        raise UserInputError("semantic review has an invalid reviewer requirement")
+    reviewer_id = payload.get("reviewer_id")
+    public_key = payload.get("ssh_public_key")
+    if not isinstance(reviewer_id, str) or not isinstance(public_key, str):
+        raise UserInputError("semantic review reviewer requirement has invalid identity fields")
+    requirement = validated_reviewer_requirement(reviewer_id, public_key)
+    if payload != _reviewer_requirement_payload(requirement):
+        raise UserInputError("semantic review reviewer requirement is not canonical")
+    return requirement
+
+
+def _canonical_utc_timestamp(value: object, *, context: str) -> datetime:
+    if not isinstance(value, str):
+        raise UserInputError(f"{context} must be a canonical UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise UserInputError(f"{context} must be a canonical UTC timestamp") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise UserInputError(f"{context} must include a UTC offset")
+    normalized = parsed.astimezone(UTC)
+    if value != normalized.isoformat():
+        raise UserInputError(f"{context} must use canonical UTC ISO-8601 form")
+    return normalized
+
+
+def _require_non_negative_json_integer(value: object, *, context: str) -> int:
+    """Reject JSON booleans where Python equality would accept ``0``/``1``."""
+    if type(value) is not int:
+        raise UserInputError(f"{context} must be a non-negative JSON integer")
+    if value < 0:
+        raise UserInputError(f"{context} must be a non-negative JSON integer")
+    return value
+
+
+def _attestation_bytes(payload: Mapping[str, object]) -> bytes:
+    return (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+
+
+def _expected_attestation_payload(
+    *,
+    requirement: ReviewerRequirement,
+    template_sha256: str,
+    template_payload: Mapping[str, object],
+    decisions_sha256: str,
+    complete_decisions: int,
+    critical_errors: int,
+    backtranslation_outputs_sha256: str,
+    completed_at: str,
+) -> dict[str, object]:
+    selection = template_payload.get("selection")
+    if not isinstance(selection, dict):
+        raise UserInputError("semantic-review template has no locked selection")
+    return {
+        "schema_version": SEMANTIC_REVIEW_ATTESTATION_SCHEMA,
+        "reviewer_id": requirement.reviewer_id,
+        "template_sha256": template_sha256,
+        "ordered_sample_ids_sha256": selection.get("ordered_sample_ids_sha256"),
+        "locked_sample_sha256": selection.get("locked_sample_sha256"),
+        "review_decisions_sha256": decisions_sha256,
+        "complete_decisions": complete_decisions,
+        "critical_errors": critical_errors,
+        "backtranslation_verification": {
+            "schema_version": SEMANTIC_BACKTRANSLATION_VERIFICATION_SCHEMA,
+            "model_id": BACK_TRANSLATOR_MODEL_ID,
+            "model_revision": BACK_TRANSLATOR_MODEL_REVISION,
+            "decoding": {
+                "do_sample": False,
+                "num_beams": 1,
+                "max_new_tokens": BACK_TRANSLATOR_MAX_NEW_TOKENS,
+            },
+            "records": SEMANTIC_REVIEW_SAMPLE_SIZE,
+            "outputs_sha256": backtranslation_outputs_sha256,
+            "verification_boundary": "exact_recomputation_before_human_signature",
+        },
+        "native_hebrew_reviewer": False,
+        "reviewer_boundary": NON_NATIVE_REVIEWER_BOUNDARY,
+        "human_attestation": HUMAN_REVIEWER_ATTESTATION,
+        "completed_at": completed_at,
+    }
+
+
+def _load_attestation(path: Path) -> dict[str, object]:
+    encoded = _read_existing_regular_file(path)
+    if encoded is None:
+        raise UserInputError(
+            "semantic-review human attestation is missing or invalid",
+            hint="Use semantic-review-attestation-create and do not hand-edit its JSON.",
+        )
+    try:
+        payload = loads_unique_json(encoded.decode("utf-8"))
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        DuplicateJsonKeyError,
+    ) as error:
+        raise UserInputError(
+            "semantic-review human attestation is missing or invalid",
+            hint="Use semantic-review-attestation-create and do not hand-edit its JSON.",
+        ) from error
+    if not isinstance(payload, dict):
+        raise UserInputError("semantic-review human attestation must be a JSON object")
+    canonical = _attestation_bytes(payload)
+    if encoded != canonical:
+        raise UserInputError(
+            "semantic-review human attestation is not canonically serialized",
+            hint="Regenerate it before the named reviewer signs it.",
+        )
+    return cast(dict[str, object], payload)
+
+
+def _validate_attestation_payload(
+    payload: Mapping[str, object],
+    *,
+    requirement: ReviewerRequirement,
+    template_sha256: str,
+    template_payload: Mapping[str, object],
+    decisions_sha256: str,
+    complete_decisions: int,
+    critical_errors: int,
+    backtranslation_outputs_sha256: str,
+) -> None:
+    expected_fields = {
+        "schema_version",
+        "reviewer_id",
+        "template_sha256",
+        "ordered_sample_ids_sha256",
+        "locked_sample_sha256",
+        "review_decisions_sha256",
+        "complete_decisions",
+        "critical_errors",
+        "backtranslation_verification",
+        "native_hebrew_reviewer",
+        "reviewer_boundary",
+        "human_attestation",
+        "completed_at",
+    }
+    if set(payload) != expected_fields:
+        raise UserInputError("semantic-review human attestation has unknown or missing fields")
+    _require_non_negative_json_integer(
+        payload.get("complete_decisions"),
+        context="semantic-review human attestation complete_decisions",
+    )
+    _require_non_negative_json_integer(
+        payload.get("critical_errors"),
+        context="semantic-review human attestation critical_errors",
+    )
+    verification = payload.get("backtranslation_verification")
+    if not isinstance(verification, dict):
+        raise UserInputError(
+            "semantic-review human attestation backtranslation verification is invalid"
+        )
+    _require_non_negative_json_integer(
+        verification.get("records"),
+        context="semantic-review human attestation backtranslation records",
+    )
+    decoding = verification.get("decoding")
+    if not isinstance(decoding, dict):
+        raise UserInputError(
+            "semantic-review human attestation backtranslation decoding is invalid"
+        )
+    for field in ("num_beams", "max_new_tokens"):
+        _require_non_negative_json_integer(
+            decoding.get(field),
+            context=f"semantic-review human attestation backtranslation {field}",
+        )
+    completed_at = payload.get("completed_at")
+    completed = _canonical_utc_timestamp(
+        completed_at,
+        context="semantic-review attestation completed_at",
+    )
+    template_created = _canonical_utc_timestamp(
+        template_payload.get("created_at"),
+        context="semantic-review template created_at",
+    )
+    if completed < template_created:
+        raise UserInputError("semantic-review attestation predates the locked template")
+    if completed > datetime.now(UTC):
+        raise UserInputError("semantic-review attestation completion time is in the future")
+    expected = _expected_attestation_payload(
+        requirement=requirement,
+        template_sha256=template_sha256,
+        template_payload=template_payload,
+        decisions_sha256=decisions_sha256,
+        complete_decisions=complete_decisions,
+        critical_errors=critical_errors,
+        backtranslation_outputs_sha256=backtranslation_outputs_sha256,
+        completed_at=cast(str, completed_at),
+    )
+    if payload != expected:
+        raise UserInputError(
+            "semantic-review human attestation does not bind the exact reviewer, "
+            "template, sample, and 200 decisions"
+        )
+
+
+def _canonical_signature_value(text: str) -> str:
+    if len(text.encode("ascii", errors="ignore")) > 16_384:
+        raise UserInputError("semantic-review detached signature is unexpectedly large")
+    if not text.isascii():
+        raise UserInputError("semantic-review detached signature must be ASCII armor")
+    canonical = text.strip() + "\n"
+    if not canonical.startswith("-----BEGIN SSH SIGNATURE-----\n") or not canonical.endswith(
+        "-----END SSH SIGNATURE-----\n"
+    ):
+        raise UserInputError("semantic-review detached signature is not OpenSSH SSHSIG armor")
+    if text != canonical:
+        raise UserInputError("semantic-review detached signature is not canonically serialized")
+    return canonical
+
+
+def _canonical_signature_text(path: Path) -> str:
+    encoded = _read_existing_regular_file(path)
+    if encoded is None:
+        raise UserInputError("semantic-review detached signature is unavailable")
+    try:
+        text = encoded.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise UserInputError("semantic-review detached signature is unavailable") from error
+    return _canonical_signature_value(text)
+
+
+def _verify_attestation_signature(
+    requirement: ReviewerRequirement,
+    attestation: Mapping[str, object],
+    signature_text: str,
+) -> None:
+    ssh_keygen = shutil.which("ssh-keygen")
+    if ssh_keygen is None:
+        raise ExternalDependencyError(
+            "OpenSSH ssh-keygen is required to verify the human review signature",
+            hint="Install openssh-client on the finalization and validation host.",
+        )
+    try:
+        with tempfile.TemporaryDirectory(prefix="sommelier-review-signature-") as temporary:
+            root = Path(temporary)
+            allowed_signers = root / "allowed_signers"
+            signature = root / "attestation.sig"
+            allowed_signers.write_text(
+                f"{requirement.reviewer_id} {requirement.ssh_public_key}\n",
+                encoding="ascii",
+            )
+            signature.write_text(signature_text, encoding="ascii")
+            result = subprocess.run(
+                [
+                    ssh_keygen,
+                    "-Y",
+                    "verify",
+                    "-f",
+                    str(allowed_signers),
+                    "-I",
+                    requirement.reviewer_id,
+                    "-n",
+                    SEMANTIC_REVIEW_SIGNATURE_NAMESPACE,
+                    "-s",
+                    str(signature),
+                ],
+                input=_attestation_bytes(attestation),
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ExternalDependencyError(
+            "OpenSSH could not verify the semantic-review human signature"
+        ) from error
+    if result.returncode != 0:
+        raise UserInputError(
+            "semantic-review human attestation signature is invalid",
+            hint="Have the preregistered reviewer sign the unchanged canonical attestation.",
+        )
+
+
 def _full_row_payload(row: RawToolCallRow) -> dict[str, object]:
     missing = [field for field in FULL_PAIRED_ROW_FIELDS if field not in row]
     if missing:
@@ -243,9 +597,15 @@ def _source_row_sha256(row: RawToolCallRow) -> str:
 
 
 def _load_translation_summary(path: Path) -> dict[str, object]:
+    encoded = _read_existing_regular_file(path)
+    if encoded is None:
+        raise UserInputError(
+            "semantic review requires a valid translation summary",
+            hint="Use translation_summary.json from the exact accepted paired rows.",
+        )
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError) as error:
+        payload = loads_unique_json(encoded.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, DuplicateJsonKeyError) as error:
         raise UserInputError(
             "semantic review requires a valid translation summary",
             hint="Use translation_summary.json from the exact accepted paired rows.",
@@ -758,6 +1118,53 @@ def _ordered_ids_sha256(sample_ids: Sequence[str]) -> str:
     return hashlib.sha256("\n".join(sample_ids).encode("utf-8")).hexdigest()
 
 
+def _write_reserved_template(
+    path: Path,
+    encoded: bytes,
+    reservation: tuple[int, int],
+) -> None:
+    """Fill only the exact empty inode durably reserved by the remote producer."""
+    expected_device, expected_inode = reservation
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_dev != expected_device
+        or metadata.st_ino != expected_inode
+        or metadata.st_size != 0
+    ):
+        raise UserInputError("semantic-review template reservation changed before publication")
+    flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            opened.st_dev != expected_device
+            or opened.st_ino != expected_inode
+            or opened.st_size != 0
+        ):
+            raise UserInputError("semantic-review template reservation changed while opening")
+        view = memoryview(encoded)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("short write while finalizing semantic-review template")
+            view = view[written:]
+        os.fsync(descriptor)
+        finalized = os.fstat(descriptor)
+        if (
+            finalized.st_dev != expected_device
+            or finalized.st_ino != expected_inode
+            or finalized.st_size != len(encoded)
+        ):
+            raise UserInputError("semantic-review template reservation changed while writing")
+    finally:
+        os.close(descriptor)
+
+
+def _template_retry_identity(payload: Mapping[str, object]) -> dict[str, object]:
+    return {key: value for key, value in payload.items() if key != "created_at"}
+
+
 def create_semantic_review_template(
     *,
     root_rows_path: Path,
@@ -768,9 +1175,17 @@ def create_semantic_review_template(
     backtranslator: BackTranslationModel,
     seed: int,
     producer_provenance: SemanticReviewProducerProvenance,
+    reviewer_requirement: ReviewerRequirement,
     back_translator_info: BackTranslatorInfo = BackTranslatorInfo(),
+    output_reservation: tuple[int, int] | None = None,
 ) -> Path:
     """Create and lock the 200-row review input before human judgments."""
+    canonical_reviewer = validated_reviewer_requirement(
+        reviewer_requirement.reviewer_id,
+        reviewer_requirement.ssh_public_key,
+    )
+    if canonical_reviewer != reviewer_requirement:
+        raise UserInputError("semantic-review reviewer requirement is not canonical")
     summary = _load_translation_summary(translation_summary_path)
     if summary.get("language") != "he":
         raise UserInputError("the Hebrew semantic gate requires a Hebrew translation summary")
@@ -898,11 +1313,8 @@ def create_semantic_review_template(
             "ordered_sample_ids_sha256": _ordered_ids_sha256(sample_ids),
             "locked_sample_sha256": locked_sample_sha256,
         },
-        "reviewer": {
-            "reviewer_id": "unassigned",
-            "native_hebrew_reviewer": False,
-            "boundary": NON_NATIVE_REVIEWER_BOUNDARY,
-        },
+        "reviewer_requirement": _reviewer_requirement_payload(canonical_reviewer),
+        "reviewer": {"status": "pending", "attestation": None, "signature": None},
         "records": records,
         "gate": {
             "status": "pending",
@@ -914,22 +1326,76 @@ def create_semantic_review_template(
         },
         "producer": _producer_payload(producer_provenance),
     }
+    encoded = _immutable_json_bytes(payload)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    if output_reservation is not None:
+        _write_reserved_template(output_path, encoded, output_reservation)
+        return output_path
+
+    def validate_candidate(path: Path) -> None:
+        observed = validate_semantic_review(
+            path,
+            root_rows_path=root_rows_path,
+            paired_rows_path=paired_rows_path,
+            translation_summary_path=translation_summary_path,
+            root_split_by_id=root_split_by_id,
+            expected_seed=seed,
+            expected_reviewer_requirement=canonical_reviewer,
+            require_passed=False,
+        )
+        if _template_retry_identity(observed) != _template_retry_identity(payload):
+            raise UserInputError("semantic-review template already exists with different evidence")
+
+    existing = _read_existing_regular_file(output_path)
+    if existing is not None:
+        validate_candidate(output_path)
+        return output_path
+
+    def writer(candidate: Path) -> None:
+        candidate.write_bytes(encoded)
+        validate_candidate(candidate)
+
+    try:
+        write_artifact_atomic(output_path, writer, replace_existing=False)
+    except SchemaValidationError:
+        if _read_existing_regular_file(output_path) is None:
+            raise
+        validate_candidate(output_path)
     return output_path
 
 
-def _load_review(path: Path) -> dict[str, object]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError) as error:
+def _load_review_snapshot(path: Path) -> tuple[dict[str, object], str]:
+    encoded = _read_existing_regular_file(path)
+    if encoded is None:
         raise UserInputError(
             "translation semantic review is missing or invalid",
-            hint=f"Publish a finalized {SEMANTIC_REVIEW_FILENAME}.",
+            hint=(
+                f"Publish a unique-key finalized {SEMANTIC_REVIEW_FILENAME}; duplicate "
+                "JSON keys are forbidden."
+            ),
+        )
+    try:
+        payload = loads_unique_json(encoded.decode("utf-8"))
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        DuplicateJsonKeyError,
+    ) as error:
+        raise UserInputError(
+            "translation semantic review is missing or invalid",
+            hint=(
+                f"Publish a unique-key finalized {SEMANTIC_REVIEW_FILENAME}; duplicate "
+                "JSON keys are forbidden."
+            ),
         ) from error
     if not isinstance(payload, dict):
         raise UserInputError("translation semantic review must be a JSON object")
-    return cast(dict[str, object], payload)
+    return cast(dict[str, object], payload), hashlib.sha256(encoded).hexdigest()
+
+
+def _load_review(path: Path) -> dict[str, object]:
+    payload, _sha256 = _load_review_snapshot(path)
+    return payload
 
 
 def _review_records(payload: Mapping[str, object]) -> list[dict[str, object]]:
@@ -950,15 +1416,6 @@ def _machine_locked_artifact_payload(payload: Mapping[str, object]) -> dict[str,
         "gate",
     }
     top_level = {key: value for key, value in payload.items() if key not in excluded}
-    reviewer = payload.get("reviewer")
-    reviewer_boundary = (
-        {
-            "native_hebrew_reviewer": reviewer.get("native_hebrew_reviewer"),
-            "boundary": reviewer.get("boundary"),
-        }
-        if isinstance(reviewer, dict)
-        else None
-    )
     records = [
         {
             **_locked_record_payload(record),
@@ -968,7 +1425,6 @@ def _machine_locked_artifact_payload(payload: Mapping[str, object]) -> dict[str,
     ]
     return {
         "top_level": top_level,
-        "reviewer_boundary": reviewer_boundary,
         "records": records,
     }
 
@@ -980,7 +1436,7 @@ def _validate_review_decisions(
     critical_errors = 0
     for index, record in enumerate(records, start=1):
         review = record.get("review")
-        if not isinstance(review, dict):
+        if not isinstance(review, dict) or set(review) != REVIEW_FIELDS:
             raise UserInputError(f"semantic review record {index} has no reviewer decision")
         rubric = review.get("rubric")
         if not isinstance(rubric, dict) or set(rubric) != set(RUBRIC_FIELDS):
@@ -1029,13 +1485,85 @@ def _validate_review_decisions(
     return len(decisions), critical_errors, _sha256_json(decisions)
 
 
+def _backtranslation_outputs_sha256(
+    payload: Mapping[str, object],
+) -> str:
+    records = _review_records(payload)
+    return _sha256_json(
+        [
+            {
+                "sample_id": record.get("sample_id"),
+                "english_backtranslation": record.get("english_backtranslation"),
+            }
+            for record in records
+        ]
+    )
+
+
+def _verify_backtranslation_outputs(
+    payload: Mapping[str, object],
+    *,
+    backtranslator: BackTranslationModel,
+    info: BackTranslatorInfo = BackTranslatorInfo(),
+) -> str:
+    """Recompute every locked backtranslation before a human may sign it."""
+    records = _review_records(payload)
+    if len(records) != SEMANTIC_REVIEW_SAMPLE_SIZE:
+        raise UserInputError(
+            f"semantic review must contain exactly {SEMANTIC_REVIEW_SAMPLE_SIZE} records"
+        )
+    queries: list[str] = []
+    expected: list[str] = []
+    for index, record in enumerate(records, start=1):
+        query = record.get("hebrew_query")
+        backtranslation = record.get("english_backtranslation")
+        sample_id = record.get("sample_id")
+        if (
+            not isinstance(query, str)
+            or not query
+            or not isinstance(backtranslation, str)
+            or not backtranslation
+            or not isinstance(sample_id, str)
+            or not sample_id
+        ):
+            raise UserInputError(
+                f"semantic review record {index} cannot be independently backtranslated"
+            )
+        queries.append(query)
+        expected.append(backtranslation)
+
+    recomputed: list[str] = []
+    for offset in range(0, len(queries), info.batch_size):
+        batch = queries[offset : offset + info.batch_size]
+        observed = backtranslator.translate_batch(batch)
+        if len(observed) != len(batch):
+            raise UserInputError(
+                "semantic backtranslation verifier returned the wrong number of outputs"
+            )
+        recomputed.extend(value.strip() for value in observed)
+    if recomputed != expected:
+        mismatch = next(
+            index
+            for index, (observed, locked) in enumerate(
+                zip(recomputed, expected, strict=True),
+                start=1,
+            )
+            if observed != locked
+        )
+        raise UserInputError(
+            f"semantic review record {mismatch} does not match an independent "
+            "recomputation with the pinned backtranslator",
+            hint=(
+                "Discard the edited template and recover the original one-shot producer "
+                "artifact before asking the human reviewer to sign."
+            ),
+        )
+    return _backtranslation_outputs_sha256(payload)
+
+
 def _validate_pristine_template(payload: Mapping[str, object]) -> None:
     reviewer = payload.get("reviewer")
-    if reviewer != {
-        "reviewer_id": "unassigned",
-        "native_hebrew_reviewer": False,
-        "boundary": NON_NATIVE_REVIEWER_BOUNDARY,
-    }:
+    if reviewer != {"status": "pending", "attestation": None, "signature": None}:
         raise UserInputError("machine semantic-review template has been assigned a reviewer")
     expected_review = {
         "rubric": {field: None for field in RUBRIC_FIELDS},
@@ -1067,6 +1595,7 @@ def validate_semantic_review(
     translation_summary_path: Path,
     root_split_by_id: Mapping[str, SplitName],
     expected_seed: int,
+    expected_reviewer_requirement: ReviewerRequirement | None = None,
     require_passed: bool = True,
     template_path: Path | None = None,
     require_pristine_template: bool = True,
@@ -1083,16 +1612,41 @@ def validate_semantic_review(
         or payload.get("language") != "he"
     ):
         raise UserInputError("translation semantic review has the wrong schema or language")
+    expected_top_level = (
+        _FINAL_TOP_LEVEL_FIELDS
+        if schema_version == SEMANTIC_REVIEW_SCHEMA
+        else _TEMPLATE_TOP_LEVEL_FIELDS
+    )
+    if set(payload) != expected_top_level:
+        raise UserInputError("translation semantic review has unknown or missing top-level fields")
+    _canonical_utc_timestamp(
+        payload.get("created_at"),
+        context="semantic-review created_at",
+    )
+    reviewer_requirement = _reviewer_requirement_from_payload(payload.get("reviewer_requirement"))
+    if (
+        expected_reviewer_requirement is not None
+        and reviewer_requirement != expected_reviewer_requirement
+    ):
+        raise UserInputError(
+            "semantic review signer does not match the preregistered named human reviewer",
+            hint=(
+                "Discard the substituted review artifacts. A reviewer change requires a fresh "
+                "Phase-A config commit and translation run."
+            ),
+        )
     if require_passed and schema_version != SEMANTIC_REVIEW_SCHEMA:
         raise UserInputError(
             "publication requires a finalized semantic review, not its machine template"
         )
+    template_payload: dict[str, object] | None = None
+    template_sha256: str | None = None
     if schema_version == SEMANTIC_REVIEW_SCHEMA:
         if template_path is None:
             raise UserInputError(
                 "final semantic review validation requires the immutable machine template"
             )
-        template_payload = _load_review(template_path)
+        template_payload, template_sha256 = _load_review_snapshot(template_path)
         if template_payload.get("schema_version") != SEMANTIC_REVIEW_TEMPLATE_SCHEMA:
             raise UserInputError("semantic review machine template has the wrong schema")
         _validate_pristine_template(template_payload)
@@ -1100,7 +1654,7 @@ def validate_semantic_review(
         if machine_template != {
             "filename": SEMANTIC_REVIEW_TEMPLATE_FILENAME,
             "schema_version": SEMANTIC_REVIEW_TEMPLATE_SCHEMA,
-            "sha256": sha256_file(template_path),
+            "sha256": template_sha256,
         }:
             raise UserInputError(
                 "final semantic review does not bind the immutable machine template"
@@ -1174,6 +1728,22 @@ def validate_semantic_review(
     selection = payload.get("selection")
     if not isinstance(selection, dict):
         raise UserInputError("semantic review is missing its preregistered selection")
+    if set(selection) != {
+        "schema_version",
+        "selected_before_judgments",
+        "sample_size",
+        "seed",
+        "algorithm",
+        "stratification_dimensions",
+        "high_risk_action_verbs",
+        "high_risk_quota",
+        "population_strata",
+        "sample_strata",
+        "ordered_sample_ids",
+        "ordered_sample_ids_sha256",
+        "locked_sample_sha256",
+    }:
+        raise UserInputError("semantic review selection has unknown or missing fields")
     if (
         selection.get("schema_version") != SEMANTIC_SELECTION_SCHEMA
         or selection.get("selected_before_judgments") is not True
@@ -1209,6 +1779,29 @@ def validate_semantic_review(
     if [record.get("sample_id") for record in records] != expected_ids:
         raise UserInputError("semantic review record order does not match its sample IDs")
     for index, record in enumerate(records, start=1):
+        if set(record) != {
+            "sample_id",
+            "source_example_id",
+            "paired_row_sha256",
+            "source_row_sha256",
+            "source_query",
+            "hebrew_query",
+            "backtranslation_request_sha256",
+            "english_backtranslation",
+            "english_backtranslation_sha256",
+            "strata",
+            "review",
+            "locked_review_input_sha256",
+        }:
+            raise UserInputError(f"semantic review record {index} has unknown or missing fields")
+        review = record.get("review")
+        if not isinstance(review, dict) or set(review) != REVIEW_FIELDS:
+            raise UserInputError(
+                f"semantic review record {index} has unknown or missing review fields"
+            )
+        rubric = review.get("rubric")
+        if not isinstance(rubric, dict) or set(rubric) != set(RUBRIC_FIELDS):
+            raise UserInputError(f"semantic review record {index} has incomplete rubric fields")
         candidate = by_id[expected_ids[index - 1]]
         expected_locked: dict[str, object] = {
             "sample_id": candidate.sample_id,
@@ -1246,31 +1839,47 @@ def validate_semantic_review(
         raise UserInputError("semantic review locked sample digest is invalid")
 
     reviewer = payload.get("reviewer")
-    if not isinstance(reviewer, dict):
-        raise UserInputError("semantic review has no reviewer boundary")
-    if (
-        reviewer.get("native_hebrew_reviewer") is not False
-        or reviewer.get("boundary") != NON_NATIVE_REVIEWER_BOUNDARY
-    ):
-        raise UserInputError(
-            "semantic review must preserve the explicit non-native-reviewer boundary"
-        )
+    if schema_version == SEMANTIC_REVIEW_TEMPLATE_SCHEMA and reviewer != {
+        "status": "pending",
+        "attestation": None,
+        "signature": None,
+    }:
+        raise UserInputError("machine semantic-review template has been assigned a reviewer")
+    if not isinstance(reviewer, dict) or set(reviewer) != FINAL_REVIEWER_FIELDS:
+        raise UserInputError("semantic review has an invalid reviewer boundary")
     gate = payload.get("gate")
-    if not isinstance(gate, dict):
+    if not isinstance(gate, dict) or set(gate) != GATE_FIELDS:
         raise UserInputError("semantic review has no publication gate")
+    _require_non_negative_json_integer(
+        gate.get("complete_decisions"),
+        context="semantic review gate complete_decisions",
+    )
+    if gate.get("critical_errors") is not None:
+        _require_non_negative_json_integer(
+            gate.get("critical_errors"),
+            context="semantic review gate critical_errors",
+        )
     if (
         gate.get("failure_scope") != "whole_publication"
         or gate.get("row_cherry_picking_allowed") is not False
     ):
         raise UserInputError("semantic review gate permits forbidden row cherry-picking")
-    if schema_version == SEMANTIC_REVIEW_TEMPLATE_SCHEMA and require_pristine_template:
-        _validate_pristine_template(payload)
-
-    if require_passed or gate.get("status") == "passed":
+    if schema_version == SEMANTIC_REVIEW_TEMPLATE_SCHEMA:
+        if gate != {
+            "status": "pending",
+            "complete_decisions": 0,
+            "critical_errors": None,
+            "review_decisions_sha256": None,
+            "failure_scope": "whole_publication",
+            "row_cherry_picking_allowed": False,
+        }:
+            raise UserInputError("machine semantic-review template gate is not pristine")
+        if require_pristine_template:
+            _validate_pristine_template(payload)
+    else:
+        if template_payload is None or template_path is None:
+            raise UserInputError("final semantic review has no immutable machine template")
         complete, critical_errors, decisions_sha256 = _validate_review_decisions(records)
-        reviewer_id = reviewer.get("reviewer_id")
-        if not isinstance(reviewer_id, str) or reviewer_id in {"", "unassigned"}:
-            raise UserInputError("final semantic review requires a reviewer id")
         if (
             gate.get("status") != "passed"
             or gate.get("complete_decisions") != SEMANTIC_REVIEW_SAMPLE_SIZE
@@ -1284,25 +1893,153 @@ def validate_semantic_review(
                 "with zero critical errors",
                 hint="Any sampled critical error fails the entire dataset publication.",
             )
+        if reviewer.get("status") != "verified":
+            raise UserInputError("final semantic review has no verified human reviewer")
+        attestation = reviewer.get("attestation")
+        signature = reviewer.get("signature")
+        if not isinstance(attestation, dict):
+            raise UserInputError("final semantic review has no signed human attestation")
+        _validate_attestation_payload(
+            attestation,
+            requirement=reviewer_requirement,
+            template_sha256=cast(str, template_sha256),
+            template_payload=template_payload,
+            decisions_sha256=decisions_sha256,
+            complete_decisions=complete,
+            critical_errors=critical_errors,
+            backtranslation_outputs_sha256=_backtranslation_outputs_sha256(template_payload),
+        )
+        if not isinstance(signature, dict) or set(signature) != {
+            "scheme",
+            "namespace",
+            "public_key_fingerprint",
+            "attestation_sha256",
+            "armored",
+        }:
+            raise UserInputError("final semantic review has an invalid signature record")
+        signature_text = signature.get("armored")
+        if not isinstance(signature_text, str):
+            raise UserInputError("final semantic review signature armor is missing")
+        canonical_signature = _canonical_signature_value(signature_text)
+        if signature != {
+            "scheme": "openssh-sshsig",
+            "namespace": SEMANTIC_REVIEW_SIGNATURE_NAMESPACE,
+            "public_key_fingerprint": reviewer_requirement.public_key_fingerprint,
+            "attestation_sha256": hashlib.sha256(_attestation_bytes(attestation)).hexdigest(),
+            "armored": canonical_signature,
+        }:
+            raise UserInputError("final semantic review signature record is not canonical")
+        _verify_attestation_signature(
+            reviewer_requirement,
+            attestation,
+            canonical_signature,
+        )
+        finalized_at = payload.get("finalized_at")
+        _canonical_utc_timestamp(finalized_at, context="semantic-review finalized_at")
+        if finalized_at != attestation.get("completed_at"):
+            raise UserInputError(
+                "semantic-review finalization time does not match the signed completion time"
+            )
     return payload
 
 
-def finalize_semantic_review(
-    input_path: Path,
-    output_path: Path,
+def _immutable_json_bytes(payload: Mapping[str, object]) -> bytes:
+    return (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+
+
+def _read_existing_regular_file(path: Path) -> bytes | None:
+    try:
+        path_metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(path_metadata.st_mode):
+        raise UserInputError(
+            f"semantic-review evidence output is occupied by an unsafe path: {path}",
+            hint="Never replace a symlink, directory, or special file with review evidence.",
+        )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise UserInputError(f"could not safely read existing review evidence: {path}") from error
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_dev != path_metadata.st_dev
+            or opened.st_ino != path_metadata.st_ino
+        ):
+            raise UserInputError(f"review evidence changed while it was opened: {path}")
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        current = path.lstat()
+        if (
+            after.st_dev != opened.st_dev
+            or after.st_ino != opened.st_ino
+            or after.st_size != opened.st_size
+            or after.st_mtime_ns != opened.st_mtime_ns
+            or after.st_ctime_ns != opened.st_ctime_ns
+            or current.st_dev != opened.st_dev
+            or current.st_ino != opened.st_ino
+            or current.st_size != opened.st_size
+            or current.st_mtime_ns != opened.st_mtime_ns
+            or current.st_ctime_ns != opened.st_ctime_ns
+        ):
+            raise UserInputError(f"review evidence changed while it was read: {path}")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _write_or_verify_immutable_json(
+    path: Path,
+    payload: Mapping[str, object],
+    *,
+    validator: Callable[[Path], None],
+) -> Path:
+    encoded = _immutable_json_bytes(payload)
+    existing = _read_existing_regular_file(path)
+    if existing is not None:
+        if existing != encoded:
+            raise UserInputError(
+                f"semantic-review evidence already exists with different bytes: {path}",
+                hint="Preserve the earlier evidence and use a fresh full translation run id.",
+            )
+        validator(path)
+        return path
+
+    def writer(candidate: Path) -> None:
+        candidate.write_bytes(encoded)
+        validator(candidate)
+
+    try:
+        write_artifact_atomic(path, writer, replace_existing=False)
+    except SchemaValidationError:
+        # Another cooperating finalizer may have published the same immutable
+        # bytes after our initial absence check. Accept only exact idempotence.
+        raced = _read_existing_regular_file(path)
+        if raced != encoded:
+            raise
+        validator(path)
+    return path
+
+
+def _validated_reviewed_decisions(
     *,
     template_path: Path,
-    reviewer_id: str,
+    input_path: Path,
     root_rows_path: Path,
     paired_rows_path: Path,
     translation_summary_path: Path,
     root_split_by_id: Mapping[str, SplitName],
     expected_seed: int,
-) -> Path:
-    """Finalize reviewer-entered decisions without changing the locked sample."""
-    _require_distinct_review_artifacts(template_path, input_path, output_path)
-    if not reviewer_id.strip() or reviewer_id == "unassigned":
-        raise UserInputError("semantic review finalization requires a stable reviewer id")
+    expected_reviewer_requirement: ReviewerRequirement | None,
+    backtranslator: BackTranslationModel | None,
+) -> tuple[dict[str, object], str, list[dict[str, object]], int, int, str, str]:
     template_payload = validate_semantic_review(
         template_path,
         root_rows_path=root_rows_path,
@@ -1310,8 +2047,12 @@ def finalize_semantic_review(
         translation_summary_path=translation_summary_path,
         root_split_by_id=root_split_by_id,
         expected_seed=expected_seed,
+        expected_reviewer_requirement=expected_reviewer_requirement,
         require_passed=False,
     )
+    template_snapshot, template_sha256 = _load_review_snapshot(template_path)
+    if template_snapshot != template_payload:
+        raise UserInputError("semantic-review machine template changed during validation")
     reviewed_payload = validate_semantic_review(
         input_path,
         root_rows_path=root_rows_path,
@@ -1319,6 +2060,7 @@ def finalize_semantic_review(
         translation_summary_path=translation_summary_path,
         root_split_by_id=root_split_by_id,
         expected_seed=expected_seed,
+        expected_reviewer_requirement=expected_reviewer_requirement,
         require_passed=False,
         require_pristine_template=False,
     )
@@ -1342,22 +2084,189 @@ def finalize_semantic_review(
             "the entire publication fails",
             hint="Fix and regenerate the translation dataset; never drop failed rows and resample.",
         )
+    verifier = backtranslator if backtranslator is not None else load_transformers_backtranslator()
+    backtranslation_outputs_sha256 = _verify_backtranslation_outputs(
+        template_payload,
+        backtranslator=verifier,
+    )
+    return (
+        template_payload,
+        template_sha256,
+        reviewed_records,
+        complete,
+        critical_errors,
+        decisions_sha256,
+        backtranslation_outputs_sha256,
+    )
+
+
+def create_semantic_review_attestation(
+    input_path: Path,
+    output_path: Path,
+    *,
+    template_path: Path,
+    root_rows_path: Path,
+    paired_rows_path: Path,
+    translation_summary_path: Path,
+    root_split_by_id: Mapping[str, SplitName],
+    expected_seed: int,
+    expected_reviewer_requirement: ReviewerRequirement | None = None,
+    backtranslator: BackTranslationModel | None = None,
+) -> Path:
+    """Create the exact decision payload that the preregistered human signs."""
+    _require_distinct_review_artifacts(template_path, input_path, output_path)
+    (
+        template_payload,
+        template_sha256,
+        _records,
+        complete,
+        critical_errors,
+        decisions_sha256,
+        backtranslation_outputs_sha256,
+    ) = _validated_reviewed_decisions(
+        template_path=template_path,
+        input_path=input_path,
+        root_rows_path=root_rows_path,
+        paired_rows_path=paired_rows_path,
+        translation_summary_path=translation_summary_path,
+        root_split_by_id=root_split_by_id,
+        expected_seed=expected_seed,
+        expected_reviewer_requirement=expected_reviewer_requirement,
+        backtranslator=backtranslator,
+    )
+    requirement = _reviewer_requirement_from_payload(template_payload.get("reviewer_requirement"))
+
+    # A retry must preserve the exact bytes the human may already have signed.
+    # Validate and reuse an existing canonical attestation instead of creating
+    # a fresh timestamp that would make a safe retry non-idempotent.
+    if _read_existing_regular_file(output_path) is not None:
+        observed = _load_attestation(output_path)
+        _validate_attestation_payload(
+            observed,
+            requirement=requirement,
+            template_sha256=template_sha256,
+            template_payload=template_payload,
+            decisions_sha256=decisions_sha256,
+            complete_decisions=complete,
+            critical_errors=critical_errors,
+            backtranslation_outputs_sha256=backtranslation_outputs_sha256,
+        )
+        return output_path
+
+    payload = _expected_attestation_payload(
+        requirement=requirement,
+        template_sha256=template_sha256,
+        template_payload=template_payload,
+        decisions_sha256=decisions_sha256,
+        complete_decisions=complete,
+        critical_errors=critical_errors,
+        backtranslation_outputs_sha256=backtranslation_outputs_sha256,
+        completed_at=datetime.now(UTC).isoformat(),
+    )
+
+    def validate_attestation(path: Path) -> None:
+        observed = _load_attestation(path)
+        _validate_attestation_payload(
+            observed,
+            requirement=requirement,
+            template_sha256=template_sha256,
+            template_payload=template_payload,
+            decisions_sha256=decisions_sha256,
+            complete_decisions=complete,
+            critical_errors=critical_errors,
+            backtranslation_outputs_sha256=backtranslation_outputs_sha256,
+        )
+
+    return _write_or_verify_immutable_json(
+        output_path,
+        payload,
+        validator=validate_attestation,
+    )
+
+
+def finalize_semantic_review(
+    input_path: Path,
+    output_path: Path,
+    *,
+    template_path: Path,
+    attestation_path: Path,
+    signature_path: Path,
+    root_rows_path: Path,
+    paired_rows_path: Path,
+    translation_summary_path: Path,
+    root_split_by_id: Mapping[str, SplitName],
+    expected_seed: int,
+    expected_reviewer_requirement: ReviewerRequirement | None = None,
+    backtranslator: BackTranslationModel | None = None,
+) -> Path:
+    """Finalize decisions only after the preregistered human signs them."""
+    _require_distinct_review_artifacts(
+        template_path,
+        input_path,
+        attestation_path,
+        signature_path,
+        output_path,
+    )
+    (
+        template_payload,
+        template_sha256,
+        reviewed_records,
+        complete,
+        critical_errors,
+        decisions_sha256,
+        backtranslation_outputs_sha256,
+    ) = _validated_reviewed_decisions(
+        template_path=template_path,
+        input_path=input_path,
+        root_rows_path=root_rows_path,
+        paired_rows_path=paired_rows_path,
+        translation_summary_path=translation_summary_path,
+        root_split_by_id=root_split_by_id,
+        expected_seed=expected_seed,
+        expected_reviewer_requirement=expected_reviewer_requirement,
+        backtranslator=backtranslator,
+    )
+    requirement = _reviewer_requirement_from_payload(template_payload.get("reviewer_requirement"))
+    attestation = _load_attestation(attestation_path)
+    _validate_attestation_payload(
+        attestation,
+        requirement=requirement,
+        template_sha256=template_sha256,
+        template_payload=template_payload,
+        decisions_sha256=decisions_sha256,
+        complete_decisions=complete,
+        critical_errors=critical_errors,
+        backtranslation_outputs_sha256=backtranslation_outputs_sha256,
+    )
+    signature_text = _canonical_signature_text(signature_path)
+    _verify_attestation_signature(requirement, attestation, signature_text)
+
     payload = cast(
         dict[str, object],
-        json.loads(json.dumps(template_payload, ensure_ascii=False)),
+        loads_unique_json(json.dumps(template_payload, ensure_ascii=False)),
     )
     payload["schema_version"] = SEMANTIC_REVIEW_SCHEMA
     payload["machine_template"] = {
         "filename": SEMANTIC_REVIEW_TEMPLATE_FILENAME,
         "schema_version": SEMANTIC_REVIEW_TEMPLATE_SCHEMA,
-        "sha256": sha256_file(template_path),
+        "sha256": template_sha256,
     }
     records = _review_records(payload)
     for record, reviewed_record in zip(records, reviewed_records, strict=True):
-        record["review"] = reviewed_record["review"]
-    reviewer = cast(dict[str, object], payload["reviewer"])
-    reviewer["reviewer_id"] = reviewer_id.strip()
-    payload["finalized_at"] = datetime.now(UTC).isoformat()
+        reviewed_decision = reviewed_record["review"]
+        record["review"] = loads_unique_json(json.dumps(reviewed_decision, ensure_ascii=False))
+    payload["reviewer"] = {
+        "status": "verified",
+        "attestation": attestation,
+        "signature": {
+            "scheme": "openssh-sshsig",
+            "namespace": SEMANTIC_REVIEW_SIGNATURE_NAMESPACE,
+            "public_key_fingerprint": requirement.public_key_fingerprint,
+            "attestation_sha256": hashlib.sha256(_attestation_bytes(attestation)).hexdigest(),
+            "armored": signature_text,
+        },
+    }
+    payload["finalized_at"] = attestation["completed_at"]
     payload["gate"] = {
         "status": "passed",
         "complete_decisions": complete,
@@ -1366,30 +2275,34 @@ def finalize_semantic_review(
         "failure_scope": "whole_publication",
         "row_cherry_picking_allowed": False,
     }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    validate_semantic_review(
+
+    def validate_final(path: Path) -> None:
+        validate_semantic_review(
+            path,
+            root_rows_path=root_rows_path,
+            paired_rows_path=paired_rows_path,
+            translation_summary_path=translation_summary_path,
+            root_split_by_id=root_split_by_id,
+            expected_seed=expected_seed,
+            expected_reviewer_requirement=expected_reviewer_requirement,
+            require_passed=True,
+            template_path=template_path,
+        )
+
+    return _write_or_verify_immutable_json(
         output_path,
-        root_rows_path=root_rows_path,
-        paired_rows_path=paired_rows_path,
-        translation_summary_path=translation_summary_path,
-        root_split_by_id=root_split_by_id,
-        expected_seed=expected_seed,
-        require_passed=True,
-        template_path=template_path,
+        payload,
+        validator=validate_final,
     )
-    return output_path
 
 
 def _require_distinct_review_artifacts(
-    template_path: Path,
-    reviewed_path: Path,
-    output_path: Path,
+    *paths: Path,
 ) -> None:
-    paths = (template_path, reviewed_path, output_path)
     if len({path.resolve() for path in paths}) != len(paths):
         raise UserInputError(
-            "semantic-review template, reviewed copy, and final output must be distinct files"
+            "semantic-review template, reviewed copy, attestation, signature, and outputs "
+            "must be distinct files"
         )
     for index, left in enumerate(paths):
         if not left.exists():

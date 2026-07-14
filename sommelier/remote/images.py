@@ -192,7 +192,12 @@ def data_image() -> modal.Image:
 
 def train_image() -> modal.Image:
     """Model loading, quantization, and adapter training stack."""
-    return _with_source(_python_base().pip_install(*TRAIN_PACKAGES).env(dict(PIPELINE_HF_ENV)))
+    return _with_source(
+        _python_base()
+        .apt_install("openssh-client")
+        .pip_install(*TRAIN_PACKAGES)
+        .env(dict(PIPELINE_HF_ENV))
+    )
 
 
 def eval_image() -> modal.Image:

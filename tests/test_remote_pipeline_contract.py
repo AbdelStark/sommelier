@@ -23,21 +23,37 @@ from remote_pipeline import (
 from sommelier.config import load_config
 from sommelier.errors import UserInputError
 from sommelier.remote.images import PIPELINE_RUNTIME_VERSIONS
+from sommelier.reviewer import canonical_reviewer_requirement
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
 PAIRED_REVISION = "d" * 40
 V1_ADAPTER_ID = "abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora"
 V1_ADAPTER_REVISION = "45a6e2fa3e29f8393ddf1e9bda51a9461b41ee0e"
+REVIEWER_PUBLIC_KEY = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f"
+)
+REVIEWER_REQUIREMENT = canonical_reviewer_requirement(
+    "fixture-reviewer",
+    REVIEWER_PUBLIC_KEY,
+)
 
 
 def _full_hebrew_config_yaml() -> str:
-    return (
+    config_yaml = (
         (EXAMPLES_DIR / "config.v3-he-full.yaml")
         .read_text(encoding="utf-8")
         .replace(
             "dataset_revision: main",
             f"dataset_revision: {PAIRED_REVISION}",
         )
+    )
+    return (
+        config_yaml
+        + "\nsemantic_review:\n"
+        + "  reviewer:\n"
+        + f"    reviewer_id: {REVIEWER_REQUIREMENT.reviewer_id}\n"
+        + f"    ssh_public_key: {REVIEWER_REQUIREMENT.ssh_public_key}\n"
+        + (f"    public_key_fingerprint: {REVIEWER_REQUIREMENT.public_key_fingerprint}\n")
     )
 
 

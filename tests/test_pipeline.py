@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from threading import Barrier
 
@@ -9,6 +10,7 @@ import pytest
 import yaml
 
 import sommelier.data.translate as translate_module
+import sommelier.pipeline as pipeline_module
 from sommelier.config import SommelierConfig, load_config
 from sommelier.errors import UserInputError
 from sommelier.pipeline import (
@@ -19,6 +21,10 @@ from sommelier.pipeline import (
     run_pipeline,
 )
 from sommelier.run_context import RunContext, ensure_run_context
+from sommelier.training.authorization import (
+    FullPairedInputValidationCapability,
+    consume_full_paired_input_validation,
+)
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
 FIXTURE_INPUT = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
@@ -398,6 +404,235 @@ def test_full_paired_trust_gate_runs_before_output_creation(
         )
     assert recorder.calls == []
     assert not (tmp_path / "artifacts" / "runs" / "rejected-before-output").exists()
+
+
+def test_hebrew_v3_full_pipeline_passes_validation_capability_to_training(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    calls = {"validation": 0, "training": 0}
+
+    def validate(
+        _config: SommelierConfig,
+        _root_rows_path: Path,
+    ) -> dict[str, dict[str, Path]]:
+        calls["validation"] += 1
+        return {}
+
+    def train(
+        config: SommelierConfig,
+        formatted_dir: Path,
+        _out_dir: Path,
+        *,
+        context: RunContext,
+        command: list[str],
+        full_paired_input_validation: FullPairedInputValidationCapability | None = None,
+    ) -> None:
+        assert context.run_id == "validated-v3-training"
+        assert command[:3] == ["sommelier", "pipeline", "run"]
+        consume_full_paired_input_validation(
+            config,
+            full_paired_input_validation,
+            context=context,
+            formatted_dir=formatted_dir,
+        )
+        with pytest.raises(UserInputError, match="no valid paired-input capability"):
+            consume_full_paired_input_validation(
+                config,
+                full_paired_input_validation,
+                context=context,
+                formatted_dir=formatted_dir,
+            )
+        calls["training"] += 1
+
+    def format_data(
+        paths: PipelinePaths,
+        _config: SommelierConfig,
+        _context: RunContext,
+        _command: list[str],
+    ) -> None:
+        paths.formatted_dir.mkdir(parents=True)
+        for split in ("train", "validation"):
+            (paths.formatted_dir / f"{split}.jsonl").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(translate_module, "validate_full_paired_input_contract", validate)
+    monkeypatch.setattr(pipeline_module, "train_adapter", train)
+    recorder = StageRecorder()
+    stages = recorder.stages()
+    stages.format = format_data
+    stages.train = PipelineStages().train
+
+    run_pipeline(
+        config_path,
+        mode="full",
+        input_path=input_file(tmp_path),
+        run_id="validated-v3-training",
+        project_root=tmp_path,
+        stages=stages,
+    )
+
+    assert calls == {"validation": 2, "training": 1}
+
+
+def test_hebrew_v3_full_pipeline_revalidates_materialized_sources_before_training(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    external_root = input_file(tmp_path)
+    initial_bytes = external_root.read_bytes()
+    validated_paths: list[Path] = []
+
+    def validate(
+        _config: SommelierConfig,
+        root_rows_path: Path,
+    ) -> dict[str, dict[str, Path]]:
+        validated_paths.append(root_rows_path)
+        if len(validated_paths) == 1:
+            assert root_rows_path == external_root
+            assert root_rows_path.read_bytes() == initial_bytes
+            return {}
+        assert root_rows_path.name == "rows.en.jsonl"
+        assert root_rows_path.parent.name == "source_inputs"
+        assert root_rows_path.read_bytes() != initial_bytes
+        raise UserInputError("materialized paired-input trust gate rejected mutation")
+
+    def mutate_then_stage(
+        paths: PipelinePaths,
+        _config: SommelierConfig,
+        _context: RunContext,
+        _command: list[str],
+    ) -> None:
+        paths.input_path.write_text('{"mutated":true}\n', encoding="utf-8")
+        staged_root = paths.data_dir / "source_inputs" / "rows.en.jsonl"
+        staged_root.parent.mkdir(parents=True)
+        staged_root.write_bytes(paths.input_path.read_bytes())
+
+    def format_data(
+        paths: PipelinePaths,
+        _config: SommelierConfig,
+        _context: RunContext,
+        _command: list[str],
+    ) -> None:
+        paths.formatted_dir.mkdir(parents=True)
+        for split in ("train", "validation"):
+            (paths.formatted_dir / f"{split}.jsonl").write_text("{}\n", encoding="utf-8")
+
+    def must_not_train(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("training started after the staged paired-input bundle changed")
+
+    monkeypatch.setattr(translate_module, "validate_full_paired_input_contract", validate)
+    monkeypatch.setattr(pipeline_module, "train_adapter", must_not_train)
+    recorder = StageRecorder()
+    stages = recorder.stages()
+    stages.prepare = mutate_then_stage
+    stages.format = format_data
+    stages.train = PipelineStages().train
+
+    with pytest.raises(UserInputError, match="trust gate rejected mutation"):
+        run_pipeline(
+            config_path,
+            mode="full",
+            input_path=external_root,
+            run_id="revalidate-staged-sources",
+            project_root=tmp_path,
+            stages=stages,
+        )
+
+    assert validated_paths == [
+        external_root,
+        tmp_path
+        / "artifacts"
+        / "runs"
+        / "revalidate-staged-sources"
+        / "data"
+        / "source_inputs"
+        / "rows.en.jsonl",
+    ]
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ["config", "run", "formatted-path", "formatted-content"],
+)
+def test_hebrew_v3_full_training_capability_rejects_changed_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attack: str,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        translate_module,
+        "validate_full_paired_input_contract",
+        lambda _config, _root_rows_path: {},
+    )
+
+    def format_data(
+        paths: PipelinePaths,
+        _config: SommelierConfig,
+        _context: RunContext,
+        _command: list[str],
+    ) -> None:
+        paths.formatted_dir.mkdir(parents=True)
+        for split in ("train", "validation"):
+            (paths.formatted_dir / f"{split}.jsonl").write_text("{}\n", encoding="utf-8")
+
+    def train(
+        config: SommelierConfig,
+        formatted_dir: Path,
+        _out_dir: Path,
+        *,
+        context: RunContext,
+        command: list[str],
+        full_paired_input_validation: FullPairedInputValidationCapability | None = None,
+    ) -> None:
+        attacked_context = context
+        attacked_formatted_dir = formatted_dir
+        if attack == "config":
+            config.train.epochs += 1
+        elif attack == "run":
+            attacked_context = replace(context, run_id="different-run")
+        elif attack == "formatted-path":
+            attacked_formatted_dir = formatted_dir.parent / "different-formatted"
+        else:
+            with (formatted_dir / "train.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write("{}\n")
+        consume_full_paired_input_validation(
+            config,
+            full_paired_input_validation,
+            context=attacked_context,
+            formatted_dir=attacked_formatted_dir,
+        )
+
+    monkeypatch.setattr(pipeline_module, "train_adapter", train)
+    recorder = StageRecorder()
+    stages = recorder.stages()
+    stages.format = format_data
+    stages.train = PipelineStages().train
+
+    with pytest.raises(UserInputError, match="no valid paired-input capability"):
+        run_pipeline(
+            config_path,
+            mode="full",
+            input_path=input_file(tmp_path),
+            run_id=f"changed-binding-{attack}",
+            project_root=tmp_path,
+            stages=stages,
+        )
 
 
 def test_smoke_pipeline_is_exempt_from_full_publication_trust_gate(
