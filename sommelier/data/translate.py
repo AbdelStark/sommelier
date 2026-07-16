@@ -894,7 +894,10 @@ def _parse_source_structure(
         for loader in (json.loads, ast.literal_eval):
             try:
                 parsed = cast(object, loader(candidate))
-            except (SyntaxError, ValueError, json.JSONDecodeError):
+            except (SyntaxError, ValueError, TypeError, json.JSONDecodeError):
+                # ast.literal_eval raises TypeError for a set literal whose
+                # elements are unhashable (for example ``{[1]}``); treat any
+                # such candidate as simply not a parseable structure.
                 continue
             if isinstance(parsed, list | dict):
                 return parsed, candidate_clock_values

@@ -32,12 +32,20 @@ SAFE_KEY_SUFFIXES = frozenset(
         "max_response_input_tokens",
         "max_source_tokens",
         "output_tokens",
+        # Public tokenizer/PEFT metadata fields. Their values are still scanned
+        # for token-shaped secrets; only the field names are non-credential
+        # schema keys.
+        "bos_token",
+        "eos_token",
+        "pad_token",
         "reasoning_output_tokens",
         "standard_usd_per_million_tokens",
         "token_budget",
         "tokenizer_adapter",
         "tokenizer_required",
         "total_tokens",
+        "trainable_token_indices",
+        "unk_token",
     }
 )
 

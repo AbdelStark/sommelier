@@ -13,11 +13,12 @@
 
 [![Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-LoRA%20adapter%20(en)-FFD21E?style=for-the-badge)](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora)
 [![Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-LoRA%20adapter%20(en%2Bfr)-FFD21E?style=for-the-badge)](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-fr-en-lora)
+[![Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-LoRA%20adapter%20(en%2Bhe)-FFD21E?style=for-the-badge)](https://huggingface.co/abdelstark/Llama-3.1-Nemotron-Nano-8B-xlam-tool-calling-he-en-hymt-lora)
 [![Dataset](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-dataset-FFD21E?style=for-the-badge)](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits)
 [![Space](https://img.shields.io/badge/%F0%9F%A4%97%20Space-interactive%20tour-FFD21E?style=for-the-badge)](https://huggingface.co/spaces/abdelstark/sommelier)
 [![Compute](https://img.shields.io/badge/compute-Modal-7C3AED?style=for-the-badge)](https://modal.com)
 
-**[Documentation](https://abdelstark.github.io/sommelier/)** · **[Interactive tour](https://huggingface.co/spaces/abdelstark/sommelier)** · **[Quickstart](https://abdelstark.github.io/sommelier/getting-started/quickstart/)** · **[The reference run](https://abdelstark.github.io/sommelier/results/reference-run/)** · **[The French run](https://abdelstark.github.io/sommelier/results/french-run/)**
+**[Documentation](https://abdelstark.github.io/sommelier/)** · **[Interactive tour](https://huggingface.co/spaces/abdelstark/sommelier)** · **[Quickstart](https://abdelstark.github.io/sommelier/getting-started/quickstart/)** · **[The reference run](https://abdelstark.github.io/sommelier/results/reference-run/)** · **[The French run](https://abdelstark.github.io/sommelier/results/french-run/)** · **[The Hebrew Hy-MT2 run](https://abdelstark.github.io/sommelier/results/hebrew-hymt/)**
 
 </div>
 
@@ -180,6 +181,29 @@ commands, claim gates, provider evidence, and placeholders that must be filled
 from checksummed artifacts: [Hebrew v3 methodology](docs/results/hebrew-v3.md).
 Pipeline TCO keeps observed billing separate from deterministic projections,
 and no full-fine-tuning saving is claimed without a matched full-parameter arm.
+
+## 🇮🇱 Hebrew local-MT result: Hy-MT2
+
+A separate, honestly scoped experiment used Tencent Hy-MT2 locally through
+Ollama to translate the selected xLAM queries into Hebrew. It accepted 16,272
+of 17,000 roots. In the exact training snapshot, tools and gold answers remained
+byte-identical; the public release sanitizes 15 credential-shaped synthetic
+tool literals and is not byte-identical. The shared prepare gate retained 14,286
+Hebrew training examples and 945 held-out pairs. This is a machine-translated
+survivor corpus with no human semantic review, so it is not the preregistered v3
+result above.
+
+QLoRA on one Modal L40S raised held-out full-call exact match on the Hebrew
+slice from 410/945 (43.39%) to 786/945 (83.17%), a +39.79-point paired gain
+(95% CI +36.61 to +42.96). On the 1,000 English prompts, exact match rose from
+70.50% to 88.40%. The adapter's exact matched Hebrew-minus-English gap was
+-5.19 points, compared with -27.62 points for the base model.
+
+| Artifact | Where |
+|----------|-------|
+| 🤗 English+Hebrew adapter + benchmark evidence | [`abdelstark/Llama-3.1-Nemotron-Nano-8B-xlam-tool-calling-he-en-hymt-lora`](https://huggingface.co/abdelstark/Llama-3.1-Nemotron-Nano-8B-xlam-tool-calling-he-en-hymt-lora) |
+| 🤗 Hy-MT2 Hebrew paired rows + sanitization accounting | [`abdelstark/sommelier-xlam-single-call-splits-he-hymt-sanitized`](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits-he-hymt-sanitized) |
+| Full setup, tokenization tax, runtime, metrics, and limitations | [Hebrew Hy-MT2 run](docs/results/hebrew-hymt.md) |
 
 ## 🏗️ Pipeline architecture
 

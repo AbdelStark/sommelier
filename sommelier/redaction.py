@@ -96,7 +96,8 @@ def scan_text_for_secrets(text: str, *, file: str) -> list[RedactionFinding]:
 
 def scan_json_payload(payload: Any, *, file: str) -> list[RedactionFinding]:
     findings: list[RedactionFinding] = []
-    for violation in scan_mapping_for_secrets(payload):
+    key_scan_payload = _payload_for_sensitive_key_scan(payload, file=file)
+    for violation in scan_mapping_for_secrets(key_scan_payload):
         if not violation.startswith("sensitive key"):
             # Anchored secret-value matches are a subset of the substring
             # scan below; only key findings are unique to this pass.
@@ -104,6 +105,29 @@ def scan_json_payload(payload: Any, *, file: str) -> list[RedactionFinding]:
         findings.append(_finding(file, violation, "sensitive_key", violation))
     findings.extend(_scan_json_strings(payload, file=file, path=""))
     return findings
+
+
+def _payload_for_sensitive_key_scan(payload: Any, *, file: str) -> Any:
+    """Treat a tokenizer vocabulary as data keys, while still scanning its text.
+
+    Hugging Face ``tokenizer.json`` stores vocabulary tokens as the keys of
+    ``model.vocab``. Ordinary words such as ``password`` and ``token`` are data,
+    not credential field names. Remove only that recognized string-to-integer
+    mapping from the structural key-name pass. ``_scan_json_strings`` still
+    scans every vocabulary token for token-shaped secret values, environment
+    values, and home paths.
+    """
+    if Path(file).name != "tokenizer.json" or not isinstance(payload, dict):
+        return payload
+    model = payload.get("model")
+    if not isinstance(model, dict):
+        return payload
+    vocab = model.get("vocab")
+    if not isinstance(vocab, dict) or not all(
+        isinstance(token, str) and isinstance(index, int) for token, index in vocab.items()
+    ):
+        return payload
+    return {**payload, "model": {**model, "vocab": {}}}
 
 
 def _scan_json_strings(payload: Any, *, file: str, path: str) -> list[RedactionFinding]:

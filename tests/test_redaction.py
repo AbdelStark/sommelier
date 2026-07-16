@@ -11,6 +11,7 @@ from sommelier.redaction import (
     redact_configured_fields,
     scan_artifact_file,
     scan_artifact_tree,
+    scan_json_payload,
 )
 
 FAKE_TOKEN = "hf_" + "a" * 30
@@ -206,3 +207,31 @@ def test_redact_configured_fields_replaces_values() -> None:
 def test_redact_configured_fields_noop_without_names() -> None:
     payload = {"a": 1}
     assert redact_configured_fields(payload, []) == {"a": 1}
+
+
+def test_scanner_treats_tokenizer_vocabulary_keys_as_data() -> None:
+    payload = {
+        "model": {"type": "BPE", "unk_token": "<unk>", "vocab": {"password": 1}},
+        "bos_token": "<s>",
+        "eos_token": "</s>",
+        "pad_token": "<pad>",
+        "trainable_token_indices": None,
+    }
+
+    assert scan_json_payload(payload, file="tokenizer.json") == []
+
+
+def test_scanner_still_checks_tokenizer_vocabulary_text_for_secrets() -> None:
+    payload = {"model": {"type": "BPE", "vocab": {"hf_abcdefghijklmnopqrstuvwxyz": 1}}}
+
+    findings = scan_json_payload(payload, file="tokenizer.json")
+
+    assert [finding["kind"] for finding in findings] == ["secret_value"]
+
+
+def test_scanner_requires_integer_tokenizer_vocabulary_indices() -> None:
+    payload = {"model": {"type": "BPE", "vocab": {"password": "not-an-index"}}}
+
+    findings = scan_json_payload(payload, file="tokenizer.json")
+
+    assert [finding["kind"] for finding in findings] == ["sensitive_key"]

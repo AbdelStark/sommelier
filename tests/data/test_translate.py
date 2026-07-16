@@ -301,6 +301,18 @@ def test_protected_spans_include_gold_equivalent_list_and_dict_literals() -> Non
     assert "schedule_windows" in spans
 
 
+def test_protected_spans_tolerate_unhashable_set_literal_in_query() -> None:
+    # ``ast.literal_eval`` raises TypeError (not ValueError) for a set literal
+    # whose elements are unhashable lists; protected span extraction must treat
+    # it as an unparseable structure rather than crash.
+    query = "Group the buckets {[1, 2], [3, 4]} for order ORD123"
+    gold_calls = [{"name": "get_order", "arguments": {"is_id": "ORD123"}}]
+
+    spans = protected_spans(query, gold_calls)
+
+    assert "ORD123" in spans
+
+
 @pytest.mark.parametrize(
     "sentinel",
     [

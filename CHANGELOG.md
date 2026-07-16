@@ -133,6 +133,39 @@ three-arm claim gates. Paid OpenAI launches must now pass an explicit positive
 `--openai-list-price-limit-usd`; install the `publish` extra only on a host that
 will execute a Hub publication.
 
+### Added (Hebrew local-MT slice)
+
+- `local_hy_translate.py`: a local Hebrew translation driver that reproduces the
+  full-run root-cohort selection and translates each query with
+  `tencent/Hy-MT2-1.8B` (Q8_0 GGUF) served by ollama, masking protected spans
+  with a short-sentinel retry ladder and reusing the shared protected-span and
+  translation-audit primitives. It emits `sommelier.raw_tool_call_row.v1` rows
+  and a `sommelier.local_hy_translation_summary.v1` accounting file.
+- `remote_hy_pipeline.py`: a Modal pipeline for the local-MT Hebrew slice that
+  reuses the standard data/format/tokenization/eval/train/compare stages without
+  the preregistered-evidence admission gate, scoped through a distinct project
+  name and Hebrew dataset repository so `is_hebrew_v3_config` stays false.
+- `examples/config.he-hymt-full.yaml` and `examples/config.he-hymt-smoke.yaml`:
+  configs for the local-MT slice pinned to the published Hebrew dataset revision.
+- Docs: a Hebrew local-MT results page and honest dataset and adapter cards that
+  state the machine-translation method and the absence of human semantic review.
+  This slice is deliberately separate from the preregistered Hebrew v3 evidence
+  and makes no claim to be it.
+- Publication scanning now recognizes standard tokenizer/PEFT metadata keys and
+  tokenizer vocabulary maps as public model data while continuing to scan every
+  vocabulary string for credential-shaped values. Raw evaluation rows remain
+  fail-closed and are omitted from the public Hy-MT2 bundle when they contain
+  credential-shaped synthetic benchmark content.
+- The exact Hy-MT2 training dataset snapshot is privately quarantined after the
+  release scan found 15 upstream APIGen strings shaped like GitHub personal
+  access tokens. The public dataset keeps all 16,272 rows, replaces only those
+  15 `tools` substrings with `[redacted]`, and publishes a closed input/output
+  sanitization manifest; it is explicitly not byte-identical to training data.
+- Published the curated adapter/evidence bundle as immutable Hub tag
+  `he-hymt-full-002` (`f09e5d31ab29dca49e7c2df7113e810cf3dfb43a`) and the
+  release-sanitized dataset as `he-hymt-sanitized-v1`
+  (`f7159c08823e2f986375927f998263f969738f43`).
+
 ### Security
 
 - Hebrew v3 adapter publication now closed-validates the final experiment
@@ -246,6 +279,11 @@ will execute a Hub publication.
 - `sommelier.remote.images` now pins the evidence pipeline image and runtime
   gate to the same exact Python 3.13.3 patch, preventing a rebuilt image from
   drifting along the floating Python 3.13 line before paid work begins.
+
+- Protected-span extraction (`sommelier.data.translate`) no longer crashes when a
+  query contains a set literal with unhashable list elements (for example
+  `{[1, 2]}`): `_parse_source_structure` now also catches the `TypeError` that
+  `ast.literal_eval` raises for such a candidate and treats it as unparseable.
 
 - Public v1/v2 prose, paper, and video sources now distinguish published
   aggregate reports from non-published raw generations, maintainer-observed
