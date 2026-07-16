@@ -15,7 +15,13 @@ from sommelier.security import (
     scan_mapping_for_secrets,
 )
 
-FindingKind = Literal["sensitive_key", "secret_value", "sensitive_env_value", "home_path"]
+FindingKind = Literal[
+    "sensitive_key",
+    "secret_value",
+    "sensitive_env_value",
+    "home_path",
+    "duplicate_key",
+]
 
 SCANNABLE_SUFFIXES = frozenset({".json", ".jsonl", ".md", ".txt", ".yaml", ".yml"})
 
@@ -25,6 +31,25 @@ class RedactionFinding(TypedDict):
     location: str
     kind: FindingKind
     detail: str
+
+
+class DuplicateJsonKeyError(ValueError):
+    """Raised when a JSON object would otherwise silently shadow an earlier key."""
+
+
+def reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            # Never include the key: a token-shaped key is itself sensitive.
+            raise DuplicateJsonKeyError("duplicate JSON object key")
+        payload[key] = value
+    return payload
+
+
+def loads_unique_json(text: str) -> Any:
+    """Decode JSON while rejecting duplicate keys at every object depth."""
+    return json.loads(text, object_pairs_hook=reject_duplicate_json_keys)
 
 
 def _sensitive_env_values() -> list[tuple[str, str]]:
@@ -71,7 +96,8 @@ def scan_text_for_secrets(text: str, *, file: str) -> list[RedactionFinding]:
 
 def scan_json_payload(payload: Any, *, file: str) -> list[RedactionFinding]:
     findings: list[RedactionFinding] = []
-    for violation in scan_mapping_for_secrets(payload):
+    key_scan_payload = _payload_for_sensitive_key_scan(payload, file=file)
+    for violation in scan_mapping_for_secrets(key_scan_payload):
         if not violation.startswith("sensitive key"):
             # Anchored secret-value matches are a subset of the substring
             # scan below; only key findings are unique to this pass.
@@ -81,11 +107,35 @@ def scan_json_payload(payload: Any, *, file: str) -> list[RedactionFinding]:
     return findings
 
 
+def _payload_for_sensitive_key_scan(payload: Any, *, file: str) -> Any:
+    """Treat a tokenizer vocabulary as data keys, while still scanning its text.
+
+    Hugging Face ``tokenizer.json`` stores vocabulary tokens as the keys of
+    ``model.vocab``. Ordinary words such as ``password`` and ``token`` are data,
+    not credential field names. Remove only that recognized string-to-integer
+    mapping from the structural key-name pass. ``_scan_json_strings`` still
+    scans every vocabulary token for token-shaped secret values, environment
+    values, and home paths.
+    """
+    if Path(file).name != "tokenizer.json" or not isinstance(payload, dict):
+        return payload
+    model = payload.get("model")
+    if not isinstance(model, dict):
+        return payload
+    vocab = model.get("vocab")
+    if not isinstance(vocab, dict) or not all(
+        isinstance(token, str) and isinstance(index, int) for token, index in vocab.items()
+    ):
+        return payload
+    return {**payload, "model": {**model, "vocab": {}}}
+
+
 def _scan_json_strings(payload: Any, *, file: str, path: str) -> list[RedactionFinding]:
     findings: list[RedactionFinding] = []
     if isinstance(payload, dict):
         for key, value in payload.items():
             child = f"{path}.{key}" if path else str(key)
+            findings.extend(_scan_json_strings(str(key), file=file, path=f"{child}::<key>"))
             findings.extend(_scan_json_strings(value, file=file, path=child))
         return findings
     if isinstance(payload, list):
@@ -116,17 +166,30 @@ def _scan_json_strings(payload: Any, *, file: str, path: str) -> list[RedactionF
     return findings
 
 
-def scan_artifact_file(path: Path, *, base_dir: Path | None = None) -> list[RedactionFinding]:
-    file = path.relative_to(base_dir).as_posix() if base_dir is not None else path.as_posix()
-    text = path.read_text(encoding="utf-8")
-    suffix = path.suffix.lower()
+def _scan_json_document(text: str, *, file: str) -> list[RedactionFinding]:
+    try:
+        payload = loads_unique_json(text)
+    except DuplicateJsonKeyError:
+        # Duplicate keys are invalid for publication. Also scan the raw bytes so
+        # an earlier value shadowed by the final key cannot hide a credential.
+        return [
+            _finding(
+                file,
+                "<json-object>",
+                "duplicate_key",
+                "duplicate JSON object key",
+            ),
+            *scan_text_for_secrets(text, file=file),
+        ]
+    except json.JSONDecodeError:
+        return scan_text_for_secrets(text, file=file)
+    return scan_json_payload(payload, file=file)
 
+
+def scan_artifact_text(text: str, *, file: str, suffix: str) -> list[RedactionFinding]:
+    """Scan one decoded artifact without allowing duplicate JSON keys to shadow data."""
     if suffix == ".json":
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            return scan_text_for_secrets(text, file=file)
-        return scan_json_payload(payload, file=file)
+        return _scan_json_document(text, file=file)
 
     if suffix == ".jsonl":
         findings: list[RedactionFinding] = []
@@ -134,17 +197,16 @@ def scan_artifact_file(path: Path, *, base_dir: Path | None = None) -> list[Reda
             stripped = line.strip()
             if not stripped:
                 continue
-            try:
-                payload = json.loads(stripped)
-            except json.JSONDecodeError:
-                findings.extend(
-                    scan_text_for_secrets(stripped, file=f"{file}:{line_number}")
-                )
-                continue
-            findings.extend(scan_json_payload(payload, file=f"{file}:{line_number}"))
+            findings.extend(_scan_json_document(stripped, file=f"{file}:{line_number}"))
         return findings
 
     return scan_text_for_secrets(text, file=file)
+
+
+def scan_artifact_file(path: Path, *, base_dir: Path | None = None) -> list[RedactionFinding]:
+    file = path.relative_to(base_dir).as_posix() if base_dir is not None else path.as_posix()
+    text = path.read_text(encoding="utf-8")
+    return scan_artifact_text(text, file=file, suffix=path.suffix.lower())
 
 
 def scan_artifact_tree(root: Path) -> list[RedactionFinding]:

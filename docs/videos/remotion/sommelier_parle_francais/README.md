@@ -87,9 +87,9 @@ avec la ligne v2 mise en avant.
 > Et face à l’anglais ?
 >
 > Modèle de base : -4,2 pts · Adaptateur v1 · anglais seul : -2,3 pts ·
-> Adaptateur v2 · bilingue : +0,3 pt, ÉCART REFERMÉ
+> Adaptateur v2 · bilingue : +0,3 pt, TRANCHES MARGINALES
 >
-> Le français fait jeu égal. **Mesuré, pas promis.**
+> Les tranches complètes sont presque alignées. **Descriptif, pas apparié.**
 
 Note d’écran : run nemotron-8b-fr-full-4 · mêmes prompts et même parseur
 pour les deux modèles · échec de parsing = échec.
@@ -104,7 +104,7 @@ L’économie du run, en très grand.
 >
 > **≈ 16 $**
 >
-> Refermer l’écart d’une langue coûte un déjeuner.
+> Ce run bilingue tient dans le prix estimé d’un déjeuner.
 
 Note d’écran : 5 h 42 d’entraînement · pic mémoire 26 369 MiB · estimation
 au tarif du run v1 (~8 $ / ~3,5 h).
@@ -152,8 +152,8 @@ La thèse, au présent et sans conditionnel.
 >
 > **Vos poids. Vos données. Votre langue.**
 
-Note d’écran : La souveraineté se mesure : écart français refermé, +0,3 pt
-(n=879).
+Note d’écran : La souveraineté se mesure : tranches marginales à +0,3 pt
+(fr n=879, en n=1000 ; estimation appariée non disponible).
 
 ### Scène 9 · L’appel (1:27 à 1:35)
 
@@ -163,11 +163,11 @@ Note d’écran : La souveraineté se mesure : écart français refermé, +0,3 p
 >
 > github.com/AbdelStark/sommelier · hf.co/spaces/abdelstark/sommelier
 >
-> Licence MIT · chaque chiffre remonte à un artefact vérifiable
+> Licence MIT · métriques publiques, rapports vérifiables
 
 ## Politique de vérification des faits
 
-Chaque affirmation à l’écran est vérifiée :
+Chaque affirmation à l’écran porte sa source et son statut de preuve :
 
 - Les métriques, les écarts de langue, les effectifs (n=1000 en, n=879 fr),
   la durée d’entraînement, le pic mémoire et l’identité du run viennent de

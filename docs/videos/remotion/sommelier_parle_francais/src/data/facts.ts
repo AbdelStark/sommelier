@@ -1,5 +1,6 @@
-// Chaque chiffre de ce fichier remonte à un artefact du dépôt. Ne rien
-// modifier sans revérifier la source.
+// Les métriques et durées de ce fichier remontent aux rapports du dépôt. Le
+// prix est explicitement une extrapolation du relevé privé du run v1. Ne rien
+// modifier sans revérifier la source et le statut de preuve.
 //
 // Source principale : docs/results/french-run.md (run nemotron-8b-fr-full-4,
 // exécuté le 2026-07-06 sur une L40S, tranches de test n=1000 en / n=879 fr,
@@ -103,4 +104,4 @@ export const FLYWHEEL_ETAPES = [
 ];
 
 export const SOUVERAINETE_NOTE =
-  'La souveraineté se mesure : écart français refermé, +0,3 pt (n=879).';
+  'Tranches marginales : +0,3 pt (fr n=879, en n=1000 ; non apparié).';

@@ -4,6 +4,16 @@ This page states the v2 result the way the [reference run](reference-run.md) pag
 
 The question this run answers is the one the reference run left open: tool calling should work as well in French as in English, and that is a claim worth measuring rather than assuming.
 
+!!! warning "Historical evidence; strict reproduction currently unavailable"
+    The currently published French paired-dataset commit
+    [`28688c3c54d60059249554fd964e144b1203c4f6`](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits-fr/tree/28688c3c54d60059249554fd964e144b1203c4f6)
+    has a v1 translation summary and no current
+    `translation_publication.json`, so today's full driver rejects it.
+    `examples/config.full.yaml` is intentionally English-only. A new strict
+    French run requires a provenance-complete immutable republish and a
+    separate config pinned to that commit; no such migrated revision is
+    claimed here.
+
 ## Run identity
 
 | Field | Value |
@@ -22,9 +32,9 @@ One digest deserves a sentence: the `en` prompt set digest is identical to the r
 
 ## Setup
 
-**One changed variable.** Same base model, same hyperparameters, same pipeline, same seed as the [reference run](reference-run.md). The training data adds a French paired variant of every selected row: [abdelstark/sommelier-xlam-single-call-splits-fr](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits-fr), built by constrained translation (only the query is translated; tool schemas and gold answers stay byte identical, enforced at preparation time as described in [Data policy](../concepts/data.md)). Training saw 15,000 English plus 13,113 French rows; the French side runs short where the gold contract rejects translation, and the drop accounting is per reason in the dataset card and the run's drop summary. The system prompt stays English for both languages, so the query language is the only moving variable ([why](../concepts/design-decisions.md)).
+**One changed variable within a surviving pair.** Same base model, same hyperparameters, same pipeline, same seed as the [reference run](reference-run.md). The training data adds a French paired variant of every selected row: [abdelstark/sommelier-xlam-single-call-splits-fr](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits-fr), built by constrained translation (only the query is translated; tool schemas and gold answers stay byte identical, enforced at preparation time as described in [Data policy](../concepts/data.md)). Training saw 15,000 English plus 13,113 French rows; the French side runs short where the gold contract rejects translation, and the drop accounting is per reason in the dataset card and the run's drop summary. The system prompt stays English for both languages, so query text is the designed difference inside each exact pair ([why](../concepts/design-decisions.md)); translation quality and survivorship remain additional limitations.
 
-**Evaluation.** Two slices of the held-out test split: 1,000 English prompts and 879 French pairs, each evaluated for the base model and the adapter under identical decoding and the same conservative parser. The [comparison gate](../concepts/determinism.md) additionally requires the slice sets and every per-slice prompt digest to match.
+**Evaluation.** Two slices of the held-out test split: 1,000 English prompts and 879 French pairs, each evaluated for the base model and the adapter under identical decoding and the same conservative parser. The [comparison gate](../concepts/determinism.md) additionally requires the slice sets and every per-slice prompt digest to match. This published v2 artifact predates exact matched-cohort reporting, so the cross-language numbers below compare the complete unequal slices; v3 labels that estimate `marginal_full_slices` and makes the 879 exact pairs with paired confidence intervals primary.
 
 ## Results
 
@@ -48,9 +58,9 @@ One digest deserves a sentence: the `en` prompt set digest is identical to the r
 | Argument F1 | 0.7091 (3000/4231) | **0.9208** (4288/4657) | +0.2117 |
 | Full-call exact match | 0.6633 (583/879) | **0.8726** (767/879) | +0.2093 |
 
-## The language gap, measured three ways
+## The marginal full-slice gap, measured three ways
 
-Full-call exact match, French minus English, across the three models this project has measured on these slices:
+Full-call exact match, complete French slice minus complete English slice, across the three models this project has measured. These are descriptive marginal values because the cohorts contain 879 and 1,000 rows:
 
 | Model | en | fr | Gap |
 |-------|----|----|-----|
@@ -58,7 +68,7 @@ Full-call exact match, French minus English, across the three models this projec
 | v1 adapter, English-only training ([M1 baseline](https://github.com/AbdelStark/sommelier/issues/108)) | 0.8740 | 0.8510 | -0.0230 |
 | v2 adapter, mixed en+fr training (this run) | 0.8700 | 0.8726 | +0.0026 |
 
-Three findings, stated plainly. The base model pays about 4 points of full-call exactness on French input. English-only fine-tuning transfers most of its gains to French without seeing a single French example, narrowing the gap to 2.3 points. Adding the French training data closes the gap to measurement noise: French now matches English on every metric to within a third of a point.
+The descriptive pattern is plain: the base model's French slice is about 4 points lower; English-only fine-tuning transfers much of its gain to the French slice; and the mixed adapter's two marginal slice values are within a third of a point. The v2 artifacts do not support calling that last difference “measurement noise,” because they neither restrict English to the exact surviving roots nor record paired confidence intervals.
 
 The cost, reported rather than hidden: the v2 adapter's English slice sits 0.3 to 0.8 points below the v1 reference (full-call 0.8700 against 0.8740, argument F1 0.9211 against 0.9291, valid JSON 0.9970 against 1.0000). At n=1000 this is within one standard error, and whether it is noise or a small capacity trade for bilingual coverage cannot be decided from one seed.
 
@@ -84,7 +94,7 @@ The per-language sequence audit that gates training measured the French rows at 
 - The [v2 adapter repository](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-fr-en-lora) carries the per-slice evaluation reports, the gated comparison with its language gaps section, and the runtime metadata under `reports/`. The adapter is a Llama 3.1 derivative ("Built with Llama"); obligations are in [Licensing](../project/licensing.md).
 - The [French dataset](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits-fr) carries the 14,936 paired rows and the translation summary with the translator pin, prompt digest, and per reason drop counts (CC-BY-4.0).
 - The [English splits dataset](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits) is unchanged from the reference run.
-- The [reproduction guide](../guides/reproduction.md) and [remote execution guide](../guides/remote-execution.md) cover the two-step bilingual flow: the translation run, then the pipeline run that stages its rows.
+- The published French dataset preserves the historical v2 translation evidence, but its current immutable commit contains a v1 summary and no `translation_publication.json`. The current full driver therefore rejects it rather than treating legacy metadata as new evidence. A new French full run needs a provenance-complete republished commit and a separate pinned config; direct translation-run staging is smoke-only. The default `config.full.yaml` remains English-only. The [remote execution guide](../guides/remote-execution.md) documents that stricter boundary.
 
 ## Claim boundaries
 
@@ -92,5 +102,6 @@ Everything from the [reference run's boundaries](reference-run.md) applies, plus
 
 - The French test rows are machine translations (Mistral-Nemo-Instruct-2407, greedy, constrained by protected spans), reviewed on samples, not natively authored requests.
 - The French slice excludes the 12.1 percent of pairs whose gold arguments embed English text lifted from the query, because faithful translation would break the byte-identical gold contract. The slice is therefore slightly biased toward rows with language-neutral arguments.
+- The published v2 cross-language gaps are marginal complete-slice comparisons (1,000 English versus 879 French), not matched-pair estimates, and carry no paired confidence intervals. Use the v3 report contract for primary language-tax inference.
 - Instruction-language effects are unmeasured: the system prompt is English for both slices by design.
 - One run, one seed, two languages. Nothing here ranks the model against any public benchmark.

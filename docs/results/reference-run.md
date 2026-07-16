@@ -19,9 +19,9 @@ The digests are the point of the whole system: the [comparison gate](../concepts
 
 ## Setup
 
-**Model and data.** Base model [nvidia/Llama-3.1-Nemotron-Nano-8B-v1](https://huggingface.co/nvidia/Llama-3.1-Nemotron-Nano-8B-v1). Source dataset [Salesforce/xlam-function-calling-60k](https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k) at the `main` revision; the export step records the source revision in the raw-rows metadata, and the exact rows of every split are published as [abdelstark/sommelier-xlam-single-call-splits](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits), so verifying the result does not depend on upstream revision stability. After the single-call filter and deduplication described in [Data policy](../concepts/data.md), seeded splits of 15,000 train, 1,000 validation, and 1,000 test examples (seed 42).
+**Model and data.** Base model [nvidia/Llama-3.1-Nemotron-Nano-8B-v1](https://huggingface.co/nvidia/Llama-3.1-Nemotron-Nano-8B-v1). The historical run exported [Salesforce/xlam-function-calling-60k](https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k) at the recorded `main` revision. The repository's current `examples/config.full.yaml` is a runnable English-only v1/default full config with immutable base, tokenizer, and root-dataset pins. It is a recipe for a new run, not the historical run's identity: the exact rows scored by this result remain the published [abdelstark/sommelier-xlam-single-call-splits](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits), and the recorded resolved config and checksummed artifacts remain authoritative. After the single-call filter and deduplication described in [Data policy](../concepts/data.md), the recorded run used seeded splits of 15,000 train, 1,000 validation, and 1,000 test examples (seed 42).
 
-**Training.** QLoRA as configured in [`examples/config.full.yaml`](https://github.com/AbdelStark/sommelier/blob/main/examples/config.full.yaml), which mirrors the run's resolved config:
+**Training.** The current [`examples/config.full.yaml`](https://github.com/AbdelStark/sommelier/blob/main/examples/config.full.yaml) matches the recorded v1 QLoRA hyperparameters below:
 
 | Setting | Value |
 |---------|-------|

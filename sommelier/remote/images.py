@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Final, Literal, TypedDict
 
 from sommelier.config import SommelierConfig
 from sommelier.errors import UserInputError
@@ -8,29 +8,156 @@ from sommelier.errors import UserInputError
 if TYPE_CHECKING:
     import modal
 
+# ``from_registry(..., add_python=...)`` accepts a major.minor selector, while
+# ``debian_slim`` accepts an exact patch. Keep the registry selector separate
+# so rebuilding the evidence pipeline cannot silently advance its Python patch
+# and then fail the runtime-identity gate after a paid allocation starts.
 PYTHON_VERSION = "3.13"
+PIPELINE_PYTHON_VERSION: Final = "3.13.3"
 
-# Version pins are added after the first green remote smoke run;
-# until then the stacks below track latest releases.
-BASE_PACKAGES = ("pydantic>=2.0", "pyyaml>=6.0")
+# Base and vLLM versions are the exact environment observed in the first
+# successful Hebrew decoder-path smoke. The pipeline versions are the exact
+# compatible environment observed by its first end-to-end remote probe.
+BASE_PACKAGES = ("pydantic==2.13.4", "PyYAML==6.0.3")
 DATA_PACKAGES = ("cudf-cu12",)
 TRAIN_PACKAGES = (
-    "torch",
-    "transformers",
-    "trl",
-    "peft",
-    "bitsandbytes",
-    "accelerate",
-    "datasets",
+    "torch==2.13.0",
+    "transformers==5.13.1",
+    "tokenizers==0.22.2",
+    "accelerate==1.14.0",
+    "peft==0.19.1",
+    "bitsandbytes==0.49.2",
+    "datasets==5.0.0",
+    "huggingface_hub==1.23.0",
+)
+
+# Immutable expected identity for full Hebrew pipeline evidence. Keeping this
+# adjacent to the image definition makes it difficult for the install and
+# runtime gates to drift apart. The Debian pipeline image pins this exact
+# Python patch; registry-based auxiliary images retain the major.minor selector.
+PIPELINE_RUNTIME_VERSIONS: Final = (
+    ("python", PIPELINE_PYTHON_VERSION),
+    ("torch", "2.13.0"),
+    ("transformers", "5.13.1"),
+    ("tokenizers", "0.22.2"),
+    ("accelerate", "1.14.0"),
+    ("peft", "0.19.1"),
+    ("bitsandbytes", "0.49.2"),
+    ("datasets", "5.0.0"),
+    ("huggingface_hub", "1.23.0"),
+)
+
+# Hugging Face downloads use the ordinary HTTP path with an explicit timeout.
+# The same values are forced inside the function and recorded in runtime
+# metadata, rather than relying only on image-layer defaults.
+PIPELINE_HF_ENV: Final = (
+    ("HF_HUB_DISABLE_XET", "1"),
+    ("HF_HUB_DOWNLOAD_TIMEOUT", "600"),
 )
 EVAL_PACKAGES = ("torch", "transformers", "datasets")
 SERVING_PACKAGES = ("torch", "transformers", "peft", "fastapi", "uvicorn")
-VLLM_PACKAGES = ("vllm", "huggingface_hub")
+VLLM_PACKAGES = (
+    "vllm==0.24.0",
+    "huggingface_hub==1.22.0",
+    "torch==2.11.0",
+    "transformers==5.13.1",
+    "tokenizers==0.22.2",
+)
+TRANSLATION_PACKAGES = (
+    "datasets==5.0.0",
+    "accelerate==1.14.0",
+    "sentencepiece==0.2.2",
+)
+
+# MADLAD's weights load correctly through the probe-established Transformers
+# v4 stack.  Keep this dependency graph completely separate from vLLM's
+# Transformers v5 graph: installing both into one image lets pip choose a
+# nominally satisfiable but scientifically unproven environment.
+SEQ2SEQ_TRANSLATION_PACKAGES = (
+    "torch==2.11.0",
+    "transformers==4.57.6",
+    "tokenizers==0.22.2",
+    "accelerate==1.14.0",
+    "huggingface_hub==0.36.2",
+    "sentencepiece==0.2.2",
+    "datasets==5.0.0",
+    "safetensors==0.8.0",
+)
+
+# Exact identity observed in the pinned translation image. Modal only accepts a
+# major.minor Python selector, so the patch version is enforced inside the
+# remote function before a full Hebrew producer may export data or load a
+# model. Smoke and other-language runs retain their diagnostic role and record
+# the environment without enforcing this identity.
+VLLM_TRANSLATION_RUNTIME_VERSIONS: Final = (
+    ("python", "3.13.0"),
+    ("vllm", "0.24.0"),
+    ("huggingface_hub", "1.22.0"),
+    ("torch", "2.11.0"),
+    ("transformers", "5.13.1"),
+    ("tokenizers", "0.22.2"),
+    ("datasets", "5.0.0"),
+    ("accelerate", "1.14.0"),
+    ("sentencepiece", "0.2.2"),
+)
+
+SEQ2SEQ_TRANSLATION_RUNTIME_VERSIONS: Final = (
+    ("python", "3.13.0"),
+    ("torch", "2.11.0"),
+    ("transformers", "4.57.6"),
+    ("tokenizers", "0.22.2"),
+    ("accelerate", "1.14.0"),
+    ("huggingface_hub", "0.36.2"),
+    ("sentencepiece", "0.2.2"),
+    ("datasets", "5.0.0"),
+    ("safetensors", "0.8.0"),
+)
+
+# Provider-backed translation is deliberately isolated from both GPU model
+# stacks.  Modal's Debian image accepts the full patch version, and the OpenAI
+# SDK is pinned to the exact version enforced again by the adapter factory at
+# runtime. ``datasets`` remains because this function performs the same source
+# export and deterministic cohort selection before provider requests begin.
+OPENAI_TRANSLATION_PYTHON_VERSION: Final = "3.13.3"
+OPENAI_TRANSLATION_PACKAGES: Final = (
+    "openai==2.45.0",
+    "datasets==5.0.0",
+)
+OPENAI_TRANSLATION_RUNTIME_VERSIONS: Final = (
+    ("python", OPENAI_TRANSLATION_PYTHON_VERSION),
+    ("openai", "2.45.0"),
+    ("datasets", "5.0.0"),
+)
+
+# Compatibility name for existing vLLM consumers. New code should select an
+# explicit backend identity instead of treating both incompatible stacks as
+# one translation runtime.
+TRANSLATION_RUNTIME_VERSIONS: Final = VLLM_TRANSLATION_RUNTIME_VERSIONS
+# The live Marian probe resolved Modal's floating ``3.13`` Debian image to
+# 3.13.3. Unlike ``from_registry(..., add_python=...)``, ``debian_slim`` accepts
+# a full micro version, so this producer can and does pin the observed patch.
+SEMANTIC_REVIEW_PYTHON_VERSION: Final = "3.13.3"
+SEMANTIC_REVIEW_PACKAGES = (
+    "torch==2.11.0",
+    "transformers==5.13.1",
+    "tokenizers==0.22.2",
+    "accelerate==1.14.0",
+    "huggingface_hub==1.22.0",
+    "sentencepiece==0.2.2",
+    "sacremoses==0.1.1",
+)
+SEMANTIC_REVIEW_HF_ENV: Final = (
+    ("HF_HUB_DISABLE_XET", "1"),
+    ("HF_HUB_DOWNLOAD_TIMEOUT", "600"),
+)
 
 NVIDIA_INDEX_URL = "https://pypi.nvidia.com"
 
 # vLLM JIT-compiles kernels at startup and needs the full CUDA toolkit.
-CUDA_DEVEL_BASE = "nvidia/cuda:12.8.1-devel-ubuntu24.04"
+CUDA_DEVEL_BASE = (
+    "nvidia/cuda:12.8.1-devel-ubuntu24.04"
+    "@sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66"
+)
 
 PipelineStage = Literal["data", "train", "eval"]
 
@@ -40,10 +167,10 @@ class RemoteStageOptions(TypedDict):
     timeout: int
 
 
-def _python_base() -> modal.Image:
+def _python_base(python_version: str = PIPELINE_PYTHON_VERSION) -> modal.Image:
     import modal
 
-    return modal.Image.debian_slim(python_version=PYTHON_VERSION).pip_install(*BASE_PACKAGES)
+    return modal.Image.debian_slim(python_version=python_version).pip_install(*BASE_PACKAGES)
 
 
 def _with_source(image: modal.Image) -> modal.Image:
@@ -65,7 +192,12 @@ def data_image() -> modal.Image:
 
 def train_image() -> modal.Image:
     """Model loading, quantization, and adapter training stack."""
-    return _with_source(_python_base().pip_install(*TRAIN_PACKAGES))
+    return _with_source(
+        _python_base()
+        .apt_install("openssh-client")
+        .pip_install(*TRAIN_PACKAGES)
+        .env(dict(PIPELINE_HF_ENV))
+    )
 
 
 def eval_image() -> modal.Image:
@@ -99,13 +231,11 @@ def vllm_serving_image() -> modal.Image:
     ).pip_install(*VLLM_PACKAGES)
 
 
-def translation_image() -> modal.Image:
-    """vLLM batch inference stack with the package source mounted.
+def vllm_translation_image() -> modal.Image:
+    """Pinned vLLM chat-translation stack with package source mounted.
 
-    Same CUDA devel base as serving (vLLM needs nvcc for its warm-up JIT),
-    plus the base packages and the sommelier source, because the
-    translation tool drives vLLM offline from inside the package. The
-    datasets package rides along for the raw-row export.
+    The datasets package rides along because the remote producer also exports
+    and selects the root cohort before translating it.
     """
     import modal
 
@@ -113,15 +243,54 @@ def translation_image() -> modal.Image:
         modal.Image.from_registry(
             CUDA_DEVEL_BASE,
             add_python=PYTHON_VERSION,
-        ).pip_install(*VLLM_PACKAGES, *BASE_PACKAGES, "datasets")
+        ).pip_install(*VLLM_PACKAGES, *BASE_PACKAGES, *TRANSLATION_PACKAGES)
+    )
+
+
+def seq2seq_translation_image() -> modal.Image:
+    """Probe-established Transformers-v4 MADLAD translation stack.
+
+    It intentionally shares the pinned CUDA base with the live probe while
+    excluding vLLM and its incompatible Transformers-v5 dependency graph.
+    """
+    import modal
+
+    return _with_source(
+        modal.Image.from_registry(
+            CUDA_DEVEL_BASE,
+            add_python=PYTHON_VERSION,
+        ).pip_install(*BASE_PACKAGES, *SEQ2SEQ_TRANSLATION_PACKAGES)
+    )
+
+
+def openai_translation_image() -> modal.Image:
+    """CPU-only Responses API producer with no local model dependencies."""
+    return _with_source(
+        _python_base(OPENAI_TRANSLATION_PYTHON_VERSION).pip_install(*OPENAI_TRANSLATION_PACKAGES)
+    )
+
+
+def translation_image() -> modal.Image:
+    """Compatibility alias for the historical vLLM translation image."""
+    return vllm_translation_image()
+
+
+def semantic_review_image() -> modal.Image:
+    """Pinned Marian runtime for the independent semantic-review gate."""
+    return _with_source(
+        _python_base(SEMANTIC_REVIEW_PYTHON_VERSION)
+        .pip_install(*SEMANTIC_REVIEW_PACKAGES)
+        .env(dict(SEMANTIC_REVIEW_HF_ENV))
     )
 
 
 def stage_options(config: SommelierConfig, stage: PipelineStage) -> RemoteStageOptions:
-    """GPU and timeout hooks for one remote pipeline stage.
+    """Return legacy-shaped planning options for one nominal pipeline stage.
 
-    Values come from the validated remote config; unknown stages fail
-    explicitly instead of inheriting another stage's budget.
+    The timeout-named value is a planning estimate retained for config/API
+    compatibility. The current pipeline runs as one remote function and does
+    not attach these values to per-stage watchdogs. Unknown stages still fail
+    explicitly instead of inheriting another stage's estimate.
     """
     timeouts = {
         "data": config.remote.data_timeout_seconds,

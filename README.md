@@ -13,11 +13,12 @@
 
 [![Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-LoRA%20adapter%20(en)-FFD21E?style=for-the-badge)](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora)
 [![Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-LoRA%20adapter%20(en%2Bfr)-FFD21E?style=for-the-badge)](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-fr-en-lora)
+[![Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-LoRA%20adapter%20(en%2Bhe)-FFD21E?style=for-the-badge)](https://huggingface.co/abdelstark/Llama-3.1-Nemotron-Nano-8B-xlam-tool-calling-he-en-hymt-lora)
 [![Dataset](https://img.shields.io/badge/%F0%9F%A4%97%20Hub-dataset-FFD21E?style=for-the-badge)](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits)
 [![Space](https://img.shields.io/badge/%F0%9F%A4%97%20Space-interactive%20tour-FFD21E?style=for-the-badge)](https://huggingface.co/spaces/abdelstark/sommelier)
 [![Compute](https://img.shields.io/badge/compute-Modal-7C3AED?style=for-the-badge)](https://modal.com)
 
-**[Documentation](https://abdelstark.github.io/sommelier/)** · **[Interactive tour](https://huggingface.co/spaces/abdelstark/sommelier)** · **[Quickstart](https://abdelstark.github.io/sommelier/getting-started/quickstart/)** · **[The reference run](https://abdelstark.github.io/sommelier/results/reference-run/)** · **[The French run](https://abdelstark.github.io/sommelier/results/french-run/)**
+**[Documentation](https://abdelstark.github.io/sommelier/)** · **[Interactive tour](https://huggingface.co/spaces/abdelstark/sommelier)** · **[Quickstart](https://abdelstark.github.io/sommelier/getting-started/quickstart/)** · **[The reference run](https://abdelstark.github.io/sommelier/results/reference-run/)** · **[The French run](https://abdelstark.github.io/sommelier/results/french-run/)** · **[The Hebrew Hy-MT2 run](https://abdelstark.github.io/sommelier/results/hebrew-hymt/)**
 
 </div>
 
@@ -44,13 +45,21 @@ every parse failure as a failure:
 | Argument F1 | 0.757 | **0.929** | +0.172 |
 | Full-call exact match | 0.705 | **0.874** | +0.169 |
 
-Everything needed to verify or reproduce this row-for-row is public:
+The public artifacts support checking the reported aggregate metrics and
+reproducing the recorded protocol. They do not support independent row-by-row
+rescoring because the raw generation files retained by the original runs are
+not present in the published v1/v2 repositories:
 
 | Artifact | Where |
 |----------|-------|
 | 🤗 Adapter + evaluation evidence | [`abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora`](https://huggingface.co/abdelstark/llama-3.1-nemotron-nano-8b-xlam-tool-calling-lora) |
 | 🤗 Exact train/val/test splits | [`abdelstark/sommelier-xlam-single-call-splits`](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits) |
 | Reproduction commands | [docs/guides/reproduction.md](docs/guides/reproduction.md) |
+
+The published reports expose metric numerators, denominators, configuration,
+and identity digests, so the displayed aggregate rates can be checked without
+trusting rounded floats. Reproducing the run can regenerate row-level evidence;
+the existing public artifacts alone cannot independently rescore each row.
 
 Claim boundaries: these numbers hold for the recorded dataset revision,
 prompt policy, parser, and decoding config. They are not claims of
@@ -76,17 +85,24 @@ fr n=879, same gold answers by construction, same parser and decoding):
 | v1 adapter (English-only training) | 0.874 | 0.851 | -2.3 pts |
 | **v2 adapter (mixed en+fr training)** | 0.870 | **0.873** | **+0.3 pts** |
 
-Three findings, measured rather than assumed:
+These are the historical v2 **marginal full-slice** figures: all 1,000
+English rows versus the 879 translations that survived the translation
+contract. Because those cohorts differ, v3 reports exact root-matched gaps
+and paired-bootstrap confidence intervals as the primary estimate, while
+retaining full-slice gaps under an explicit descriptive label.
 
-1. **The base model pays about 4 points on French input.** Same tools,
-   same gold calls, only the query language changed.
-2. **English-only fine-tuning transfers most of its gains for free.**
+Three descriptive findings from those marginal slices:
+
+1. **The base model's marginal French slice is about 4 points lower.**
+   Exact pairs keep tools and gold calls fixed, but this published table also
+   includes unmatched English roots.
+2. **English-only fine-tuning transfers much of its gain.**
    Without seeing a single French example, the v1 adapter lifts French
    full-call accuracy by 18.8 points and halves the language gap.
-3. **A machine-translated training slice closes the gap to noise.**
-   French now matches English on every metric to within a third of a
-   point, at a cost of at most 0.8 points on English (within one
-   standard error at n=1,000; the regression is reported, not hidden).
+3. **The mixed adapter's marginal slice values nearly coincide.**
+   French and English differ by at most a third of a point in this table,
+   while English is up to 0.8 points below v1. The v2 artifact does not carry
+   the paired interval needed to call either difference noise.
 
 The whole comparison is anchored by digests: the English prompt set of
 the v2 run is byte-identical to the reference run's, so the two results
@@ -100,9 +116,98 @@ are on [the French run](https://abdelstark.github.io/sommelier/results/french-ru
 | 🤗 French paired rows + translation provenance | [`abdelstark/sommelier-xlam-single-call-splits-fr`](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits-fr) |
 | Translation method and drop accounting | [`sommelier data translate`](https://abdelstark.github.io/sommelier/reference/cli/#data-translate) |
 
+This v2 result remains historical evidence, not a claim of strict
+reproducibility under today's stronger publication gate. Its French dataset
+commit has a v1 translation summary and no current publication manifest; a
+new strict French run requires a provenance-complete republish. The default
+`examples/config.full.yaml` is therefore English-only.
+
+## 🇮🇱 Hebrew v3: teacher selected, full results pending
+
+The v3 experiment extends the paired design to Hebrew and adds the cost
+measurement that multilingual fine-tuning discussions often omit. It will
+report the observed English↔Hebrew token inflation under the pinned base
+tokenizer, the English-only workload counterfactual, additive Hebrew data/token
+tax, combined-vs-English multipliers, and exact matched-pair accuracy gaps. The
+counterfactual is derived from the same formatted rows and epochs, not a
+separately trained runtime or accuracy arm. A gated three-arm comparison—base
+model, published v1 English adapter, and v3 English+Hebrew QLoRA adapter—will
+test Hebrew uplift while enforcing a predeclared English non-inferiority margin.
+
+The one-time dataset teacher is the exact dated OpenAI Responses snapshot
+`gpt-5.5-2026-04-23`, under the `instruction_chat` contract with 512 maximum
+output tokens, explicit Flex service, OpenAI SDK 2.45.0, a 900-second
+per-request timeout, three audited row attempts, eight provider workers, and
+32-row durable checkpoints. SDK retries stay at zero. Exact Flex HTTP 429
+`resource_unavailable` responses use separately attributed same-row
+`provider_call_attempt` retries after fixed 1/2/4/8/16-second delays, with no
+tier switch. Paid launches also require a local public-list-price ceiling:
+`1.00` USD for smoke or `50.00` USD for full. It is not an invoice or provider
+account/project cap. The producer is a CPU-only Modal image. Protected
+literals are replaced with deterministic ASCII placeholders before the
+provider request, restored afterward, and audited byte for byte; tools and gold
+answers never enter the translation output and remain
+byte-identical. The API snapshot is an identity, not a public weight digest or
+a promise of byte-identical provider regeneration. The external teacher is
+limited to dataset creation; training, evaluation, adapter weights, and
+deployment remain on the pinned open Nemotron/Llama-derived stack.
+
+Before that full provider run, the Phase-A config must commit one named human
+reviewer's stable id, canonical comment-free Ed25519 public key, and matching
+OpenSSH SHA-256 fingerprint. The private key remains solely with the reviewer:
+it must never enter the repository, Modal, Sommelier, or Codex. The producer
+exclusively reserves `translation_run_identity.json` before dataset or provider
+access, and the published paired dataset includes that identity plus the exact
+Phase-A config bytes as `translation_config.yaml`.
+
+A 140-row Flex smoke accepted 140/140 rows after 143 provider requests. Its
+model-assisted, non-native diagnostic inspection—not independent human
+review—labeled 127 clean, 13 minor, and zero hard semantic errors. Provider
+usage was 73,359 input tokens, zero cached input tokens, 11,618 output tokens,
+zero reasoning tokens, and 84,977 total tokens. Applying the pinned public list
+prices gives **$0.357667500**; this is a calculated estimate, not an invoice or
+observed billing. That smoke used a 256-token output limit and the historical
+v1 journal/evidence contract, so it selected the provider but did not validate
+the final 512-token/v2 producer above. It also came from a dirty worktree and is
+diagnostic only: it is not the full corpus, native-speaker validation, a Hebrew
+accuracy result, or QLoRA/TCO evidence.
+
+Full evidence does not consume a mutable translation run. The audited
+machine-translated survivor corpus and provenance files must first be published
+together, then loaded from an immutable Hugging Face dataset commit. An
+independent pinned Helsinki-NLP model back-translates the locked review sample,
+but no native-speaker review has been completed. The run page documents the
+commands, claim gates, provider evidence, and placeholders that must be filled
+from checksummed artifacts: [Hebrew v3 methodology](docs/results/hebrew-v3.md).
+Pipeline TCO keeps observed billing separate from deterministic projections,
+and no full-fine-tuning saving is claimed without a matched full-parameter arm.
+
+## 🇮🇱 Hebrew local-MT result: Hy-MT2
+
+A separate, honestly scoped experiment used Tencent Hy-MT2 locally through
+Ollama to translate the selected xLAM queries into Hebrew. It accepted 16,272
+of 17,000 roots. In the exact training snapshot, tools and gold answers remained
+byte-identical; the public release sanitizes 15 credential-shaped synthetic
+tool literals and is not byte-identical. The shared prepare gate retained 14,286
+Hebrew training examples and 945 held-out pairs. This is a machine-translated
+survivor corpus with no human semantic review, so it is not the preregistered v3
+result above.
+
+QLoRA on one Modal L40S raised held-out full-call exact match on the Hebrew
+slice from 410/945 (43.39%) to 786/945 (83.17%), a +39.79-point paired gain
+(95% CI +36.61 to +42.96). On the 1,000 English prompts, exact match rose from
+70.50% to 88.40%. The adapter's exact matched Hebrew-minus-English gap was
+-5.19 points, compared with -27.62 points for the base model.
+
+| Artifact | Where |
+|----------|-------|
+| 🤗 English+Hebrew adapter + benchmark evidence | [`abdelstark/Llama-3.1-Nemotron-Nano-8B-xlam-tool-calling-he-en-hymt-lora`](https://huggingface.co/abdelstark/Llama-3.1-Nemotron-Nano-8B-xlam-tool-calling-he-en-hymt-lora) |
+| 🤗 Hy-MT2 Hebrew paired rows + sanitization accounting | [`abdelstark/sommelier-xlam-single-call-splits-he-hymt-sanitized`](https://huggingface.co/datasets/abdelstark/sommelier-xlam-single-call-splits-he-hymt-sanitized) |
+| Full setup, tokenization tax, runtime, metrics, and limitations | [Hebrew Hy-MT2 run](docs/results/hebrew-hymt.md) |
+
 ## 🏗️ Pipeline architecture
 
-One CLI, six stages, no hidden state. Stages communicate only through
+One CLI, seven stages, no hidden state. Stages communicate only through
 schema-versioned files under an artifact root, and every transition writes a
 manifest with input/output checksums.
 
@@ -120,12 +225,18 @@ manifest with input/output checksums.
                        ┌────────────────────────────────┐
                        │  2 · format build              │  tokenizer chat template
                        │                                │  canonical tools JSON · prompt_sha256
-                       └───────────────┬────────────────┘  sequence-length audit
+                       └───────────────┬────────────────┘
                                        │ formatted_example.v2
+                                       ▼
+                       ┌──────────────────────────────┐
+                       │  3 · analyze tokenization      │  exact root↔translation ratios
+                       │                                │  workload · sequence-budget gate
+                       └───────────────┬────────────────┘
+                                       │ tokenizer_tax_report.v1
                      ┌─────────────────┴─────────────────┐
                      ▼                                   ▼
       ┌──────────────────────────┐        ┌──────────────────────────┐
-      │  3 · eval run (base)     │        │  4 · train run           │
+      │  4 · eval run (base)     │        │  5 · train run           │
       │  greedy · temp 0         │        │  QLoRA · NF4 4-bit       │
       │  conservative parser     │        │  completion-only loss    │
       └────────────┬─────────────┘        │  provable prompt boundary│
@@ -133,13 +244,13 @@ manifest with input/output checksums.
                    │ generations.jsonl                 │ adapter/ + training_metrics.jsonl
                    │ evaluation_report.json            ▼
                    │                      ┌──────────────────────────┐
-                   │                      │  5 · eval run (adapter)  │
+                   │                      │  6 · eval run (adapter)  │
                    │                      │  same prompts · parser   │
                    │                      │  and decoding, by digest │
                    │                      └────────────┬─────────────┘
                    ▼                                   ▼
       ┌─────────────────────────────────────────────────────────────┐
-      │  6 · report compare ····································    │
+      │  7 · report compare ····································    │
       │  THE COMPARISON GATE: refuses mismatched config, test-split,│
       │  prompt-set, parser, or decoding digests (INV-DATA-006)     │
       └─────────────────────────────┬───────────────────────────────┘
@@ -152,7 +263,8 @@ manifest with input/output checksums.
   artifacts/runs/<run_id>/            every stage → a manifest with
   ├── config.resolved.yaml            sha256-checksummed inputs/outputs;
   ├── manifest.json                   failures land as explicit failed
-  ├── data/ formatted/ train/ eval/   manifests, never silent partial
+  ├── data/ formatted/ analysis/       manifests, never silent partial
+  ├── train/ eval/
   ├── report/                         state; logs and reports pass a
   └── runtime_metadata.json           secret-redaction scanner
 ```
@@ -176,8 +288,9 @@ manifest with input/output checksums.
   row's split; rows whose gold arguments cannot survive translation are
   dropped with counted reasons, not bent to fit.
 - **Security by default.** Secrets live in the environment only; logs,
-  manifests, and reports are redaction-scanned; releases are gated by
-  `sommelier release preflight`.
+  manifests, and reports are redaction-scanned. Adapter releases require an
+  identity-bound preflight, and both publishers enforce exact artifact-specific
+  validation before any explicit mutation.
 - **GPU-free core.** `import sommelier` never touches torch/CUDA; heavy
   stacks stay behind optional extras and remote images (enforced in CI).
 
@@ -204,11 +317,13 @@ uv run sommelier format build --config examples/config.smoke.yaml \
 Everything above runs on a clean machine: no GPU, no accounts. The
 [reproduction guide](docs/guides/reproduction.md) covers the remote
 prerequisites (Modal account, `HF_TOKEN`, license acknowledgement), the
-smoke and full runs, and how to read the report.
+smoke and full runs, and how to read the report. Hebrew v3 translation adds
+named OpenAI/Hugging Face Modal secrets and an explicit paid-provider launch;
+those requirements are documented separately on its methodology page.
 
 ### Run the whole pipeline on a GPU
 
-[`remote_pipeline.py`](remote_pipeline.py) executes all six stages on
+[`remote_pipeline.py`](remote_pipeline.py) executes all seven stages on
 [Modal](https://modal.com), exporting the dataset in-container, caching
 weights on a volume, and committing artifacts stage by stage:
 
@@ -217,16 +332,20 @@ weights on a volume, and committing artifacts stage by stage:
 uv run modal run remote_pipeline.py \
   --config examples/config.smoke.yaml --mode smoke --max-rows 2500
 
-# full bilingual run: build the French pairs first, then train on both
-SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=14400 \
-uv run modal run --detach remote_translate.py \
-  --config examples/config.full.yaml --run-id fr-translate-2
-
-SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=36000 \
+# English-only v1/default full run (15,000/1,000/1,000)
+SOMMELIER_GPU=L40S SOMMELIER_TIMEOUT_SECONDS=86400 \
 uv run modal run --detach remote_pipeline.py \
-  --config examples/config.full.yaml --mode full --max-rows 60000 \
-  --translation-run-id fr-translate-2
+  --config examples/config.full.yaml --mode full --max-rows 60000
 ```
+
+The default full config has no paired source and needs no translation staging.
+Paired smoke runs may stage a completed diagnostic translation with
+`--translation-run-id`; paired full runs reject that override and verify the
+translation summary, pre-provider run identity, exact Phase-A config, locked
+semantic-review template, finalized signed review, and publication manifest at
+the pinned dataset revision. The exact paired
+translation and three-arm commands are in the
+[Hebrew v3 methodology](docs/results/hebrew-v3.md).
 
 ## 🧰 CLI
 
@@ -234,15 +353,22 @@ uv run modal run --detach remote_pipeline.py \
 |---------|---------|
 | `sommelier config validate` | Strict config validation (unknown keys rejected) |
 | `sommelier data prepare` | Validate, filter, dedupe, and split raw rows |
-| `sommelier data translate` | Build a French paired dataset by constrained, audited translation |
+| `sommelier data translate` | Build a French or Hebrew paired dataset by constrained, audited translation |
+| `sommelier data semantic-review-create` | Lock and back-translate the preregistered Hebrew review sample |
+| `sommelier data semantic-review-attestation-create` | Recompute the sample and create the canonical payload for the named human to sign |
+| `sommelier data semantic-review-finalize` | Validate reviewer decisions and bind the publication manifest |
 | `sommelier data validate-fixtures` | Check the synthetic test fixtures |
 | `sommelier format build` | Render chat templates + prompt digests (`--fixture` for no-tokenizer builds) |
+| `sommelier analyze tokenization` | Measure exact matched-pair tokenizer cost and enforce the sequence budget |
 | `sommelier eval run` | Deterministic generation + `evaluation_report.json` |
 | `sommelier train run` | QLoRA adapter training with completion-only loss |
 | `sommelier report compare` | Digest-gated comparison → JSON + Markdown reports |
+| `sommelier report experiment` | Gate base/v1/v3 Hebrew uplift and English non-inferiority claims |
 | `sommelier pipeline run` | Chain all stages (`--mode smoke\|full`) |
 | `sommelier serve adapter` | Optional single-adapter inference endpoint |
-| `sommelier release preflight` | License, notices, acknowledgement, lock, and secret gates |
+| `sommelier release preflight` | License/secret gates plus config, revision, source, lock, and tree identity |
+| `sommelier release publish-dataset` | Validate by default; explicitly publish and round-trip-verify the audited Hebrew dataset |
+| `sommelier release publish-adapter` | Validate by default; explicitly publish and round-trip-verify the evidence-bound adapter |
 
 Expected errors map to documented
 [exit codes](https://abdelstark.github.io/sommelier/reference/errors/)
@@ -353,10 +479,14 @@ every pull request and deploys it to GitHub Pages on merge.
 ## ⚖️ License
 
 Code is [MIT](LICENSE). Third-party model, dataset, and package obligations
-are recorded in [licenses/THIRD_PARTY.md](licenses/THIRD_PARTY.md) and
-enforced by `sommelier release preflight`. The published adapters are **Built
+are recorded in [licenses/THIRD_PARTY.md](licenses/THIRD_PARTY.md). The
+preflight checks the project-level model/root-dataset subset; the publishers
+enforce the remaining artifact-specific contracts. Published adapters are **Built
 with Llama** and subject to the NVIDIA Open Model License and the Llama 3.1
-Community License; the published datasets are CC-BY-4.0 (derivatives of
+Community License. Reviewed agreement copies and the lineage attribution are
+tracked in `licenses/LICENSE-NVIDIA-OPEN-MODEL.txt`,
+`licenses/LICENSE-LLAMA-3.1.txt`, and `licenses/NOTICE`; the adapter publisher
+requires their exact bytes. Published datasets are CC-BY-4.0 (derivatives of
 Salesforce/xlam-function-calling-60k).
 
 ## 📖 Citation

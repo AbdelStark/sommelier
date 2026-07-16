@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import json
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 import yaml
 
+import sommelier.data.translate as translate_module
+import sommelier.pipeline as pipeline_module
 from sommelier.config import SommelierConfig, load_config
 from sommelier.errors import UserInputError
 from sommelier.pipeline import (
@@ -14,7 +20,11 @@ from sommelier.pipeline import (
     pipeline_run_id,
     run_pipeline,
 )
-from sommelier.run_context import RunContext
+from sommelier.run_context import RunContext, ensure_run_context
+from sommelier.training.authorization import (
+    FullPairedInputValidationCapability,
+    consume_full_paired_input_validation,
+)
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
 FIXTURE_INPUT = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
@@ -46,6 +56,7 @@ class StageRecorder:
         return PipelineStages(
             prepare=self.stage("data"),
             format=self.stage("format"),
+            tokenization=self.stage("tokenization"),
             eval_base=self.stage("eval-base"),
             train=self.stage("train"),
             eval_adapter=self.stage("eval-adapter"),
@@ -85,11 +96,45 @@ def test_pipeline_chains_all_stages_in_order(tmp_path: Path) -> None:
     assert recorder.calls == [
         "data",
         "format",
+        "tokenization",
         "eval-base",
         "train",
         "eval-adapter",
         "compare",
     ]
+    manifest = json.loads(
+        (tmp_path / "artifacts" / "runs" / "full-1" / "manifest.json").read_text()
+    )
+    assert manifest["status"] == "succeeded"
+
+
+def test_pipeline_marks_root_manifest_failed_when_a_stage_raises(tmp_path: Path) -> None:
+    recorder = StageRecorder()
+    stages = recorder.stages()
+
+    def fail_format(
+        paths: PipelinePaths,
+        config: SommelierConfig,
+        context: RunContext,
+        command: list[str],
+    ) -> None:
+        raise RuntimeError("fixture stage failure")
+
+    stages.format = fail_format
+    with pytest.raises(RuntimeError, match="fixture stage failure"):
+        run_pipeline(
+            write_config(tmp_path),
+            mode="full",
+            input_path=input_file(tmp_path),
+            run_id="failed-1",
+            project_root=tmp_path,
+            stages=stages,
+        )
+
+    manifest = json.loads(
+        (tmp_path / "artifacts" / "runs" / "failed-1" / "manifest.json").read_text()
+    )
+    assert manifest["status"] == "failed"
 
 
 def test_pipeline_paths_follow_artifact_layout(tmp_path: Path) -> None:
@@ -108,6 +153,7 @@ def test_pipeline_paths_follow_artifact_layout(tmp_path: Path) -> None:
     run_dir = tmp_path / "artifacts" / "runs" / "layout-1"
     assert paths.data_dir == run_dir / "data"
     assert paths.formatted_dir == run_dir / "formatted"
+    assert paths.tokenization_dir == run_dir / "analysis" / "tokenization"
     assert paths.train_dir == run_dir / "train" / "adapter"
     assert paths.eval_base_dir == run_dir / "eval" / "base"
     assert paths.eval_adapter_dir == run_dir / "eval" / "adapter"
@@ -179,10 +225,145 @@ def test_full_and_smoke_runs_use_separate_directories(tmp_path: Path) -> None:
     assert (tmp_path / "artifacts" / "runs" / "r1").exists()
 
 
+def test_full_pipeline_rejects_existing_run_before_rewriting_evidence(
+    tmp_path: Path,
+) -> None:
+    recorder = StageRecorder()
+    run_dir = tmp_path / "artifacts" / "runs" / "already-used"
+    run_dir.mkdir(parents=True)
+    sentinel = run_dir / "existing-evidence.json"
+    sentinel.write_text('{"attempt": 1}\n', encoding="utf-8")
+
+    with pytest.raises(UserInputError, match="full pipeline run directory already exists"):
+        run_pipeline(
+            write_config(tmp_path),
+            mode="full",
+            input_path=input_file(tmp_path),
+            run_id="already-used",
+            project_root=tmp_path,
+            stages=recorder.stages(),
+        )
+
+    assert recorder.calls == []
+    assert sentinel.read_text(encoding="utf-8") == '{"attempt": 1}\n'
+    assert sorted(path.name for path in run_dir.iterdir()) == ["existing-evidence.json"]
+
+
+def test_fresh_run_reservation_admits_only_one_concurrent_attempt(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    ready = Barrier(2)
+
+    def reserve() -> str | UserInputError:
+        ready.wait()
+        try:
+            return ensure_run_context(
+                config,
+                config_path=config_path,
+                run_id="contended-full-run",
+                project_root=tmp_path,
+                reject_existing_run=True,
+            ).run_id
+        except UserInputError as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _index: reserve(), range(2)))
+
+    assert outcomes.count("contended-full-run") == 1
+    errors = [outcome for outcome in outcomes if isinstance(outcome, UserInputError)]
+    assert len(errors) == 1
+    assert "full pipeline run directory already exists" in str(errors[0])
+
+
+def test_smoke_pipeline_can_rerun_in_its_existing_diagnostic_directory(
+    tmp_path: Path,
+) -> None:
+    config_path = write_config(tmp_path)
+    rows = input_file(tmp_path)
+
+    first = run_pipeline(
+        config_path,
+        mode="smoke",
+        input_path=rows,
+        run_id="repeatable",
+        project_root=tmp_path,
+        stages=StageRecorder().stages(),
+    )
+    second_recorder = StageRecorder()
+    second = run_pipeline(
+        config_path,
+        mode="smoke",
+        input_path=rows,
+        run_id="repeatable",
+        project_root=tmp_path,
+        stages=second_recorder.stages(),
+    )
+
+    assert first == second == "smoke-repeatable"
+    assert second_recorder.calls == [
+        "data",
+        "format",
+        "tokenization",
+        "eval-base",
+        "train",
+        "eval-adapter",
+        "compare",
+    ]
+
+
 def test_generated_run_ids_are_prefixed_for_smoke() -> None:
     assert pipeline_run_id("smoke").startswith("smoke-")
     assert not pipeline_run_id("full").startswith("smoke-")
     assert pipeline_run_id("smoke", "smoke-existing") == "smoke-existing"
+
+
+@pytest.mark.parametrize(
+    ("mode", "run_id"),
+    [
+        ("full", ".."),
+        ("smoke", ".."),
+        ("full", "nested/run"),
+        ("smoke", "nested/run"),
+        ("full", r"nested\run"),
+        ("smoke", r"nested\run"),
+        ("full", "/absolute/run"),
+        ("smoke", r"C:\absolute\run"),
+        ("smoke", "escape/../victim"),
+    ],
+)
+def test_pipeline_rejects_unsafe_explicit_run_id_before_artifact_mutation(
+    tmp_path: Path,
+    mode: str,
+    run_id: str,
+) -> None:
+    recorder = StageRecorder()
+
+    with pytest.raises(UserInputError, match="invalid pipeline run id"):
+        run_pipeline(
+            write_config(tmp_path),
+            mode=mode,  # type: ignore[arg-type]
+            input_path=input_file(tmp_path),
+            run_id=run_id,
+            project_root=tmp_path,
+            stages=recorder.stages(),
+        )
+
+    assert recorder.calls == []
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_full_pipeline_reserves_a_generated_run_id(tmp_path: Path) -> None:
+    run_id = run_pipeline(
+        write_config(tmp_path),
+        mode="full",
+        input_path=input_file(tmp_path),
+        project_root=tmp_path,
+        stages=StageRecorder().stages(),
+    )
+
+    assert not run_id.startswith("smoke-")
+    assert (tmp_path / "artifacts" / "runs" / run_id / "manifest.json").exists()
 
 
 def test_missing_input_fails_before_any_stage(tmp_path: Path) -> None:
@@ -192,6 +373,301 @@ def test_missing_input_fails_before_any_stage(tmp_path: Path) -> None:
             write_config(tmp_path),
             mode="full",
             input_path=tmp_path / "missing.jsonl",
+            project_root=tmp_path,
+            stages=recorder.stages(),
+        )
+    assert recorder.calls == []
+
+
+def test_full_paired_trust_gate_runs_before_output_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = StageRecorder()
+
+    def reject(_config: SommelierConfig, _root_rows_path: Path) -> dict[str, dict[str, Path]]:
+        raise UserInputError("full paired-input trust gate rejected fixture")
+
+    monkeypatch.setattr(
+        translate_module,
+        "validate_full_paired_input_contract",
+        reject,
+    )
+    with pytest.raises(UserInputError, match="trust gate rejected"):
+        run_pipeline(
+            write_config(tmp_path),
+            mode="full",
+            input_path=input_file(tmp_path),
+            run_id="rejected-before-output",
+            project_root=tmp_path,
+            stages=recorder.stages(),
+        )
+    assert recorder.calls == []
+    assert not (tmp_path / "artifacts" / "runs" / "rejected-before-output").exists()
+
+
+def test_hebrew_v3_full_pipeline_passes_validation_capability_to_training(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    calls = {"validation": 0, "training": 0}
+
+    def validate(
+        _config: SommelierConfig,
+        _root_rows_path: Path,
+    ) -> dict[str, dict[str, Path]]:
+        calls["validation"] += 1
+        return {}
+
+    def train(
+        config: SommelierConfig,
+        formatted_dir: Path,
+        _out_dir: Path,
+        *,
+        context: RunContext,
+        command: list[str],
+        full_paired_input_validation: FullPairedInputValidationCapability | None = None,
+    ) -> None:
+        assert context.run_id == "validated-v3-training"
+        assert command[:3] == ["sommelier", "pipeline", "run"]
+        consume_full_paired_input_validation(
+            config,
+            full_paired_input_validation,
+            context=context,
+            formatted_dir=formatted_dir,
+        )
+        with pytest.raises(UserInputError, match="no valid paired-input capability"):
+            consume_full_paired_input_validation(
+                config,
+                full_paired_input_validation,
+                context=context,
+                formatted_dir=formatted_dir,
+            )
+        calls["training"] += 1
+
+    def format_data(
+        paths: PipelinePaths,
+        _config: SommelierConfig,
+        _context: RunContext,
+        _command: list[str],
+    ) -> None:
+        paths.formatted_dir.mkdir(parents=True)
+        for split in ("train", "validation"):
+            (paths.formatted_dir / f"{split}.jsonl").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(translate_module, "validate_full_paired_input_contract", validate)
+    monkeypatch.setattr(pipeline_module, "train_adapter", train)
+    recorder = StageRecorder()
+    stages = recorder.stages()
+    stages.format = format_data
+    stages.train = PipelineStages().train
+
+    run_pipeline(
+        config_path,
+        mode="full",
+        input_path=input_file(tmp_path),
+        run_id="validated-v3-training",
+        project_root=tmp_path,
+        stages=stages,
+    )
+
+    assert calls == {"validation": 2, "training": 1}
+
+
+def test_hebrew_v3_full_pipeline_revalidates_materialized_sources_before_training(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    external_root = input_file(tmp_path)
+    initial_bytes = external_root.read_bytes()
+    validated_paths: list[Path] = []
+
+    def validate(
+        _config: SommelierConfig,
+        root_rows_path: Path,
+    ) -> dict[str, dict[str, Path]]:
+        validated_paths.append(root_rows_path)
+        if len(validated_paths) == 1:
+            assert root_rows_path == external_root
+            assert root_rows_path.read_bytes() == initial_bytes
+            return {}
+        assert root_rows_path.name == "rows.en.jsonl"
+        assert root_rows_path.parent.name == "source_inputs"
+        assert root_rows_path.read_bytes() != initial_bytes
+        raise UserInputError("materialized paired-input trust gate rejected mutation")
+
+    def mutate_then_stage(
+        paths: PipelinePaths,
+        _config: SommelierConfig,
+        _context: RunContext,
+        _command: list[str],
+    ) -> None:
+        paths.input_path.write_text('{"mutated":true}\n', encoding="utf-8")
+        staged_root = paths.data_dir / "source_inputs" / "rows.en.jsonl"
+        staged_root.parent.mkdir(parents=True)
+        staged_root.write_bytes(paths.input_path.read_bytes())
+
+    def format_data(
+        paths: PipelinePaths,
+        _config: SommelierConfig,
+        _context: RunContext,
+        _command: list[str],
+    ) -> None:
+        paths.formatted_dir.mkdir(parents=True)
+        for split in ("train", "validation"):
+            (paths.formatted_dir / f"{split}.jsonl").write_text("{}\n", encoding="utf-8")
+
+    def must_not_train(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("training started after the staged paired-input bundle changed")
+
+    monkeypatch.setattr(translate_module, "validate_full_paired_input_contract", validate)
+    monkeypatch.setattr(pipeline_module, "train_adapter", must_not_train)
+    recorder = StageRecorder()
+    stages = recorder.stages()
+    stages.prepare = mutate_then_stage
+    stages.format = format_data
+    stages.train = PipelineStages().train
+
+    with pytest.raises(UserInputError, match="trust gate rejected mutation"):
+        run_pipeline(
+            config_path,
+            mode="full",
+            input_path=external_root,
+            run_id="revalidate-staged-sources",
+            project_root=tmp_path,
+            stages=stages,
+        )
+
+    assert validated_paths == [
+        external_root,
+        tmp_path
+        / "artifacts"
+        / "runs"
+        / "revalidate-staged-sources"
+        / "data"
+        / "source_inputs"
+        / "rows.en.jsonl",
+    ]
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ["config", "run", "formatted-path", "formatted-content"],
+)
+def test_hebrew_v3_full_training_capability_rejects_changed_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attack: str,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        (EXAMPLES_DIR / "config.v3-he-full.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        translate_module,
+        "validate_full_paired_input_contract",
+        lambda _config, _root_rows_path: {},
+    )
+
+    def format_data(
+        paths: PipelinePaths,
+        _config: SommelierConfig,
+        _context: RunContext,
+        _command: list[str],
+    ) -> None:
+        paths.formatted_dir.mkdir(parents=True)
+        for split in ("train", "validation"):
+            (paths.formatted_dir / f"{split}.jsonl").write_text("{}\n", encoding="utf-8")
+
+    def train(
+        config: SommelierConfig,
+        formatted_dir: Path,
+        _out_dir: Path,
+        *,
+        context: RunContext,
+        command: list[str],
+        full_paired_input_validation: FullPairedInputValidationCapability | None = None,
+    ) -> None:
+        attacked_context = context
+        attacked_formatted_dir = formatted_dir
+        if attack == "config":
+            config.train.epochs += 1
+        elif attack == "run":
+            attacked_context = replace(context, run_id="different-run")
+        elif attack == "formatted-path":
+            attacked_formatted_dir = formatted_dir.parent / "different-formatted"
+        else:
+            with (formatted_dir / "train.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write("{}\n")
+        consume_full_paired_input_validation(
+            config,
+            full_paired_input_validation,
+            context=attacked_context,
+            formatted_dir=attacked_formatted_dir,
+        )
+
+    monkeypatch.setattr(pipeline_module, "train_adapter", train)
+    recorder = StageRecorder()
+    stages = recorder.stages()
+    stages.format = format_data
+    stages.train = PipelineStages().train
+
+    with pytest.raises(UserInputError, match="no valid paired-input capability"):
+        run_pipeline(
+            config_path,
+            mode="full",
+            input_path=input_file(tmp_path),
+            run_id=f"changed-binding-{attack}",
+            project_root=tmp_path,
+            stages=stages,
+        )
+
+
+def test_smoke_pipeline_is_exempt_from_full_publication_trust_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = StageRecorder()
+
+    def reject(_config: SommelierConfig, _root_rows_path: Path) -> dict[str, dict[str, Path]]:
+        raise AssertionError("smoke must not enter the full publication trust gate")
+
+    monkeypatch.setattr(
+        translate_module,
+        "validate_full_paired_input_contract",
+        reject,
+    )
+    run_id = run_pipeline(
+        write_config(tmp_path),
+        mode="smoke",
+        input_path=input_file(tmp_path),
+        run_id="trust-exempt",
+        project_root=tmp_path,
+        stages=recorder.stages(),
+    )
+    assert run_id == "smoke-trust-exempt"
+    assert recorder.calls
+
+
+def test_invalid_mode_fails_before_any_stage(tmp_path: Path) -> None:
+    recorder = StageRecorder()
+    with pytest.raises(UserInputError, match="unsupported pipeline mode"):
+        run_pipeline(
+            write_config(tmp_path),
+            mode="typo",  # type: ignore[arg-type]
+            input_path=input_file(tmp_path),
             project_root=tmp_path,
             stages=recorder.stages(),
         )

@@ -4,7 +4,7 @@ Every output Sommelier produces is a plain file under one directory, and every s
 
 ## The artifact root and the run directory
 
-`project.artifact_root` in the config names the root. It must be a relative path; the config loader rejects an absolute one, because manifests store artifact paths relative to this root and a machine-specific prefix would make them non-portable. Every pipeline invocation writes under `<artifact_root>/runs/<run_id>/`, where the run ID is a UTC timestamp plus a random suffix, for example `20260702T091500Z-3f9a1c2b`.
+`project.artifact_root` in the config names the root. It must be a relative descendant of the config directory; absolute paths, `..`, and symlinks that resolve outside that directory are rejected. Manifests store artifact paths relative to this root, so a machine-specific prefix would make them non-portable. Every pipeline invocation writes under `<artifact_root>/runs/<run_id>/`, where the run ID is a UTC timestamp plus a random suffix, for example `20260702T091500Z-3f9a1c2b`.
 
 That format is doing quiet work. A rerun gets a fresh run ID by default, so it lands in a new directory instead of overwriting a previous successful stage directory. Smoke runs additionally get a `smoke-` prefix, so a later full run can never land on top of smoke artifacts. Inside the run directory, each stage owns one subdirectory (`data/`, `formatted/`, `train/`, `eval/base/`, `eval/adapter/`, `report/`). The full file-by-file layout lives in [Artifacts and schemas](../reference/artifacts.md).
 
@@ -41,7 +41,9 @@ Because manifests are written after their outputs, a manifest entry is a checkab
 
 ## Atomic writes
 
-Artifacts are never written in place. `write_artifact_atomic` writes to a sibling temp file (`<name>.tmp.<pid>`), then moves it over the final name; if the writer fails, the temp file is deleted and the error propagates. So the final path only ever holds a complete file, and a process killed mid-write leaves at worst a temp file that no reader looks at. The `ArtifactRef` digest is computed from the published file, not the writer's buffer.
+Artifacts are never written in place. `write_artifact_atomic` first checks any supplied artifact-root boundary, before creating directories or calling the writer. It reserves a cryptographically random private staging directory, accepts only a regular writer output opened without following symlinks, and copies those bytes into an exclusive mode-`0600` staging file. The source descriptor is read again to detect same-size changes even on filesystems whose timestamp metadata is weak. Only after the staged file is flushed does an atomic replace publish it; the parent directory is also flushed where the platform supports directory `fsync`.
+
+An ordinary failure removes the staging directory and preserves the previous final file. A process killed at exactly the wrong moment can leave a private staging directory, but never a half-written artifact under the final name. The returned `ArtifactRef` digest is computed while copying the exact staged bytes that become the published file, not from the writer's buffer or a later path lookup.
 
 ## Failure leaves a record
 

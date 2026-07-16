@@ -134,8 +134,7 @@ def test_bilingual_report_carries_per_slice_and_overall_metrics(tmp_path: Path) 
     assert report["metrics"]["valid_json_rate"]["value"] == 0.5
     assert report["metrics"]["valid_json_rate"]["denominator"] == 4
     assert (
-        report["slices"]["en"]["prompt_set_sha256"]
-        != report["slices"]["fr"]["prompt_set_sha256"]
+        report["slices"]["en"]["prompt_set_sha256"] != report["slices"]["fr"]["prompt_set_sha256"]
     )
 
 
@@ -165,7 +164,16 @@ def test_language_gaps_measure_fr_against_en(tmp_path: Path) -> None:
         "source": "abdelstark/example-adapter",
         "revision": "v1.0",
         "kind": "huggingface_repo",
+        "tree_sha256": None,
+        "artifact_path": None,
+        "revision_is_immutable": False,
     }
+    paired = comparison["paired_language_gaps"]["fr"]
+    assert paired["pairs"] == 2
+    assert paired["coverage"]["reference_fraction"] == 1.0
+    assert paired["base"]["reference_language"] == "en"
+    assert paired["base"]["gap_ci95"]["method"] == "sommelier.paired_bootstrap.v1"
+    assert comparison["slices"]["fr"]["adapter_gain_ci95"]["resamples"] == 2000
     markdown = (out_dir / "comparison_report.md").read_text(encoding="utf-8")
     assert "## Language Gaps" in markdown
     assert "`fr` minus `en`" in markdown
@@ -193,55 +201,69 @@ def test_zero_row_slice_is_an_error(tmp_path: Path) -> None:
         )
 
 
+def test_paired_metrics_use_only_roots_with_surviving_translations(tmp_path: Path) -> None:
+    config, context, formatted_dir = setup_bilingual_run(tmp_path, "paired-subset")
+    test_path = formatted_dir / "test.jsonl"
+    records = [json.loads(line) for line in test_path.read_text(encoding="utf-8").splitlines()]
+    french = [record for record in records if record["language"] == "fr"]
+    dropped_target_id = french[-1]["example_id"]
+    kept = [record for record in records if record["example_id"] != dropped_target_id]
+    test_path.write_text(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in kept),
+        encoding="utf-8",
+    )
+
+    eval_dir = evaluate(config, context, formatted_dir, "base", LanguageAwareGenerator())
+    report = json.loads((eval_dir / "evaluation_report.json").read_text(encoding="utf-8"))
+    paired = report["paired_slices"]["fr"]
+    assert paired["pairs"] == 1
+    assert paired["coverage"] == {
+        "paired": 1,
+        "reference_slice_examples": 2,
+        "target_slice_examples": 1,
+        "reference_fraction": 0.5,
+    }
+    assert paired["reference"]["metrics"]["full_call_exact_match"]["denominator"] == 1
+    assert paired["target"]["metrics"]["full_call_exact_match"]["denominator"] == 1
+
+
 def test_comparison_rejects_differing_slice_sets(tmp_path: Path) -> None:
     config, context, formatted_dir = setup_bilingual_run(tmp_path)
     base_dir = evaluate(config, context, formatted_dir, "base", LanguageAwareGenerator())
-    adapter_dir = evaluate(
-        config, context, formatted_dir, "adapter", FixedGenerator(GOOD_CALL)
-    )
+    adapter_dir = evaluate(config, context, formatted_dir, "adapter", FixedGenerator(GOOD_CALL))
     report_path = adapter_dir / "evaluation_report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     del report["slices"]["fr"]
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
 
     with pytest.raises(EvaluationError, match="slices differ"):
-        compare_evaluations(
-            base_dir, adapter_dir, context.run_dir / "report", command=["test"]
-        )
+        compare_evaluations(base_dir, adapter_dir, context.run_dir / "report", command=["test"])
 
 
 def test_comparison_rejects_per_slice_prompt_mismatch(tmp_path: Path) -> None:
     config, context, formatted_dir = setup_bilingual_run(tmp_path)
     base_dir = evaluate(config, context, formatted_dir, "base", LanguageAwareGenerator())
-    adapter_dir = evaluate(
-        config, context, formatted_dir, "adapter", FixedGenerator(GOOD_CALL)
-    )
+    adapter_dir = evaluate(config, context, formatted_dir, "adapter", FixedGenerator(GOOD_CALL))
     report_path = adapter_dir / "evaluation_report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     report["slices"]["fr"]["prompt_set_sha256"] = "0" * 64
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
 
     with pytest.raises(EvaluationError, match="prompt_set_sha256 for slice fr"):
-        compare_evaluations(
-            base_dir, adapter_dir, context.run_dir / "report", command=["test"]
-        )
+        compare_evaluations(base_dir, adapter_dir, context.run_dir / "report", command=["test"])
 
 
 def test_comparison_rejects_v1_reports(tmp_path: Path) -> None:
     config, context, formatted_dir = setup_bilingual_run(tmp_path)
     base_dir = evaluate(config, context, formatted_dir, "base", LanguageAwareGenerator())
-    adapter_dir = evaluate(
-        config, context, formatted_dir, "adapter", FixedGenerator(GOOD_CALL)
-    )
+    adapter_dir = evaluate(config, context, formatted_dir, "adapter", FixedGenerator(GOOD_CALL))
     report_path = base_dir / "evaluation_report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     report["schema_version"] = "sommelier.evaluation_report.v1"
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
 
-    with pytest.raises(SchemaValidationError, match="evaluation_report.v2"):
-        compare_evaluations(
-            base_dir, adapter_dir, context.run_dir / "report", command=["test"]
-        )
+    with pytest.raises(SchemaValidationError, match="evaluation_report.v3"):
+        compare_evaluations(base_dir, adapter_dir, context.run_dir / "report", command=["test"])
 
 
 def test_adapter_source_recorded_in_manifest_details(tmp_path: Path) -> None:
@@ -254,7 +276,9 @@ def test_adapter_source_recorded_in_manifest_details(tmp_path: Path) -> None:
         FixedGenerator(GOOD_CALL),
         adapter=AdapterRef(source="abdelstark/example-adapter", revision="v1.0"),
     )
-    manifest = json.loads((context.run_dir / "eval_manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (context.run_dir / "eval-adapter_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["details"]["adapter_source"]["source"] == "abdelstark/example-adapter"
     assert manifest["details"]["adapter_source"]["revision"] == "v1.0"
     assert manifest["details"]["eval_slices"] == ["en", "fr"]

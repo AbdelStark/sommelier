@@ -108,7 +108,7 @@ export const S7CTA: React.FC = () => {
             opacity: footIn,
           }}
         >
-          MIT licensed · every number traces to a checksummed artifact
+          MIT licensed · public metrics backed by checksummed reports
         </div>
       </div>
     </Stage>

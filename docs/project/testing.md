@@ -32,7 +32,7 @@ mypy runs strict over both the package and the tests. The whole gate is designed
 
 **Secret hygiene.** The config loader rejects secret-like keys and values, failed manifests redact before writing, and the artifact scanner is tested against tokens, environment values, and home paths planted in JSON, JSONL, and Markdown. The behaviors under test are described on the [security page](security.md).
 
-**Import discipline.** `test_package_modules_never_import_heavy_dependencies` in [`tests/test_imports.py`](https://github.com/AbdelStark/sommelier/blob/main/tests/test_imports.py) imports every `sommelier` module in a clean subprocess interpreter and asserts that none of `torch`, `transformers`, `trl`, `peft`, `bitsandbytes`, `accelerate`, `datasets`, `vllm`, `modal`, `cudf`, or `wandb` got loaded. This turns "the core is GPU-free" from a claim into a property that fails CI when violated.
+**Import discipline.** `test_package_modules_never_import_heavy_dependencies` in [`tests/test_imports.py`](https://github.com/AbdelStark/sommelier/blob/main/tests/test_imports.py) imports every `sommelier` module in a clean subprocess interpreter and asserts that none of `torch`, `transformers`, `peft`, `bitsandbytes`, `accelerate`, `datasets`, `huggingface_hub`, `vllm`, `modal`, `cudf`, or `wandb` got loaded. This turns "the core is GPU-free" from a claim into a property that fails CI when violated.
 
 **Doc links.** Every relative Markdown link in the README, changelog, `docs/`, and `licenses/` must resolve, and key pages must retain required commands and warnings. Documentation rot fails CI like any other regression.
 

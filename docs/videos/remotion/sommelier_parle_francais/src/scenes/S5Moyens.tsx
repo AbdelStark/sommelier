@@ -66,9 +66,9 @@ export const S5Moyens: React.FC = () => {
             transform: `translateY(${(1 - subIn) * 30}px)`,
           }}
         >
-          Refermer l’écart d’une langue{' '}
+          Ce run bilingue tient dans{' '}
           <span style={{color: colors.ink, fontWeight: 700}}>
-            coûte un déjeuner.
+            le prix estimé d’un déjeuner.
           </span>
         </div>
         <div

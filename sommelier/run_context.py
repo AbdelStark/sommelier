@@ -50,12 +50,28 @@ def ensure_run_context(
     config_path: Path,
     run_id: str | None = None,
     project_root: Path | None = None,
+    reject_existing_run: bool = False,
 ) -> RunContext:
     resolved_run_id = run_id or create_run_id()
     config_dir = config_path.parent.resolve()
     run_dir = run_dir_for(config, resolved_run_id, config_dir=config_dir)
     artifact_root = artifact_root_for(config, config_dir=config_dir)
-    run_dir.mkdir(parents=True, exist_ok=True)
+    if reject_existing_run:
+        try:
+            # mkdir(2) is the reservation boundary: exactly one concurrent
+            # full attempt can claim this final path.  Do not use an exists()
+            # check here; that would leave a race before evidence is written.
+            run_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError as error:
+            raise UserInputError(
+                f"full pipeline run directory already exists: {run_dir}",
+                hint=(
+                    "Choose a fresh --run-id. Full pipeline attempts are "
+                    "non-resumable and never overwrite prior evidence."
+                ),
+            ) from error
+    else:
+        run_dir.mkdir(parents=True, exist_ok=True)
 
     resolved_path, config_sha256 = write_resolved_config(config, run_dir)
     config_ref = config_artifact_ref(resolved_path, artifact_root=artifact_root)
@@ -143,5 +159,3 @@ def read_jsonl_records(path: Path) -> list[dict[str, object]]:
                 )
             records.append(payload)
     return records
-
-

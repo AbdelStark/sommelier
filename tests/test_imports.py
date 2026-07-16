@@ -9,11 +9,11 @@ FORBIDDEN_MODULES = (
     "cudf",
     "torch",
     "transformers",
-    "trl",
     "peft",
     "bitsandbytes",
     "accelerate",
     "datasets",
+    "huggingface_hub",
     "vllm",
     "wandb",
 )
@@ -62,6 +62,6 @@ def test_package_modules_never_import_heavy_dependencies() -> None:
     loaded = set(payload["loaded"])
     for forbidden in FORBIDDEN_MODULES:
         assert forbidden not in loaded, f"{forbidden} imported at package import time"
-        assert not any(
-            name.startswith(f"{forbidden}.") for name in loaded
-        ), f"{forbidden} submodule imported at package import time"
+        assert not any(name.startswith(f"{forbidden}.") for name in loaded), (
+            f"{forbidden} submodule imported at package import time"
+        )

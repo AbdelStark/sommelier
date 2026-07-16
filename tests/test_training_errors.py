@@ -83,9 +83,7 @@ def run_with(trainer: FailingTrainer, tmp_path: Path) -> None:
     ],
     ids=["torch_oom_class", "runtime_message"],
 )
-def test_oom_maps_to_resource_error_with_hints(
-    tmp_path: Path, error: BaseException
-) -> None:
+def test_oom_maps_to_resource_error_with_hints(tmp_path: Path, error: BaseException) -> None:
     trainer = FailingTrainer(error)
     with pytest.raises(ResourceError) as excinfo:
         run_with(trainer, tmp_path)
@@ -111,7 +109,9 @@ def test_timeout_maps_to_resource_error(tmp_path: Path, error: BaseException) ->
         run_with(trainer, tmp_path)
 
     assert excinfo.value.exit_code == 4
-    assert "remote.train_timeout_seconds=" in (excinfo.value.hint or "")
+    hint = excinfo.value.hint or ""
+    assert "remote.train_timeout_seconds=" in hint
+    assert "planning estimate, not an enforced training watchdog" in hint
     assert trainer.calls == 1
 
 

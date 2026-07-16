@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import math
+import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, Protocol, TypedDict
 
-from sommelier.artifacts import ArtifactRef, make_artifact_ref
+from sommelier.artifacts import ArtifactRef, make_artifact_ref, write_artifact_atomic
 from sommelier.config import SommelierConfig
 from sommelier.errors import (
     EvaluationError,
@@ -22,8 +28,95 @@ from sommelier.run_context import (
 )
 
 GENERATION_SCHEMA: Final = "sommelier.generation.v2"
+INFERENCE_TELEMETRY_SCHEMA: Final = "sommelier.inference_telemetry.v2"
+INFERENCE_TELEMETRY_FILENAME: Final = "inference_telemetry.json"
+
+GENERATION_TIMING_SCOPE: Final = "generator.generate_end_to_end_call_wall_time"
+GENERATION_TIMING_AGGREGATION: Final = "sum_of_per_example_call_intervals"
+SEQUENTIAL_RUN_BOUNDARY: Final = "single_run_generation_invocation_after_model_load"
+DEFAULT_GENERATOR_TIMED_OPERATIONS: Final = (
+    "prompt_tokenization",
+    "input_device_transfer",
+    "model_generate",
+    "generated_token_decode",
+)
+INFERENCE_WARMUP_CALLS: Final = 1
+INFERENCE_WARMUP_PROMPT_SOURCE: Final = "first_example_in_first_configured_slice"
 
 ModelKind = Literal["base", "adapter"]
+EvaluationStage = Literal["eval-base", "eval-adapter"]
+IMMUTABLE_HF_REVISION = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+
+def inference_timed_call_contract() -> dict[str, object]:
+    """Canonical v2 boundary around each measured generator call."""
+    return {
+        "callable": "TextGenerator.generate",
+        "default_transformers_implementation_includes": list(DEFAULT_GENERATOR_TIMED_OPERATIONS),
+        "explicit_device_synchronization": False,
+    }
+
+
+def inference_warmup_contract() -> dict[str, object]:
+    """Canonical v2 warmup performed once before timing starts."""
+    return {
+        "calls": INFERENCE_WARMUP_CALLS,
+        "timed": False,
+        "prompt_source": INFERENCE_WARMUP_PROMPT_SOURCE,
+        "output_disposition": "discarded",
+        "call_scope": GENERATION_TIMING_SCOPE,
+        "default_transformers_implementation_includes": list(DEFAULT_GENERATOR_TIMED_OPERATIONS),
+        "uses_measured_decoding": True,
+    }
+
+
+def adapter_tree_sha256(path: Path) -> str:
+    """Content identity for a local adapter directory.
+
+    Relative paths are part of the digest, traversal order is canonical, and
+    symlinks are rejected so a later target change cannot alter evaluated
+    weights without changing the recorded identity.
+    """
+    digest = hashlib.sha256()
+    files = sorted(item for item in path.rglob("*") if item.is_file() or item.is_symlink())
+    if not files:
+        raise UserInputError(
+            f"adapter directory is empty: {path}",
+            hint="Point --adapter at a saved PEFT adapter directory.",
+        )
+    for file_path in files:
+        if file_path.is_symlink():
+            raise UserInputError(
+                f"adapter directory contains a symlink: {file_path}",
+                hint="Materialize adapter files before evaluation.",
+            )
+        relative = file_path.relative_to(path).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        with file_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def canonical_adapter_artifact_path(path: Path) -> str | None:
+    """Return the canonical artifact-root-relative path for a run adapter.
+
+    Local paths recorded inside a remote container are not portable after a
+    run bundle is downloaded.  The ``runs/<run-id>/...`` suffix is portable
+    because every artifact reference in a Sommelier manifest uses the same
+    artifact-root-relative namespace.
+    """
+    parts = path.resolve().parts
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index] == "runs" and index + 1 < len(parts):
+            return Path(*parts[index:]).as_posix()
+    return None
+
+
+def evaluation_stage(model_kind: ModelKind) -> EvaluationStage:
+    """Stable manifest identity for one model arm of evaluation."""
+    return "eval-base" if model_kind == "base" else "eval-adapter"
 
 
 @dataclass(frozen=True)
@@ -38,12 +131,23 @@ class AdapterRef:
     def is_local(self) -> bool:
         return Path(self.source).exists()
 
-    def describe(self) -> dict[str, str | None]:
-        return {
+    def describe(self) -> dict[str, object]:
+        description: dict[str, object] = {
             "source": self.source,
             "revision": None if self.is_local else (self.revision or "main"),
             "kind": "local_directory" if self.is_local else "huggingface_repo",
         }
+        if self.is_local:
+            local_path = Path(self.source)
+            description["tree_sha256"] = adapter_tree_sha256(local_path)
+            description["artifact_path"] = canonical_adapter_artifact_path(local_path)
+            description["revision_is_immutable"] = True
+        else:
+            revision = self.revision or "main"
+            description["tree_sha256"] = None
+            description["artifact_path"] = None
+            description["revision_is_immutable"] = bool(IMMUTABLE_HF_REVISION.fullmatch(revision))
+        return description
 
 
 class DecodingConfig(TypedDict):
@@ -176,6 +280,98 @@ def slice_filename(slice_language: str) -> str:
     return f"generations.{slice_language}.jsonl"
 
 
+def gpu_count_from_label(gpu_label: str) -> int:
+    """Returns the allocation count encoded by Modal-style ``GPU:count`` labels."""
+    match = re.search(r":([1-9][0-9]*)$", gpu_label)
+    return int(match.group(1)) if match is not None else 1
+
+
+def _rounded_seconds(value: float) -> float:
+    return round(value, 6)
+
+
+def _write_inference_telemetry(
+    config: SommelierConfig,
+    *,
+    out_dir: Path,
+    model_kind: ModelKind,
+    context: RunContext,
+    decoding: DecodingConfig,
+    slice_elapsed_seconds: dict[str, float],
+    generation_refs: dict[str, ArtifactRef],
+) -> ArtifactRef:
+    """Writes aggregate inference timing without making generations volatile.
+
+    The timed interval is each end-to-end ``TextGenerator.generate`` call. For
+    the default Transformers implementation this includes prompt tokenization,
+    input device transfer, ``model.generate``, and generated-token decoding.
+    Model loading, the one warmup call, tool-call parsing, artifact serialization,
+    and time between calls are outside the measurement. Slices and examples are
+    processed sequentially by one model instance, so elapsed seconds can be
+    attributed to a language slice without overlap.
+    """
+    slices: dict[str, dict[str, object]] = {}
+    total_examples = 0
+    total_elapsed_seconds = 0.0
+    for slice_language in config.eval.slices:
+        examples = len(read_jsonl_records(out_dir / slice_filename(slice_language)))
+        elapsed_seconds = slice_elapsed_seconds[slice_language]
+        total_examples += examples
+        total_elapsed_seconds += elapsed_seconds
+        slices[slice_language] = {
+            "examples": examples,
+            "elapsed_seconds": _rounded_seconds(elapsed_seconds),
+            "seconds_per_example": _rounded_seconds(elapsed_seconds / examples),
+            "generation_artifact": generation_refs[slice_language],
+        }
+
+    payload: dict[str, object] = {
+        "schema_version": INFERENCE_TELEMETRY_SCHEMA,
+        "run_id": context.run_id,
+        "model_kind": model_kind,
+        "decoding": dict(decoding),
+        "measurement": {
+            "scope": GENERATION_TIMING_SCOPE,
+            "aggregation": GENERATION_TIMING_AGGREGATION,
+            "clock": "monotonic_seconds",
+            "model_load_included": False,
+            "parsing_and_artifact_io_included": False,
+        },
+        "timed_call_contract": inference_timed_call_contract(),
+        "warmup": inference_warmup_contract(),
+        "sequential_run": {
+            "boundary": SEQUENTIAL_RUN_BOUNDARY,
+            "concurrency": 1,
+            "single_model_instance": True,
+            "slice_order": list(config.eval.slices),
+            "example_order": "formatted_test_order_within_slice",
+        },
+        "hardware": {
+            "gpu_label": config.remote.gpu,
+            "gpu_count": gpu_count_from_label(config.remote.gpu),
+            "source": "config.remote.gpu",
+        },
+        "slices": slices,
+        "total": {
+            "examples": total_examples,
+            "elapsed_seconds": _rounded_seconds(total_elapsed_seconds),
+            "seconds_per_example": _rounded_seconds(total_elapsed_seconds / total_examples),
+        },
+    }
+    telemetry_path = out_dir / INFERENCE_TELEMETRY_FILENAME
+
+    def writer(temp_path: Path) -> None:
+        temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    return write_artifact_atomic(
+        telemetry_path,
+        writer,
+        artifact_root=context.artifact_root,
+        kind="inference_telemetry",
+        schema_version=INFERENCE_TELEMETRY_SCHEMA,
+    )
+
+
 def read_test_slices(
     config: SommelierConfig,
     formatted_dir: Path,
@@ -205,9 +401,7 @@ def read_test_slices(
         language = str(example.get("language"))
         if language in by_slice:
             by_slice[language].append(example)
-    empty_slices = sorted(
-        slice_language for slice_language, rows in by_slice.items() if not rows
-    )
+    empty_slices = sorted(slice_language for slice_language, rows in by_slice.items() if not rows)
     if empty_slices:
         raise UserInputError(
             f"eval.slices includes {', '.join(empty_slices)} but the formatted "
@@ -228,6 +422,7 @@ def run_generation(
     command: list[str],
     adapter: AdapterRef | None = None,
     generator: TextGenerator | None = None,
+    clock: Callable[[], float] = time.perf_counter,
 ) -> list[ArtifactRef]:
     """Generates one output per formatted test prompt, one file per slice.
 
@@ -243,13 +438,31 @@ def run_generation(
 
     active_generator = generator or load_model_generator(config, model_kind, adapter)
 
+    # Prime the same end-to-end generate path once for every evaluation arm.
+    # The first configured slice is guaranteed non-empty by ``read_test_slices``;
+    # using its first stored prompt makes the warmup choice deterministic. The
+    # result is deliberately discarded, and the telemetry clock is not touched.
+    warmup_prompt = str(by_slice[config.eval.slices[0]][0]["prompt_text"])
+    active_generator.generate(warmup_prompt, decoding=decoding)
+
     out_dir.mkdir(parents=True, exist_ok=True)
     output_refs: list[ArtifactRef] = []
+    generation_refs: dict[str, ArtifactRef] = {}
+    slice_elapsed_seconds: dict[str, float] = {}
     for slice_language in config.eval.slices:
         records: list[dict[str, object]] = []
+        elapsed_seconds = 0.0
         for example in by_slice[slice_language]:
             prompt_text = str(example["prompt_text"])
+            started = clock()
             raw_text = active_generator.generate(prompt_text, decoding=decoding)
+            finished = clock()
+            if not math.isfinite(started) or not math.isfinite(finished) or finished < started:
+                raise EvaluationError(
+                    "inference telemetry clock returned a non-monotonic value",
+                    hint="Use a finite monotonic clock for generation timing.",
+                )
+            elapsed_seconds += finished - started
             parsed_call, parse_status = parse_tool_call(raw_text)
             records.append(
                 {
@@ -266,14 +479,26 @@ def run_generation(
             )
         generations_path = out_dir / slice_filename(slice_language)
         write_jsonl_records(generations_path, records)
-        output_refs.append(
-            make_artifact_ref(
-                generations_path,
-                artifact_root=context.artifact_root,
-                kind="generations",
-                schema_version=GENERATION_SCHEMA,
-            )
+        generation_ref = make_artifact_ref(
+            generations_path,
+            artifact_root=context.artifact_root,
+            kind="generations",
+            schema_version=GENERATION_SCHEMA,
         )
+        generation_refs[slice_language] = generation_ref
+        output_refs.append(generation_ref)
+        slice_elapsed_seconds[slice_language] = elapsed_seconds
+
+    telemetry_ref = _write_inference_telemetry(
+        config,
+        out_dir=out_dir,
+        model_kind=model_kind,
+        context=context,
+        decoding=decoding,
+        slice_elapsed_seconds=slice_elapsed_seconds,
+        generation_refs=generation_refs,
+    )
+    output_refs.append(telemetry_ref)
 
     input_ref = make_artifact_ref(
         test_path,
@@ -281,12 +506,16 @@ def run_generation(
         kind="formatted_split",
         schema_version=FORMATTED_SCHEMA,
     )
-    details: dict[str, object] = {"eval_slices": list(config.eval.slices)}
+    details: dict[str, object] = {
+        "eval_slices": list(config.eval.slices),
+        "inference_telemetry": telemetry_ref["path"],
+        "execution_mode": "sequential",
+    }
     if adapter is not None:
         details["adapter_source"] = adapter.describe()
     record_stage_success(
         context,
-        stage="eval",
+        stage=evaluation_stage(model_kind),
         command=command,
         seed=config.project.seed,
         inputs=[input_ref],

@@ -1,6 +1,6 @@
 # Sommelier
 
-Sommelier turns a small open language model into a reliable JSON tool caller and proves the improvement. One CLI runs the whole path: prepare data, render prompts, evaluate the base model, train a QLoRA adapter, evaluate the adapter, and compare both sides under a gate that refuses to compare anything that is not provably identical.
+Sommelier turns a small open language model into a reliable JSON tool caller and proves the improvement. One CLI runs the whole path: prepare data, render prompts, measure tokenizer cost, evaluate the base model, train a QLoRA adapter, evaluate the adapter, and compare both sides under a gate that refuses to compare anything that is not provably identical.
 
 The project exists because most fine-tuning writeups ask you to trust them. Sommelier is built on the opposite premise: a fine-tuning claim is only as good as its evidence. Every stage writes schema-versioned, checksummed artifacts. Prompts carry digests. Decoding is deterministic. The final report cannot be produced unless base and adapter were scored on the same test split, the same prompts, the same parser, and the same decoding settings.
 
@@ -30,7 +30,7 @@ These numbers hold for the recorded dataset revision, prompt policy, parser, and
 
 - **[Concepts](concepts/pipeline.md)**
 
-    How the six stages fit together, and why the pipeline refuses to do certain things.
+    How the seven stages fit together, and why the pipeline refuses to do certain things.
 
 - **[Reproduce the reference run](guides/reproduction.md)**
 

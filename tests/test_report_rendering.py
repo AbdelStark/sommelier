@@ -33,14 +33,35 @@ def fixture_comparison() -> dict[str, Any]:
         "full_call_exact_match": metric(0.7, 14, 20),
     }
     deltas = {
-        name: adapter_metrics[name]["value"] - base_metrics[name]["value"]
-        for name in base_metrics
+        name: adapter_metrics[name]["value"] - base_metrics[name]["value"] for name in base_metrics
+    }
+    bootstrap = {
+        "method": "sommelier.paired_bootstrap.v1",
+        "seed": 41,
+        "confidence_level": 0.95,
+        "resamples": 2000,
+        "intervals": {
+            name: {"lower": delta - 0.1, "upper": delta + 0.1} for name, delta in deltas.items()
+        },
+    }
+    gap_bootstrap = {
+        "method": "sommelier.paired_bootstrap.v1",
+        "seed": 42,
+        "confidence_level": 0.95,
+        "resamples": 2000,
+        "intervals": {name: {"lower": -0.1, "upper": 0.1} for name in deltas},
     }
     return {
-        "schema_version": "sommelier.comparison_report.v2",
+        "schema_version": "sommelier.comparison_report.v3",
         "created_at": "2026-07-02T12:00:00+00:00",
         "run_id": "smoke-fixture-1",
         "shared": {
+            "model_identity": {
+                "base_model_id": "example/base",
+                "base_model_revision": "b" * 40,
+                "tokenizer_id": "example/base",
+                "tokenizer_revision": "t" * 40,
+            },
             "config_sha256": "c" * 64,
             "split": "test",
             "test_split_sha256": "t" * 64,
@@ -54,6 +75,7 @@ def fixture_comparison() -> dict[str, Any]:
                 "base": {"metrics": base_metrics},
                 "adapter": {"metrics": adapter_metrics},
                 "deltas": dict(deltas),
+                "adapter_gain_ci95": dict(bootstrap),
                 "generation_artifacts": {
                     "base": "runs/smoke-fixture-1/eval/base/generations.en.jsonl",
                     "adapter": "runs/smoke-fixture-1/eval/adapter/generations.en.jsonl",
@@ -65,6 +87,7 @@ def fixture_comparison() -> dict[str, Any]:
                 "base": {"metrics": base_metrics},
                 "adapter": {"metrics": adapter_metrics},
                 "deltas": dict(deltas),
+                "adapter_gain_ci95": dict(bootstrap),
                 "generation_artifacts": {
                     "base": "runs/smoke-fixture-1/eval/base/generations.fr.jsonl",
                     "adapter": "runs/smoke-fixture-1/eval/adapter/generations.fr.jsonl",
@@ -73,8 +96,35 @@ def fixture_comparison() -> dict[str, Any]:
         },
         "language_gaps": {
             "reference": "en",
+            "cohort": "marginal_full_slices",
             "base": {"fr": {name: 0.0 for name in base_metrics}},
             "adapter": {"fr": {name: 0.0 for name in adapter_metrics}},
+        },
+        "paired_language_gaps": {
+            "fr": {
+                "pair_set_sha256": "r" * 64,
+                "pairs": 18,
+                "coverage": {
+                    "paired": 18,
+                    "reference_slice_examples": 20,
+                    "target_slice_examples": 18,
+                    "reference_fraction": 0.9,
+                },
+                "base": {
+                    "reference_language": "en",
+                    "target_language": "fr",
+                    "pairs": 18,
+                    "gaps": {name: 0.0 for name in base_metrics},
+                    "gap_ci95": gap_bootstrap,
+                },
+                "adapter": {
+                    "reference_language": "en",
+                    "target_language": "fr",
+                    "pairs": 18,
+                    "gaps": {name: 0.0 for name in adapter_metrics},
+                    "gap_ci95": {**gap_bootstrap, "seed": 43},
+                },
+            }
         },
         "base": {
             "run_id": "smoke-fixture-1",
@@ -91,6 +141,7 @@ def fixture_comparison() -> dict[str, Any]:
             },
         },
         "deltas": deltas,
+        "adapter_gain_ci95": bootstrap,
         "runtime": {
             "available": True,
             "schema_version": "sommelier.runtime_metadata.v1",
@@ -128,6 +179,8 @@ def test_markdown_contains_required_sections() -> None:
         "## Metrics, slice `en`",
         "## Metrics, slice `fr`",
         "## Language Gaps",
+        "### Exact matched-pair gaps (primary)",
+        "### Marginal full-slice gaps (descriptive)",
         "## Runtime and Cost",
         "## Reproduction",
         "## Limitations",
@@ -143,7 +196,19 @@ def test_markdown_contains_required_sections() -> None:
 
 def test_markdown_renders_metric_deltas() -> None:
     rendered = render_comparison_markdown(fixture_comparison())
-    assert "| valid_json_rate | 0.5000 (10/20) | 0.9500 (19/20) | +0.4500 |" in rendered
+    assert (
+        "| valid_json_rate | 0.5000 (10/20) | 0.9500 (19/20) | +0.4500 | [+0.3500, +0.5500] |"
+    ) in rendered
+
+
+def test_markdown_distinguishes_paired_and_marginal_language_gaps() -> None:
+    rendered = render_comparison_markdown(fixture_comparison())
+    assert "Matched pairs: 18" in rendered
+    assert "Reference coverage: 18/20 (90.0%)" in rendered
+    assert "Pair-set digest: `" + "r" * 64 + "`" in rendered
+    assert "Base 95% CI" in rendered
+    assert "`marginal_full_slices`" in rendered
+    assert "not the primary paired estimate" in rendered
 
 
 def test_markdown_marks_unavailable_runtime() -> None:

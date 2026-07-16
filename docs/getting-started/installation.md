@@ -1,6 +1,6 @@
 # Installation
 
-Sommelier installs in seconds on any machine because the package deliberately contains no ML stack. The local install gives you the CLI, the config and schema validation, the data and formatting stages, and the launcher for remote GPU runs. Everything heavy lives in container images that only ever exist on the GPU host.
+Sommelier installs in seconds on any machine because the package deliberately contains no ML stack. The local install gives you the CLI, config and schema validation, data and formatting stages, and launchers for remote work. Model training, evaluation, local-model translation, and semantic review live in GPU images; the OpenAI Responses translation producer lives in a separate CPU-only image.
 
 ## Prerequisites
 
@@ -8,7 +8,7 @@ Sommelier installs in seconds on any machine because the package deliberately co
 - [uv](https://docs.astral.sh/uv/), which manages the virtual environment and the lockfile.
 - git.
 
-A Modal account is not needed for anything on this page or the [quickstart](quickstart.md). It becomes relevant only when you run stages on a rented GPU; see [Remote execution](../guides/remote-execution.md).
+A Modal account is not needed for anything on this page or the [quickstart](quickstart.md). It becomes relevant when you run a rented GPU stage or the CPU-only provider translation producer; see [Remote execution](../guides/remote-execution.md).
 
 ## Install
 
@@ -26,11 +26,22 @@ Three runtime dependencies:
 
 | Package | Why it is a base dependency |
 |---|---|
-| `modal>=1.5.1` | Launching remote GPU runs from your machine |
+| `modal>=1.5.1` | Launching remote CPU/GPU runs from your machine |
 | `pydantic>=2.0` | Config validation and every artifact schema |
 | `pyyaml>=6.0` | Reading config files |
 
-torch, transformers, peft, trl, and bitsandbytes are not dependencies at any level, not even as optional extras. They are installed only inside the remote Modal images defined in [`sommelier/remote/images.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/remote/images.py). The split keeps the laptop, CI, and the GPU host running the same package: CI can gate every change without provisioning a GPU, and mypy deliberately treats the heavy stacks as untyped even where they are installed, so type checking gives the same result everywhere.
+torch, transformers, tokenizers, accelerate, peft, bitsandbytes, datasets, and
+the OpenAI SDK are not local project dependencies at any level. They are
+installed only inside the remote Modal images defined in
+[`sommelier/remote/images.py`](https://github.com/AbdelStark/sommelier/blob/main/sommelier/remote/images.py).
+`huggingface_hub` is isolated in the `publish` extra: publication validation
+does not import it, and an authenticated Hub mutation imports it only after the
+operator passes `--execute`. The selected Hebrew producer's CPU image contains only
+Python 3.13.3, `openai==2.45.0`, and `datasets==5.0.0`; it does not inherit the
+CUDA/model stack. This split keeps the laptop and CI lean while each remote
+boundary runs the same Sommelier package source. CI can gate the core without a
+GPU or provider credential, and mypy deliberately treats optional heavy stacks
+as untyped where installed so type checking is stable.
 
 ## Extras
 
@@ -39,6 +50,13 @@ torch, transformers, peft, trl, and bitsandbytes are not dependencies at any lev
 | `dev` | pytest, ruff, mypy, types-pyyaml, python-dotenv | The test suite and linters. Install it by default; the verification below assumes it. |
 | `data-gpu` | cudf-cu12 | GPU dataframe coarse filtering via `sommelier data prepare --gpu`. Only meaningful on a CUDA host; the remote data image installs it for you. |
 | `docs` | mkdocs-material | Building this documentation site locally |
+| `publish` | huggingface-hub 1.23.0 | Executing the explicit, round-trip-verified Hugging Face dataset or adapter publication commands. Validation-only publication does not need it. |
+
+Install the publication boundary only on the authenticated release host:
+
+```bash
+uv sync --extra publish
+```
 
 ## Verify the install
 
@@ -61,7 +79,7 @@ fixtures ok: tests/fixtures
 
 ## The import discipline
 
-`import sommelier` never touches torch or CUDA, and a test keeps it that way: [`tests/test_imports.py`](https://github.com/AbdelStark/sommelier/blob/main/tests/test_imports.py) imports every module of the package in a clean interpreter and asserts that none of modal, cudf, torch, transformers, trl, peft, bitsandbytes, accelerate, datasets, vllm, or wandb was loaded as a side effect. Heavy imports happen inside stage functions, at call time. When a stage needs a stack that is not installed, it raises `ExternalDependencyError` (exit code 3) naming the missing packages, rather than an `ImportError` traceback; the [quickstart](quickstart.md) shows this on real commands, and [Errors and exit codes](../reference/errors.md) lists the full taxonomy.
+`import sommelier` never touches torch or CUDA, and a test keeps it that way: [`tests/test_imports.py`](https://github.com/AbdelStark/sommelier/blob/main/tests/test_imports.py) imports every module of the package in a clean interpreter and asserts that none of modal, cudf, torch, transformers, peft, bitsandbytes, accelerate, datasets, huggingface_hub, vllm, or wandb was loaded as a side effect. The OpenAI adapter also imports its SDK only inside the explicit provider factory, so importing the package does not require provider credentials or the SDK. Heavy/provider imports happen inside stage functions, at call time. When a stage needs a stack that is not installed, it raises `ExternalDependencyError` (exit code 3) naming the missing packages, rather than an `ImportError` traceback; the [quickstart](quickstart.md) shows this on real commands, and [Errors and exit codes](../reference/errors.md) lists the full taxonomy.
 
 ## Next
 

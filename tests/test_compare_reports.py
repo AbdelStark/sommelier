@@ -100,7 +100,7 @@ def test_evaluation_report_shape(tmp_path: Path) -> None:
     eval_dir = evaluate(config, context, formatted_dir, "base", GOOD_CALL)
 
     report = json.loads((eval_dir / "evaluation_report.json").read_text(encoding="utf-8"))
-    assert report["schema_version"] == "sommelier.evaluation_report.v2"
+    assert report["schema_version"] == "sommelier.evaluation_report.v3"
     assert report["model_kind"] == "base"
     assert report["split"] == "test"
     assert report["parser_version"] == "sommelier.parser.v1"
@@ -127,10 +127,15 @@ def test_comparison_writes_report_and_deltas(tmp_path: Path) -> None:
     compare_evaluations(base_dir, adapter_dir, out_dir, command=["test"])
 
     comparison = json.loads((out_dir / "comparison_report.json").read_text(encoding="utf-8"))
-    assert comparison["schema_version"] == "sommelier.comparison_report.v2"
+    assert comparison["schema_version"] == "sommelier.comparison_report.v3"
     assert set(comparison["slices"]) == {"en"}
     assert comparison["slices"]["en"]["deltas"]["valid_json_rate"] == 1.0
-    assert comparison["language_gaps"] == {"reference": "en", "base": {}, "adapter": {}}
+    assert comparison["language_gaps"] == {
+        "reference": "en",
+        "cohort": "marginal_full_slices",
+        "base": {},
+        "adapter": {},
+    }
     assert comparison["base"]["metrics"]["valid_json_rate"]["value"] == 0.0
     assert comparison["adapter"]["metrics"]["valid_json_rate"]["value"] == 1.0
     assert comparison["deltas"]["valid_json_rate"] == 1.0
@@ -138,9 +143,7 @@ def test_comparison_writes_report_and_deltas(tmp_path: Path) -> None:
     assert comparison["shared"]["parser_version"] == "sommelier.parser.v1"
     assert comparison["runtime"] == {"available": False}
 
-    manifest = json.loads(
-        (context.run_dir / "report_manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((context.run_dir / "report_manifest.json").read_text(encoding="utf-8"))
     assert manifest["stage"] == "report"
     assert manifest["status"] == "succeeded"
 
@@ -170,9 +173,7 @@ def tamper_report(eval_dir: Path, field: str, value: object) -> None:
         ("split", "validation"),
     ],
 )
-def test_comparison_rejects_mismatched_identity(
-    tmp_path: Path, field: str, value: object
-) -> None:
+def test_comparison_rejects_mismatched_identity(tmp_path: Path, field: str, value: object) -> None:
     _, base_dir, adapter_dir, out_dir = setup_comparison(tmp_path)
     tamper_report(adapter_dir, field, value)
 
@@ -200,9 +201,7 @@ def test_report_rejects_prompt_digest_mismatch(tmp_path: Path) -> None:
         generator=FixedGenerator(GOOD_CALL),
     )
     generations_path = eval_dir / "generations.en.jsonl"
-    lines = [
-        json.loads(line) for line in generations_path.read_text(encoding="utf-8").splitlines()
-    ]
+    lines = [json.loads(line) for line in generations_path.read_text(encoding="utf-8").splitlines()]
     lines[0]["prompt_sha256"] = "0" * 64
     generations_path.write_text(
         "\n".join(json.dumps(line, sort_keys=True) for line in lines) + "\n",

@@ -1,0 +1,117 @@
+{
+  "schema_version": "sommelier.hebrew_teacher_smoke_evidence.v1",
+  "run_id": "he-translate-openai-gpt55-flex-v9-v11-smoke-1",
+  "diagnostic_only": true,
+  "reviewed_on": "2026-07-13",
+  "source": {
+    "dataset": "Salesforce/xlam-function-calling-60k",
+    "dataset_revision": "26d14ebfe18b1f7b524bd39b404b50af5dc97866",
+    "exported_rows": 2500,
+    "selected_rows": 140,
+    "root_rows_sha256": "4a9c16ed02e6c2042e7ac0df2c8b8a1948026371e518894b631c554a589ee91f",
+    "selected_source_ids_sha256": "aaac09dcc8de33ca4b0fee7fe72d6e54d420a9d4109e34b9098362fe0c96b780",
+    "selection_contract_sha256": "ff43111ff8946709aad8a29c624bcb8a060928643c89281f2c11711bb5481480"
+  },
+  "producer": {
+    "provider": "OpenAI",
+    "model_snapshot": "gpt-5.5-2026-04-23",
+    "api": "responses",
+    "service_tier": "flex",
+    "sdk_version": "2.45.0",
+    "sdk_retries": 0,
+    "store": false,
+    "strict_structured_output": true,
+    "max_output_tokens": 256,
+    "max_workers": 8,
+    "translation_identity_sha256": "eb18e3258a862cede0ecab3f5cb3df90989e96f18a6ce495782b37c4dacc520f",
+    "source_code": {
+      "recorded_git_commit": "8c2098d4d2bb068ca368cdecb9a25976ee1aa7b0",
+      "working_tree_clean": false,
+      "boundary": "The recorded commit is the dirty worktree base, not a digest of the mounted producer diff. This smoke is not publication-grade provenance."
+    }
+  },
+  "mechanical_audit": {
+    "input_rows": 140,
+    "accepted_rows": 140,
+    "dropped_rows": 0,
+    "retried_rows": 3,
+    "protected_spans": 310,
+    "missing_or_changed_protected_spans": 0,
+    "quoted_protected_spans": 62,
+    "missing_or_changed_quoted_protected_spans": 0,
+    "tools_byte_mismatches": 0,
+    "answers_byte_mismatches": 0,
+    "published_rows_canonical_sha256": "d6fcaa130b020c7c19ae2e7e72354739148b966f56b3d7c20c5b2f31229bb7a7",
+    "retry_diagnostics": [
+      {
+        "source_id": "Salesforce/xlam-function-calling-60k:20276",
+        "initial_rejection": "Hebrew preposition was joined to protected span Berlin",
+        "accepted_retry": "Separated the Hebrew preposition from Berlin"
+      },
+      {
+        "source_id": "Salesforce/xlam-function-calling-60k:23406",
+        "initial_rejection": "Hebrew preposition was joined to protected span New York City",
+        "accepted_retry": "Separated the Hebrew preposition from New York City"
+      },
+      {
+        "source_id": "Salesforce/xlam-function-calling-60k:46853",
+        "initial_rejection": "Hebrew article was joined to protected span type",
+        "accepted_retry": "Passed the mechanical separator audit but retained a minor mixed-language phrasing defect"
+      }
+    ]
+  },
+  "semantic_audit": {
+    "rows_file": "hebrew-teacher-smoke-semantic-review.jsonl",
+    "rows_sha256": "6b5de38f7e833f0f719fb2765fa7d30bbebd4aa4fb981cdf7ff1bbb2b61c9bc5",
+    "reviewed_rows": 140,
+    "clean": 127,
+    "minor": 13,
+    "hard": 0,
+    "critical_errors": 0,
+    "operational_intent_changes": 0,
+    "quantity_changes": 0,
+    "negation_changes": 0,
+    "filter_changes": 0,
+    "domain_sense_changes": 0,
+    "reviewer_boundary": "Model-assisted, non-native Hebrew diagnostic inspection. This is not the preregistered 200-row review, independent human review, or native-speaker validation."
+  },
+  "provider_usage": {
+    "journal_schema_version": "sommelier.openai_responses_provider_journal.v1",
+    "provider_evidence_schema_version": "sommelier.openai_provider_evidence.v1",
+    "requests": 143,
+    "request_errors": 0,
+    "provider_error_responses": 0,
+    "model_mismatch_responses": 0,
+    "service_tier_mismatch_responses": 0,
+    "refusal_responses": 0,
+    "incomplete_responses": 0,
+    "input_tokens": 73359,
+    "cached_input_tokens": 0,
+    "output_tokens": 11618,
+    "reasoning_output_tokens": 0,
+    "total_tokens": 84977,
+    "translation_seconds": 52.86270119,
+    "public_list_price_estimate_usd": "0.357667500",
+    "billing_evidence": false,
+    "pricing_source": "https://developers.openai.com/api/docs/pricing",
+    "pricing_checked_date": "2026-07-13",
+    "boundary": "The USD value is calculated from provider usage and a pinned public list-price snapshot. It is not an invoice or observed charge."
+  },
+  "artifact_sha256": {
+    "config.yaml": "d42a58a536a5635286f53623084487a543826195d1e932956988d46ba089d25b",
+    "openai_responses_provider.jsonl": "56adb144f1f63fdc8aabf68d99a82aeba5dd9e1b9c45c5b4873b565e799c86f0",
+    "rows.en.jsonl": "4a9c16ed02e6c2042e7ac0df2c8b8a1948026371e518894b631c554a589ee91f",
+    "rows.he.jsonl": "49f541578dd0a448e093e585b4e007e9bf322c1c26e7ec01b841eeb72b6e6c3e",
+    "translation_progress.he.jsonl": "407272302bf4b8079a4459a74aaba27d453ed7f40f6e633f111717998a0a7bf1",
+    "translation_publication.json": "b3277aaa31bb744e6253f7585aebd7b12f26774a3a82573702ffc36f88c40882",
+    "translation_summary.json": "d368f969fe761c4b2012326d7122a47a74d6e6dc8f168c401205ca80d7480e48"
+  },
+  "decision": {
+    "teacher_selected": true,
+    "selected_teacher": "openai:gpt-5.5-2026-04-23",
+    "selected_production_service_tier": "flex",
+    "full_run_requires_clean_committed_producer": true,
+    "full_run_requires_explicit_spend_authorization": true
+  },
+  "claim_boundary": "This bounded dirty-worktree smoke supports teacher and runtime selection only. Strict JSON shape does not establish semantic correctness; store=false is not a zero-data-retention guarantee; the dated model ID is not a public weight digest; and the diagnostic does not establish full-corpus yield, native fluency, v3 model accuracy, or final translation cost."
+}

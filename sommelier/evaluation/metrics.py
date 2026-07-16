@@ -29,6 +29,13 @@ class ScoredRecord(TypedDict):
     gold_call: ToolCall
 
 
+class MetricComponent(TypedDict):
+    """One example's additive numerator/denominator contribution."""
+
+    numerator: int
+    denominator: int
+
+
 def _metric(numerator: int, denominator: int) -> MetricValue:
     value = numerator / denominator if denominator else 0.0
     return MetricValue(value=value, numerator=numerator, denominator=denominator)
@@ -124,9 +131,7 @@ def argument_f1(records: Sequence[ScoredRecord]) -> MetricValue:
         predicted_pairs = flatten_arguments(parsed_call["arguments"])
         predicted_total += len(predicted_pairs)
         matched += sum(
-            1
-            for path, value in predicted_pairs.items()
-            if gold_pairs.get(path) == value
+            1 for path, value in predicted_pairs.items() if gold_pairs.get(path) == value
         )
     return _metric(2 * matched, predicted_total + gold_total)
 
@@ -143,6 +148,43 @@ def full_call_exact_match(records: Sequence[ScoredRecord]) -> MetricValue:
         == _canonical(record["gold_call"]["arguments"])
     )
     return _metric(numerator, len(records))
+
+
+def metric_components(record: ScoredRecord) -> dict[str, MetricComponent]:
+    """Returns additive per-example components for paired resampling.
+
+    Summing each component over records yields the same numerator and
+    denominator as :func:`compute_metrics`. Keeping this primitive here makes
+    bootstrap confidence intervals reuse the exact metric semantics rather
+    than maintaining a second scoring implementation.
+    """
+    parsed_call = record["parsed_call"]
+    ok = _is_ok(record) and parsed_call is not None
+    name_match = False
+    arguments_match = False
+    if ok and parsed_call is not None:
+        name_match = parsed_call["name"] == record["gold_call"]["name"]
+        arguments_match = _canonical(parsed_call["arguments"]) == _canonical(
+            record["gold_call"]["arguments"]
+        )
+
+    gold_pairs = flatten_arguments(record["gold_call"]["arguments"])
+    predicted_pairs: dict[str, str] = {}
+    if ok and parsed_call is not None:
+        predicted_pairs = flatten_arguments(parsed_call["arguments"])
+    matched = sum(1 for path, value in predicted_pairs.items() if gold_pairs.get(path) == value)
+    return {
+        "valid_json_rate": MetricComponent(numerator=int(ok), denominator=1),
+        "function_name_accuracy": MetricComponent(numerator=int(name_match), denominator=1),
+        "argument_exact_match": MetricComponent(numerator=int(arguments_match), denominator=1),
+        "argument_f1": MetricComponent(
+            numerator=2 * matched,
+            denominator=len(predicted_pairs) + len(gold_pairs),
+        ),
+        "full_call_exact_match": MetricComponent(
+            numerator=int(name_match and arguments_match), denominator=1
+        ),
+    }
 
 
 def compute_metrics(records: Sequence[ScoredRecord]) -> dict[str, MetricValue]:

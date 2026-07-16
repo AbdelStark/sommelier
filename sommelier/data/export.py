@@ -29,11 +29,16 @@ def export_raw_rows(
             hint="Run the export remotely or install the datasets extra.",
         ) from error
 
-    dataset = load_dataset(
-        source.dataset_id,
-        split="train",
-        revision=source.dataset_revision,
-    )
+    load_kwargs: dict[str, object] = {
+        "split": "train",
+        "revision": source.dataset_revision,
+    }
+    if source.source_id_column is not None:
+        # Paired publications deliberately keep provenance JSON objects beside
+        # the JSONL rows at one immutable Hub commit. Select the row file
+        # explicitly so the packaged JSON builder cannot ingest those sidecars.
+        load_kwargs["data_files"] = f"rows.{source.language}.jsonl"
+    dataset = load_dataset(source.dataset_id, **load_kwargs)
     if max_rows and max_rows < len(dataset):
         dataset = dataset.shuffle(seed=seed).select(range(max_rows))
 

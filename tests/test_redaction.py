@@ -11,6 +11,7 @@ from sommelier.redaction import (
     redact_configured_fields,
     scan_artifact_file,
     scan_artifact_tree,
+    scan_json_payload,
 )
 
 FAKE_TOKEN = "hf_" + "a" * 30
@@ -47,6 +48,47 @@ def test_scanner_flags_sensitive_key_in_json(tmp_path: Path) -> None:
     assert findings[0]["kind"] == "sensitive_key"
 
 
+def test_scanner_allows_closed_public_token_accounting_keys(tmp_path: Path) -> None:
+    manifest = tmp_path / "translation_summary.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "usage": {"input_tokens": 128, "output_tokens": 32},
+                "pricing": {
+                    "input_token_overhead_per_request": 4096,
+                    "long_context_threshold_input_tokens": 272_000,
+                    "standard_usd_per_million_tokens": {"input": "5"},
+                },
+                "request": {"max_output_tokens": 512},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert scan_artifact_file(manifest, base_dir=tmp_path) == []
+
+
+@pytest.mark.parametrize("key", ("api_token", "access_token", "token", "secret_token"))
+def test_scanner_still_rejects_credential_token_keys(tmp_path: Path, key: str) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({key: "opaque-value"}), encoding="utf-8")
+
+    findings = scan_artifact_file(manifest, base_dir=tmp_path)
+
+    assert [finding["kind"] for finding in findings] == ["sensitive_key"]
+
+
+def test_scanner_flags_token_shaped_json_key(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({FAKE_TOKEN: "metadata"}), encoding="utf-8")
+
+    findings = scan_artifact_file(manifest, base_dir=tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0]["kind"] == "secret_value"
+    assert findings[0]["location"] == f"{FAKE_TOKEN}::<key>"
+
+
 def test_scanner_flags_jsonl_line_numbers(tmp_path: Path) -> None:
     log = tmp_path / "data.jsonl"
     log.write_text(
@@ -59,9 +101,46 @@ def test_scanner_flags_jsonl_line_numbers(tmp_path: Path) -> None:
     assert findings[0]["file"] == "data.jsonl:2"
 
 
-def test_scanner_flags_sensitive_env_value(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("filename", "contents", "expected_file"),
+    (
+        (
+            "manifest.json",
+            f'{{"note":"{FAKE_TOKEN}","note":"clean"}}\n',
+            "manifest.json",
+        ),
+        (
+            "events.jsonl",
+            f'{{"note":"clean"}}\n{{"note":"{FAKE_TOKEN}","note":"clean"}}\n',
+            "events.jsonl:2",
+        ),
+    ),
+)
+def test_scanner_rejects_duplicate_json_keys_without_losing_shadowed_secrets(
+    tmp_path: Path,
+    filename: str,
+    contents: str,
+    expected_file: str,
 ) -> None:
+    artifact = tmp_path / filename
+    artifact.write_text(contents, encoding="utf-8")
+
+    findings = scan_artifact_file(artifact, base_dir=tmp_path)
+
+    assert any(
+        finding["kind"] == "duplicate_key" and finding["file"] == expected_file
+        for finding in findings
+    )
+    assert any(
+        finding["kind"] == "secret_value" and finding["file"] == expected_file
+        for finding in findings
+    )
+    assert all(FAKE_TOKEN not in finding["detail"] for finding in findings)
+    with pytest.raises(SecurityPolicyError):
+        assert_artifacts_publishable(tmp_path)
+
+
+def test_scanner_flags_sensitive_env_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOMMELIER_TEST_TOKEN", "super-secret-value-123")
     report = tmp_path / "report.md"
     report.write_text("cost: super-secret-value-123\n", encoding="utf-8")
@@ -128,3 +207,31 @@ def test_redact_configured_fields_replaces_values() -> None:
 def test_redact_configured_fields_noop_without_names() -> None:
     payload = {"a": 1}
     assert redact_configured_fields(payload, []) == {"a": 1}
+
+
+def test_scanner_treats_tokenizer_vocabulary_keys_as_data() -> None:
+    payload = {
+        "model": {"type": "BPE", "unk_token": "<unk>", "vocab": {"password": 1}},
+        "bos_token": "<s>",
+        "eos_token": "</s>",
+        "pad_token": "<pad>",
+        "trainable_token_indices": None,
+    }
+
+    assert scan_json_payload(payload, file="tokenizer.json") == []
+
+
+def test_scanner_still_checks_tokenizer_vocabulary_text_for_secrets() -> None:
+    payload = {"model": {"type": "BPE", "vocab": {"hf_abcdefghijklmnopqrstuvwxyz": 1}}}
+
+    findings = scan_json_payload(payload, file="tokenizer.json")
+
+    assert [finding["kind"] for finding in findings] == ["secret_value"]
+
+
+def test_scanner_requires_integer_tokenizer_vocabulary_indices() -> None:
+    payload = {"model": {"type": "BPE", "vocab": {"password": "not-an-index"}}}
+
+    findings = scan_json_payload(payload, file="tokenizer.json")
+
+    assert [finding["kind"] for finding in findings] == ["sensitive_key"]

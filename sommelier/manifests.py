@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import subprocess
 import uuid
 from datetime import UTC, datetime
@@ -9,11 +11,21 @@ from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
 
 from sommelier.artifacts import ArtifactRef, make_artifact_ref, write_artifact_atomic
-from sommelier.config import SommelierConfig
-from sommelier.errors import InvariantViolation
+from sommelier.config import SommelierConfig, resolve_config_artifact_root
+from sommelier.errors import ConfigError, InvariantViolation
 from sommelier.security import validate_no_secrets
 
-StageName = Literal["data", "format", "train", "eval", "report", "serve"]
+StageName = Literal[
+    "data",
+    "format",
+    "tokenization",
+    "train",
+    "eval",
+    "eval-base",
+    "eval-adapter",
+    "report",
+    "serve",
+]
 
 
 class StageManifest(TypedDict):
@@ -54,6 +66,14 @@ def create_run_id() -> str:
 
 
 def get_git_commit() -> str:
+    mounted_revision = os.environ.get("SOMMELIER_GIT_COMMIT")
+    if mounted_revision is not None:
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", mounted_revision):
+            raise InvariantViolation(
+                "SOMMELIER_GIT_COMMIT must be an immutable hexadecimal Git object ID",
+                hint="Pass the local git revision into the remote entrypoint unchanged.",
+            )
+        return mounted_revision
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -66,6 +86,20 @@ def get_git_commit() -> str:
     return result.stdout.strip()
 
 
+def get_git_worktree_clean() -> bool | None:
+    """Whether tracked and untracked local source matches the recorded commit."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return not bool(result.stdout.strip())
+
+
 def get_dependency_lock_sha256(project_root: Path | None = None) -> str | None:
     root = project_root or Path.cwd()
     lock_path = root / "uv.lock"
@@ -75,11 +109,22 @@ def get_dependency_lock_sha256(project_root: Path | None = None) -> str | None:
 
 
 def run_dir_for(config: SommelierConfig, run_id: str, *, config_dir: Path) -> Path:
-    return (config_dir / config.project.artifact_root / "runs" / run_id).resolve()
+    artifact_root = artifact_root_for(config, config_dir=config_dir)
+    run_dir = (artifact_root / "runs" / run_id).resolve()
+    try:
+        relative = run_dir.relative_to(artifact_root)
+    except ValueError as error:
+        raise ConfigError(
+            f"run directory escapes project.artifact_root: {run_dir}",
+            hint="Remove escaping symlinks under the configured artifact root.",
+        ) from error
+    if not relative.parts:
+        raise ConfigError("run directory resolves to project.artifact_root")
+    return run_dir
 
 
 def artifact_root_for(config: SommelierConfig, *, config_dir: Path) -> Path:
-    return (config_dir / config.project.artifact_root).resolve()
+    return resolve_config_artifact_root(config, config_dir=config_dir)
 
 
 def _manifest_filename(stage: StageName) -> str:
@@ -239,6 +284,33 @@ def record_tracking_in_run_manifest(
         "status": current["status"],
         "tracking": tracking,
     }
+    validate_no_secrets(updated, context="run manifest")
+    _write_run_manifest(run_dir, updated)
+    return updated
+
+
+def set_run_manifest_status(
+    *,
+    run_dir: Path,
+    status: Literal["succeeded", "failed"],
+) -> RunManifest:
+    """Closes a run after orchestration succeeds or propagates a failure."""
+    root_path = _root_manifest_path(run_dir)
+    if not root_path.exists():
+        raise InvariantViolation(
+            f"run manifest not found at {root_path}",
+            hint="Initialize the run directory before finalizing it.",
+        )
+    current = json.loads(root_path.read_text(encoding="utf-8"))
+    updated: RunManifest = {
+        "schema_version": "sommelier.manifest.v1",
+        "run_id": current["run_id"],
+        "stages": dict(current.get("stages", {})),
+        "config": current["config"],
+        "status": status,
+    }
+    if "tracking" in current:
+        updated["tracking"] = current["tracking"]
     validate_no_secrets(updated, context="run manifest")
     _write_run_manifest(run_dir, updated)
     return updated

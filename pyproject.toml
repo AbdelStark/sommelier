@@ -3,6 +3,7 @@ name = "sommelier"
 version = "0.1.0"
 description = "Reference implementation for fine-tuning small open models for tool calling"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.13"
 dependencies = [
     "modal>=1.5.1",
@@ -25,6 +26,9 @@ dev = [
 docs = [
     "mkdocs-material>=9.6",
 ]
+publish = [
+    "huggingface-hub==1.23.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -32,6 +36,59 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["sommelier"]
+
+[tool.hatch.build.targets.sdist]
+# Keep source releases reproducible even when the checkout contains ignored
+# model artifacts, virtual environments, or generated documentation media.
+only-include = [
+    ".env.example",
+    ".github",
+    ".gitignore",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "docs",
+    "examples",
+    "licenses",
+    "local_hy_translate.py",
+    "mkdocs.yml",
+    "paper",
+    "pyproject.toml",
+    "remote_hy_pipeline.py",
+    "remote_pipeline.py",
+    "remote_qlora_preflight.py",
+    "remote_semantic_review.py",
+    "remote_serving.py",
+    "remote_translate.py",
+    "sommelier",
+    "sommelier_entrypoint.py",
+    "space",
+    "tests",
+    "uv.lock",
+]
+exclude = [
+    "**/.cache/**",
+    "**/.DS_Store",
+    "**/.hypothesis/**",
+    "**/.ipynb_checkpoints/**",
+    "**/.mypy_cache/**",
+    "**/.pytest_cache/**",
+    "**/.ruff_cache/**",
+    "**/.venv*/**",
+    "**/__pycache__/**",
+    "**/artifacts/**",
+    "**/build/**",
+    "**/checkpoints/**",
+    "**/dist/**",
+    "**/htmlcov/**",
+    "**/node_modules/**",
+    "**/out/**",
+    "**/site/**",
+    "**/*.avi",
+    "**/*.mov",
+    "**/*.mp4",
+    "**/*.webm",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -71,6 +128,8 @@ module = [
     "vllm.*",
     "datasets",
     "datasets.*",
+    "huggingface_hub",
+    "huggingface_hub.*",
 ]
 ignore_missing_imports = true
 # Optional heavy stacks are treated as untyped even when installed, so

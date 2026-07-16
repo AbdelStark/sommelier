@@ -4,8 +4,9 @@ One YAML file drives every stage of the pipeline. The schema lives in [`sommelie
 
 Three rules apply before any field is read:
 
+- **Duplicate YAML keys are rejected.** PyYAML would normally let the last duplicate silently replace earlier values. Sommelier fails with `ConfigError` instead, at any mapping depth, before schema or secret validation can observe an overwritten document.
 - **Secrets are rejected.** `load_config` scans both the raw YAML and the validated dump for secret-shaped values and sensitive key names. A hit raises `SecurityPolicyError` (SOM006, exit 5), because config files end up inside published artifacts. Patterns and allowlists are in [Security](../project/security.md).
-- **`artifact_root` must be relative.** An absolute path fails validation. The root is resolved against the directory containing the config file, so a checkout can move without editing the config, and artifacts cannot be aimed outside the project by accident.
+- **`artifact_root` must stay relative and contained.** Absolute paths and any `..` component fail schema validation. Before a command uses the path, it resolves the configured root against the config directory and rejects symlinks that escape it. A checkout can move without editing the config, and a configured output cannot be aimed outside it by accident. The explicit `release preflight --artifact-root` override is a separate operator-selected scan target and may intentionally live elsewhere.
 - **The resolved config is an artifact.** Every run writes the validated config back out as `config.resolved.yaml` at the run root and records its SHA-256 digest as `config_sha256` in every stage manifest and evaluation report. The [comparison gate](../concepts/determinism.md) refuses to compare two evaluation reports unless they carry the same digest. Editing one field between the base eval and the adapter eval does not skew the numbers; it prevents the report from existing.
 
 To validate a file without running anything:
@@ -41,7 +42,7 @@ A file declaring `sommelier.config.v1` still loads. The loader upgrades it in me
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `name` | `str` | required | A label for the configuration. It travels in `config.resolved.yaml`; no stage branches on it. |
-| `artifact_root` | `Path` | required | Root directory for all run artifacts, relative to the config file's directory. Absolute paths are rejected. |
+| `artifact_root` | `Path` | required | Root directory for all run artifacts, relative to and resolved inside the config file's directory. Absolute paths, parent traversal, and escaping symlinks are rejected. |
 | `seed` | `int` | `42` | The single seed for the whole run: split shuffling in [data prepare](../concepts/data.md), the trainer seed in [training](../concepts/training.md), and the `seed` field recorded in manifests and reports. |
 
 ## `model`
@@ -62,7 +63,7 @@ A non-empty list of per-language dataset sources. Each entry:
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `language` | `str` | required | Two-letter lowercase ISO 639-1 code (`en`, `fr`). At most one source per language. |
+| `language` | `str` | required | Two-letter lowercase ISO 639-1 code (`en`, `fr`, `he`). At most one source per language. |
 | `dataset_id` | `str` | required | Source dataset id, e.g. `Salesforce/xlam-function-calling-60k`. |
 | `dataset_revision` | `str` | required | Dataset revision; stamped into every prepared example as `source_revision`. |
 | `query_column` | `str` | `"query"` | Column holding the user query, read when raw rows are exported from the source dataset. |
@@ -71,6 +72,13 @@ A non-empty list of per-language dataset sources. Each entry:
 | `source_id_column` | `str \| null` | `null` | When set, names the source-dataset column holding the root row reference; like the other column fields it is read when raw rows are exported, mapping into the canonical `source_example_id` raw-row field. When null, this is the root source. |
 
 Exactly one source must omit `source_id_column`: the root source, which gets independent split assignment during data prepare. Every other source is paired, row by row, to root rows through the column this field names. The pairing exists so that a translated variant of a query can never land in a different split than its original, which would leak test content into training. How prepare enforces this is described in [Data policy](../concepts/data.md).
+
+For a remote full run, every paired source must use an exact 40- or
+64-character Hugging Face dataset commit. A Hebrew publication must contain
+the paired rows plus the translation summary, locked semantic-review template,
+finalized review, and publication manifest that bind those rows. `main`, a tag, or a direct
+translation-run staging override is rejected before preparation. Smoke runs
+may stage a matching diagnostic translation instead.
 
 ## `data`
 
@@ -131,13 +139,13 @@ None of these are ever adjusted at runtime. If training runs out of GPU memory, 
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `enabled` | `bool` | `true` | Declares that this config targets remote execution. Current stage code reads the GPU and timeouts from this section but does not branch on this flag. |
+| `enabled` | `bool` | `true` | Declares that this config targets remote execution. The current wrapper reads the GPU and planning estimates from this section but does not branch on this flag. |
 | `gpu` | `str` | required | Modal GPU type, e.g. `A10G` or `L40S`. Recorded in runtime metadata and quoted in out-of-memory hints. |
-| `data_timeout_seconds` | `int` | `1800` | Time budget for the remote data stage. |
-| `train_timeout_seconds` | `int` | `14400` | Time budget for training. Exceeding it is a `ResourceError` that names this field. |
-| `eval_timeout_seconds` | `int` | `7200` | Time budget for each evaluation stage. |
+| `data_timeout_seconds` | `int` | `1800` | Legacy-named planning estimate for data/format/tokenization; not an enforced stage deadline. |
+| `train_timeout_seconds` | `int` | `14400` | Legacy-named planning estimate for training; not an enforced stage deadline. A dependency-reported timeout may quote it for context. |
+| `eval_timeout_seconds` | `int` | `7200` | Legacy-named planning estimate for each evaluation arm; not an enforced stage deadline. The admission sum counts both arms. |
 
-Each remote stage gets exactly its own budget; an unknown stage name fails instead of inheriting another stage's timeout. How these values reach Modal is covered in [Remote execution](../guides/remote-execution.md).
+The three names are retained for config compatibility. The current pipeline is one remote function: it installs no data, train, or eval watchdog. Instead, the driver sums the estimates into an outer-timeout admission floor: `data + train + 2 × eval`, or `data + 2 × eval` when evaluating an external adapter. A stage may exceed its estimate and continue as long as the provider-enforced outer function timeout has not expired. The English-only default full estimate totals 45,000 seconds; the Hebrew full estimate totals 81,000 seconds. Their documented launches use the provider maximum of 86,400 seconds. The driver rejects an outer timeout below the applicable planning sum or above the provider limit before loading data or models. Runtime metadata records `per_stage_watchdogs_enforced: false` so downstream reports cannot mistake the estimates for observed deadlines. Details are in [Remote execution](../guides/remote-execution.md).
 
 ## `report`
 
@@ -158,11 +166,19 @@ The only optional section. Omitting it is equivalent to writing `enabled: false`
 
 ## The example configs
 
-Two working configs ship in [`examples/`](https://github.com/AbdelStark/sommelier/blob/main/examples), plus [`config.invalid.yaml`](https://github.com/AbdelStark/sommelier/blob/main/examples/config.invalid.yaml), which exists to demonstrate a validation failure (`n_train: -100`). Both working configs share the same model (`nvidia/Llama-3.1-Nemotron-Nano-8B-v1`), dataset (`Salesforce/xlam-function-calling-60k`), seed, system prompt, learning rate, quantization, and target modules. They differ only in scale:
+Runnable English-only smoke/full defaults plus a Hebrew v3 smoke/full pair ship in
+[`examples/`](https://github.com/AbdelStark/sommelier/tree/main/examples), plus
+[`config.invalid.yaml`](https://github.com/AbdelStark/sommelier/blob/main/examples/config.invalid.yaml),
+which exists to demonstrate a validation failure (`n_train: -100`). All four
+use the Nemotron-Nano-8B base, immutable base/tokenizer/root identities, seed
+42, the same tool-calling prompt, QLoRA objective, and target modules. The v3
+pair adds a Hebrew paired source, tokenizer-cost evidence, and the following
+full-run budgets:
 
 | Setting | [`config.smoke.yaml`](https://github.com/AbdelStark/sommelier/blob/main/examples/config.smoke.yaml) | [`config.full.yaml`](https://github.com/AbdelStark/sommelier/blob/main/examples/config.full.yaml) |
 |---------|-----------------|----------------|
-| Purpose | Prove the chain end to end, cheaply | The reference run configuration |
+| Purpose | Prove the chain end to end, cheaply | Runnable English-only v1/default full run |
+| Languages / eval slices | `en` / `en` | `en` / `en` |
 | Splits (train/val/test) | 100 / 20 / 20 | 15,000 / 1,000 / 1,000 |
 | Epochs | 1 | 2 |
 | Batch · accumulation | 2 · 1 | 4 · 4 (effective batch 16) |
@@ -170,7 +186,24 @@ Two working configs ship in [`examples/`](https://github.com/AbdelStark/sommelie
 | LoRA rank · alpha | 8 · 16 | 16 · 32 |
 | `eval.max_new_tokens` | 256 | 512 |
 | GPU | A10G | L40S |
-| Timeouts (data/train/eval) | 900 / 3600 / 1800 s | 1800 / 28800 / 28800 s |
+| Planning estimates (data/train/each eval) | 900 / 3600 / 1800 s | 1800 / 28800 / 7200 s |
+| Outer admission floor from estimates | 8,100 s | 45,000 s; documented launch at 86,400 s |
 | `tracking` section | omitted (disabled by default) | explicit, disabled |
 
-`config.full.yaml` is the configuration behind the published [reference run](../results/reference-run.md); the [reproduction guide](../guides/reproduction.md) walks through running both. Start every change from one of these files: the validation error hints point back to `examples/config.smoke.yaml` for a reason.
+`config.full.yaml` is the current runnable English-only default. It preserves the published [reference run](../results/reference-run.md)'s scale and QLoRA/evaluation settings while pinning immutable base, tokenizer, and root-dataset revisions; any new launch receives its own run identity. The published run's resolved config and checksummed split/report artifacts remain the authority for the historical numbers.
+
+The [French v2 result](../results/french-run.md) is deliberately not encoded in this default. Its historical paired-dataset commit has a v1 translation summary and no current publication manifest, so strict reproduction under the current full-run contract is unavailable until a provenance-complete immutable republish exists. A future French full config must pin that new commit. Start English changes from `config.smoke.yaml` or `config.full.yaml`, and paired Hebrew work from the v3 pair.
+
+| Setting | [`config.v3-he-smoke.yaml`](https://github.com/AbdelStark/sommelier/blob/main/examples/config.v3-he-smoke.yaml) | [`config.v3-he-full.yaml`](https://github.com/AbdelStark/sommelier/blob/main/examples/config.v3-he-full.yaml) |
+|---------|-----------------|----------------|
+| Purpose | Diagnostic bilingual wiring only | Preregistered Hebrew evidence run |
+| Splits (train/val/test) | 100 / 20 / 20 | 15,000 / 1,000 / 1,000 |
+| Epochs | 1 | 2 |
+| Sequence budget | 2,048 | 4,096 |
+| GPU | A10G | L40S |
+| Planning estimates (data/train/each eval) | 900 / 3,600 / 1,800 s | 1,800 / 43,200 / 18,000 s |
+| Outer admission floor from estimates | 8,100 s | 81,000 s; launch at 86,400 s |
+
+The Hebrew dataset revision remains `main` only as a visible preregistration
+placeholder. It must be replaced with the immutable, provenance-complete
+publication commit before any full command can run or any result can be cited.

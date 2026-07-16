@@ -7,14 +7,14 @@ project:
 
 model:
   base_model_id: nvidia/Llama-3.1-Nemotron-Nano-8B-v1
-  base_model_revision: main
-  tokenizer_revision: main
+  base_model_revision: 54641c1611fcff44fa4865626462445e0a153fc7
+  tokenizer_revision: 54641c1611fcff44fa4865626462445e0a153fc7
   allow_remote_code: false
 
 datasets:
   - language: en
     dataset_id: Salesforce/xlam-function-calling-60k
-    dataset_revision: main
+    dataset_revision: 26d14ebfe18b1f7b524bd39b404b50af5dc97866
     query_column: query
     tools_column: tools
     answers_column: answers
@@ -66,6 +66,8 @@ eval:
 remote:
   enabled: true
   gpu: A10G
+  # Planning estimates used only for the outer-timeout admission floor.
+  # The current single-function pipeline has no per-stage watchdogs.
   data_timeout_seconds: 900
   train_timeout_seconds: 3600
   eval_timeout_seconds: 1800

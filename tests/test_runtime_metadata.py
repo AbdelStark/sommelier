@@ -8,6 +8,8 @@ import yaml
 from sommelier.pipeline import run_pipeline
 from sommelier.runtime_metadata import (
     RUNTIME_METADATA_SCHEMA,
+    RemoteExecutionBoundary,
+    SourceCodeProvenance,
     initialize_runtime_metadata,
     load_runtime_metadata,
     peak_memory_from_training_metrics,
@@ -36,6 +38,78 @@ def test_cost_is_explicitly_unavailable_by_default(tmp_path: Path) -> None:
     assert metadata["observed_cost_usd"] is None
     assert metadata["cost_source"] == "unavailable"
     assert metadata["peak_gpu_memory_mb"] is None
+
+
+def test_runtime_identity_is_recorded_when_bound_to_a_run(tmp_path: Path) -> None:
+    metadata = initialize_runtime_metadata(
+        tmp_path,
+        gpu="L40S",
+        run_id="run-1",
+        config_sha256="a" * 64,
+    )
+
+    assert metadata["run_id"] == "run-1"
+    assert metadata["config_sha256"] == "a" * 64
+
+
+def test_runtime_records_sorted_remote_package_versions(tmp_path: Path) -> None:
+    metadata = initialize_runtime_metadata(
+        tmp_path,
+        gpu="L40S",
+        packages={"transformers": "5.2.0", "torch": "2.9.1"},
+    )
+
+    assert metadata["packages"] == {
+        "torch": "2.9.1",
+        "transformers": "5.2.0",
+    }
+    assert runtime_section(tmp_path)["packages"] == metadata["packages"]
+
+
+def test_runtime_records_source_and_remote_execution_boundaries(tmp_path: Path) -> None:
+    metadata = initialize_runtime_metadata(
+        tmp_path,
+        gpu="L40S",
+        source_code=SourceCodeProvenance(
+            git_commit="a" * 40,
+            working_tree_clean=True,
+            boundary="Measured immediately before remote dispatch.",
+        ),
+        remote_execution=RemoteExecutionBoundary(
+            provider="modal",
+            function_timeout_seconds=21_600,
+            gpu_allocation_label="L40S",
+            configured_stage_planning_estimate_seconds=18_000,
+            outer_timeout_planning_headroom_seconds=3_600,
+            per_stage_watchdogs_enforced=False,
+            hf_hub_download_policy={
+                "disable_xet": True,
+                "download_timeout_seconds": 600,
+                "boundary": "Forced before Hugging Face access.",
+            },
+            boundary="Outer function execution timeout; billing is separate.",
+        ),
+    )
+
+    assert metadata["source_code"] == {
+        "git_commit": "a" * 40,
+        "working_tree_clean": True,
+        "boundary": "Measured immediately before remote dispatch.",
+    }
+    assert metadata["remote_execution"] == {
+        "provider": "modal",
+        "function_timeout_seconds": 21_600,
+        "gpu_allocation_label": "L40S",
+        "configured_stage_planning_estimate_seconds": 18_000,
+        "outer_timeout_planning_headroom_seconds": 3_600,
+        "per_stage_watchdogs_enforced": False,
+        "hf_hub_download_policy": {
+            "disable_xet": True,
+            "download_timeout_seconds": 600,
+            "boundary": "Forced before Hugging Face access.",
+        },
+        "boundary": "Outer function execution timeout; billing is separate.",
+    }
 
 
 def test_peak_memory_recorded_when_available(tmp_path: Path) -> None:
@@ -107,6 +181,7 @@ def test_pipeline_records_runtime_for_every_stage(tmp_path: Path) -> None:
         stages=PipelineStages(
             prepare=noop,
             format=noop,
+            tokenization=noop,
             eval_base=noop,
             train=noop,
             eval_adapter=noop,
@@ -120,6 +195,7 @@ def test_pipeline_records_runtime_for_every_stage(tmp_path: Path) -> None:
     assert set(metadata["stages"]) == {
         "data",
         "format",
+        "tokenization",
         "eval-base",
         "train",
         "eval-adapter",
